@@ -284,4 +284,39 @@ for t in trading_days(2026.07.16, 2030.12.31):
 
 ---
 
+## 11. 当前进度（2026-07-20 实时跟踪）
+
+> 本节为执行过程中的实时状态记录，与上文前瞻计划对照。项目目录已由 `trade-agent-research` 改名为 `trade-agent-benchmark`。
+
+### 11.1 已完成
+
+| # | 项目 | 落点（文件） | 状态 |
+|---|------|------------|------|
+| 1 | 框架获取 | `AlphaCrafter/`、`FactorMiner/` | ✅ 下载完成（来源见 §3.1） |
+| 2 | 19 资产单一事实源 | `ASSETS.yaml`（含 baseline_date/warmup_start/online_end/friction_bps） | ✅ |
+| 3 | AC 摩擦小修 | `AlphaCrafter/alphacrafter/sim/exchange_a.py:47-49`、`exchange_us.py:47-49`（commission_rate=0.0001 + slippage_rate=0.0002，买卖对称，覆盖开/平/做空/部分成交） | ✅ |
+| 4 | FM 摩擦小修 | `FactorMiner/factorminer/configs/default.yaml:261-265`（execution.cost_bps=3.0；portfolio.py 按 cost_bps/10000×换手 扣净收益；admission.turnover_penalty=0.05 保留） | ✅ |
+| 5 | 数据适配器 | `adapters/build_inputs.py`（230 行：规范长表 → AC session[stock_data+date.json+account.json+每月1日新闻] + FM panel.parquet + walkforward.yaml） | ✅ 代码就绪 |
+| 6 | 前向调度器 | `scheduler/walk_forward.py`（205 行：dryrun/ac/fm/both 四模式、防穿越切片 panel_t、月首新闻日志、FM 频率 daily/monthly 可调） | ✅ 代码就绪 |
+
+### 11.2 与原计划的偏差（按 §10 末尾规则显式记录）
+
+- **§4.2「Trader 优化器加 L1 换手惩罚」→ 实际改为交易所层摩擦**：未改 Trader 目标函数，而是在 `exchange_a/us.py` 的成交环节直接收 1bp 佣金 + 2bp 滑点（合计单边 3bps）。两者等价地制造"不敏感带"——当调仓潜在收益 < 3bps 时净额为负，agent 自然不动；且交易所层实现更贴近实盘结算。若后续需要更激进的换手抑制，再在 Trader 目标函数叠加 γ‖w_t−w_{t-1}‖₁。
+- **§5.2「激活 turnover_aware.py 钩子」→ 实际用 FM 原生 `execution.cost_bps` 旋钮**：FactorMiner 真实代码（非 refer.md 转述）的摩擦机制是 `evaluation/portfolio.py` 的 `transaction_cost_bps`，按 `cost_bps/10000 × 换手` 从因子回测净收益扣除；配合 `admission.turnover_penalty=0.05` 作评分层选择压力。无需自写 `turnover_aware.py`。
+- **§9.3「data_processor 统一宽表」→ 实际为 `adapters/build_inputs.py` + `ASSETS.yaml`**：用一张长表（date,asset_id,OHLCV[,amount]）作单一输入契约，由适配器分别生成两框架格式，比"宽表"更贴合 FM 的长表 loader。
+
+### 11.3 接下来要做（按优先级）
+
+1. **真实数据落盘**（最高优先）：
+   - 2020.01.01–2026.07.16 warm-up 日频 OHLCV（19 资产；沪深300/SPX/HSI 以朝阳永续为准）→ `data-prepare/data2020-2026/`。
+   - 2026.07.16–2030.12.31 前向未来价：由 `data-prepare/wordline-simple/wordline1-8.md` 的阶段终点表插值出日频路径。
+   - 拼成规范长表 `panel.parquet`（csv 亦可）。
+2. **运行环境**：`.venv` 装 `pandas/numpy/pyarrow/pyyaml` + 两框架各自依赖（AC: openai/dotenv/cvxpy/yaml；FM: click/xgboost 等）+ 配 LLM API Key。系统 Python 3.14 当前无 pip/pandas，需先解决环境（`ensurepip` 不可用，可能需 `apt install python3-pandas python3-pip` 或用 `uv`）。
+3. **dryrun 全链路验证**：`python -m adapters.build_inputs --panel … --assets ASSETS.yaml …` 生成 session；`python -m scheduler.walk_forward --session wf19 --mode dryrun` 跑通游标推进 + 切片 + 月首新闻日志（无 LLM、无数据依赖即可验证逻辑）。
+4. **live 接线**：`--mode ac/fm/both` 实跑；补全 `scheduler/walk_forward.py` 的 FM TODO——解析 `top_formulaic_alphas.json`、在 `panel_t` 上算截面分 → top 1/3 等权做多。
+5. **评估层（§8）**：净值/成本分解、九世界线对比、两 leg 净值曲线 → `report-and-output/`。
+6. **清理冗余**：`integration/`（早期版本）已被 `adapters/`+`scheduler/` 取代，验证新链路无误后删除。
+
+---
+
 *附：本计划锁定 refer.md 第 641-655 行"日频完整计划"的最终方案。任何偏离"原生日频 + 统一 3bps + 两处最小改造"的改动，需在此文件显式记录并说明理由。*
