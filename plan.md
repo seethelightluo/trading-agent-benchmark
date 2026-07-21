@@ -61,11 +61,14 @@ data-prepare/asset-daily-data/
 |---|------|------|
 | 0 | 安装 git / uv（uv 用官方安装器 → `~/.local/bin`） | ✅ 完成（git 2.53.0 / uv 0.11.29） |
 | 1 | `git init` + `.gitignore` + user 配置 + 初始提交 | ✅ 完成（commit ea78c80，314 文件） |
-| 2 | `uv venv .venv` + 装 pandas/requests/akshare | ⏳ 进行中（后台） |
-| 3 | 写 `data-prepare/fetch_daily_data.py`（三源 + 重试 + 宽表 + COVERAGE） | ⏳ 待写 |
-| 4 | 运行抓取，产出 `asset-daily-data/` | ⏳ 待跑 |
-| 5 | 校验：每资产日期范围/行数/缺失，与基线 2026-07 价比对 | ⏳ 待做 |
-| 6 | 提交并推送到 GitHub（SSH：`/home/lxx/id_ed25519`） | ⏳ 待做 |
+| 2 | `uv venv .venv` + 装 pandas/requests/akshare/pyarrow/pyyaml | ✅ 完成 |
+| 3 | 写 `data-prepare/fetch_daily_data.py`（多源 + 重试 + 宽表 + COVERAGE） | ✅ 完成（含 asset_spec/make_panel） |
+| 4 | 运行抓取，产出 `asset-daily-data/`（19 基准 + 3 世界线特有） | ✅ 完成（2020-01-02 ~ 2026-07-21，0 NaN） |
+| 5 | 校验：每资产日期范围/行数/缺失，与基线 2026-07 价比对 | ✅ 完成（见 `COVERAGE.md`） |
+| 6 | 提交并推送到 GitHub（SSH） | ✅ 完成（commit b086837+） |
+| 7 | 合成在线世界线日频（2026-07-17 ~ 2030-12-31） | ✅ 完成（`gen_worldline_online.py` + 9 条 WL，re-anchor） |
+| 8 | build_inputs + walk_forward dryrun 全链路 | ✅ 完成（详见 [`RUN.md`](RUN.md)） |
+| 9 | live LLM 前向跑批（ac/fm/both） | ⛔ 待 API Key（dryrun 已验证逻辑） |
 
 ## 六、注意事项
 
