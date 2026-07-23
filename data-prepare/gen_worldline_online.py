@@ -61,6 +61,9 @@ ASSET_NAME_MAP = {
     "VIX": "VIX", "韩国KOSPI": "KOSPI", "KOSPI": "KOSPI",
 }
 LINEAR_ASSETS = {"US10Y", "CN10Y", "VIX"}  # 收益率/波动率：水平线性插值 + 平移锚定
+# 信号汇率：世界线表格未给轨迹时，由 DXY（9 条 WL 全有）按 warmup 实测 β 派生，避免在线阶段 flat。
+# EUR 是 DXY 主成分(57.6%)→β 最显著；JPY(13.6%)、CNY(管理汇率)次之。
+FX_DERIVE = {"USDCNY", "USDJPY", "EURUSD"}
 
 
 # --------------------------------------------------------------------------- #
@@ -171,44 +174,70 @@ def warmup_stats(panel: pd.DataFrame) -> dict:
     return stats
 
 
+def compute_fx_betas(panel: pd.DataFrame):
+    """回归各信号汇率日 log-return 对 DXY 日 log-return：β = cov(r_fx, r_dxy)/var(r_dxy)。
+    返回 {aid: β} 与 DXY 的真实 2026-07-16 收盘。FX_DERIVE 中资产在 WL 无轨迹时用 β×DXY 累计对数收益派生。"""
+    p = panel.copy()
+    p["close"] = pd.to_numeric(p.groupby("asset_id")["close"].transform(
+        lambda c: pd.to_numeric(c, errors="coerce")), errors="coerce")
+    p["lr"] = p.groupby("asset_id")["close"].transform(lambda c: np.log(c).diff())
+    pivot = p.pivot_table(index="date", columns="asset_id", values="lr")
+    dxy = pivot.get("DXY")
+    betas = {}
+    if dxy is not None:
+        for aid in FX_DERIVE:
+            if aid in pivot.columns:
+                pair = pd.concat([dxy.rename("dxy"), pivot[aid].rename("fx")], axis=1).dropna()
+                var = float(pair["dxy"].var())
+                betas[aid] = float(pair["fx"].cov(pair["dxy"]) / var) if var > 0 else 0.0
+    dxy_real = float(pd.to_numeric(
+        panel[panel["asset_id"] == "DXY"].sort_values("date").pipe(
+            lambda g: g[g["date"] <= BASELINE_DATE]["close"]).iloc[-1], errors="coerce"))
+    return betas, dxy_real
+
+
 # --------------------------------------------------------------------------- #
+def _asset_path(aid, stages, baseline, stats, reanchor, days):
+    """单资产在线 close 路径。有世界线轨迹→插值+reanchor；返回 (path, used_worldline: bool)。"""
+    wps, wpd = [], []
+    if aid in baseline:
+        wps.append(BASELINE_DATE); wpd.append(baseline[aid])
+        seen = {BASELINE_DATE}
+        for st in stages:
+            if aid in st["rows"] and st["end_date"] and st["end_date"] not in seen:
+                seen.add(st["end_date"]); wps.append(st["end_date"]); wpd.append(st["rows"][aid])
+    st_ = stats.get(aid, {"real_close": 1.0})
+    if wps:
+        log = aid not in LINEAR_ASSETS
+        raw = interp_waypoints(days, wps, wpd, log=log)
+        if reanchor:
+            wl_base = wpd[0]
+            path = st_["real_close"] * raw / wl_base if log else st_["real_close"] + (raw - wl_base)
+        else:
+            path = raw
+        return np.asarray(path, dtype=float), True
+    return None, False
+
+
 def build_online(stages, baseline, assets: list[str], stats, reanchor: bool,
-                 online_end: str):
+                 online_end: str, fx_betas: dict, dxy_real: float, derive_fx: bool):
     """返回 online DataFrame[date,asset_id,ohlcv,amount]。
-    online_end：该世界线末阶段真实结束日（逐 WL 动态，不再用全局 2030-12-31）。"""
+    在线阶段逐 WL 动态终点；信号汇率无世界线轨迹时由 DXY 按 β 派生（derive_fx=True）。"""
     day0 = (pd.Timestamp(BASELINE_DATE) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     days = weekdays(day0, online_end)
+    # DXY 在线路径（9 条 WL 全有）→ 其累计对数收益供派生缺失汇率
+    dxy_path, _ = _asset_path("DXY", stages, baseline, stats, reanchor, days)
+    dxy_logret = np.log(dxy_path / dxy_real) if dxy_path is not None else None
     rows = []
     for aid in assets:
-        # 该世界线含此资产 → 取 waypoints；否则 None（后处理为 flat hold）
-        wps, wpd = [], []
-        if aid in baseline:
-            wps.append(BASELINE_DATE)
-            wpd.append(baseline[aid])
-            seen = set([BASELINE_DATE])
-            for st in stages:
-                if aid in st["rows"] and st["end_date"]:
-                    ed = st["end_date"]
-                    if ed in seen:
-                        continue
-                    seen.add(ed)
-                    wps.append(ed)
-                    wpd.append(st["rows"][aid])
+        path, used = _asset_path(aid, stages, baseline, stats, reanchor, days)
         st_ = stats.get(aid, {"real_close": 1.0, "rng": 0.005, "vol": 0.0})
-        if wps:
-            log = aid not in LINEAR_ASSETS
-            raw = interp_waypoints(days, wps, wpd, log=log)
-            if reanchor:
-                wl_base = wpd[0]
-                if log:
-                    path = st_["real_close"] * raw / wl_base
-                else:
-                    path = st_["real_close"] + (raw - wl_base)
+        if path is None:
+            if derive_fx and aid in FX_DERIVE and dxy_logret is not None:
+                β = fx_betas.get(aid, 0.0)
+                path = st_["real_close"] * np.exp(β * dxy_logret)   # 由 DXY 派生，连续锚定
             else:
-                path = raw
-        else:
-            # 该 WL 未覆盖该资产 → flat hold 真实价
-            path = np.full(len(days), st_["real_close"])
+                path = np.full(len(days), st_["real_close"])        # flat hold
         rng, vol = st_["rng"], st_["vol"]
         close = path
         open_ = np.concatenate([[st_["real_close"]], close[:-1]])
@@ -233,6 +262,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--only", default="", help="逗号分隔世界线号(1-9)")
     ap.add_argument("--no-reanchor", action="store_true", help="用世界线绝对价(边界断层)")
+    ap.add_argument("--no-derive-fx", action="store_true",
+                    help="关闭：世界线无轨迹的信号汇率(EURUSD/USDJPY/USDCNY)保持 flat（默认由 DXY 按 β 派生）")
     ap.add_argument("--outdir", default=str(OUTDIR))
     args = ap.parse_args()
 
@@ -243,12 +274,16 @@ def main():
     from asset_spec import BENCHMARK_ASSET_IDS
     assets = BENCHMARK_ASSET_IDS
     stats = warmup_stats(panel)
+    fx_betas, dxy_real = compute_fx_betas(panel)
+    if not args.no_derive_fx:
+        print(f"信号汇率 vs DXY 实测 β（派生用）：{ {k: round(v,3) for k,v in fx_betas.items()} }；DXY real={dxy_real:.2f}")
     print(f"warmup 面板 {len(panel)} 行, {panel['asset_id'].nunique()} 资产；"
           f"在线阶段 {BASELINE_DATE}+1 ~ 各WL末阶段（逐WL动态，兜底上限 {ONLINE_END}）\n")
 
     wls = [int(x) for x in re.findall(r"\d", args.only)] if args.only else list(range(1, 10))
     wp_lines = ["# WAYPOINTS — 各世界线解析的阶段终点（机器解析，供人工核对）", "",
-                f"> re-anchor={'OFF' if args.no_reanchor else 'ON'}（默认 ON：按世界线相对路径锚到真实 2026-07-16 价）", ""]
+                f"> re-anchor={'OFF' if args.no_reanchor else 'ON'}；"
+                f"derive-fx={'OFF' if args.no_derive_fx else 'ON（无轨迹汇率由 DXY 按 β 派生）'}", ""]
 
     for n in wls:
         path = WLDIR / f"wordline{n}.md"
@@ -258,7 +293,9 @@ def main():
         # 逐 WL 动态终点：取该世界线末阶段真实结束日（不再用全局 2030-12-31）
         wl_end = max((st["end_date"] for st in stages if st["end_date"]), default=ONLINE_END)
         online = build_online(stages, baseline, assets, stats,
-                              reanchor=not args.no_reanchor, online_end=wl_end)
+                              reanchor=not args.no_reanchor, online_end=wl_end,
+                              fx_betas=fx_betas, dxy_real=dxy_real,
+                              derive_fx=not args.no_derive_fx)
         online.to_csv(outdir / f"WL{n}_online.csv", index=False)
         full = pd.concat([panel[panel["asset_id"].isin(assets)], online], ignore_index=True)
         full = full.sort_values(["asset_id", "date"]).reset_index(drop=True)
