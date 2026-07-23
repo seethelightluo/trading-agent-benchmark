@@ -66,7 +66,7 @@ data-prepare/asset-daily-data/
 | 4 | 运行抓取，产出 `asset-daily-data/`（19 基准 + 3 世界线特有） | ✅ 完成（2020-01-02 ~ 2026-07-21，0 NaN） |
 | 5 | 校验：每资产日期范围/行数/缺失，与基线 2026-07 价比对 | ✅ 完成（见 `COVERAGE.md`） |
 | 6 | 提交并推送到 GitHub（SSH） | ✅ 完成（commit b086837+） |
-| 7 | 合成在线世界线日频（2026-07-17 ~ 2030-12-31） | ✅ 完成（`gen_worldline_online.py` + 9 条 WL，re-anchor） |
+| 7 | 合成在线世界线日频（2026-07-17 ~ 2035-12-31，逐 WL 末阶段） | ✅ 完成（`gen_worldline_online.py` + 9 条 WL，re-anchor） |
 | 8 | build_inputs + walk_forward dryrun 全链路 | ✅ 完成（详见 [`RUN.md`](RUN.md)） |
 | 9 | live LLM 前向跑批（ac/fm/both） | ⛔ 待 API Key（dryrun 已验证逻辑） |
 
@@ -75,3 +75,54 @@ data-prepare/asset-daily-data/
 - 本机走 Clash TUN 代理：**国际站（Binance/Yahoo/FRED/astral.sh）正常**；**国内 apt 源 InRelease 过代理 SSL 会断流**（aliyun/tuna 的 .deb 仍可下，故 git 能装）。数据抓取走国际站，不受影响。
 - akshare 依赖较多，安装偏慢；若失败则中债10Y 改直连 chinabond/eastmoney API。
 - 宽表非交易日空值是预期行为，非缺失。
+
+---
+
+## 七、Agent 配置宇宙与计价基准（关键架构修订 · 2026-07-22）
+
+> 本节决定 **Agent 如何使用数据**，适用于 2026-07-16 之后的前向持仓阶段。
+> 第二节"资产清单"是**数据抓取口径**（更宽，含信号与 WL 特有项）；本节是 **Agent 持仓配置口径**（更窄）。
+> 需同步：`agent-framework/ASSETS.yaml`、`integration/asset_universe.py`、`gen_worldline_online.py`。
+
+### 7.1 可交易持仓宇宙 = 15（汇率 / 波动率剔除为信号）
+
+**汇率（DXY / USDCNY / USDJPY）与 VIX 不进入持仓权重向量 w_t**，降级为"宏观 / 状态信号特征"：
+- VIX 是期权隐含波动率指数，**不可现货持有**（仅衍生品），塞进 MPT 协方差矩阵会量纲错配。
+- 汇率是宏观传导媒介，非独立配置资产（本测试不做杠杆 FX）。
+
+**可交易持仓（15 项，参与 ∑wᵢ = 1 与组合优化）：**
+
+| 类别 | 数量 | 资产 |
+|---|---:|---|
+| 权益 | 8 | 沪深300、标普500、恒生、日经225、斯托克50、科创50、费城半导体、纳斯达克100 |
+| 商品 | 3 | 黄金、铜、原油 |
+| 加密 | 2 | BTC、ETH |
+| 债券 | 2 | 美债10Y、中债10Y |
+
+**宏观 / 状态信号（5 项，仅作 Agent 输入特征，不持仓）：** DXY、USDCNY、USDJPY、EURUSD、VIX
+→ 供 AlphaCrafter Screener 判 Risk-On/Off；供 FactorMiner 生成跨资产因子（如 `Ts_Rank(VIX, 20)`）。其中 USDCNY/USDJPY/EURUSD 同时承担对应外币资产的 USD 折算（见 §7.2）。
+
+> 合计 **20 = 15 可交易持仓 + 5 信号指标**。
+
+### 7.2 统一以 USD 计价与结算（单一计价货币）
+
+所有持仓资产统一收敛到**美元计价**，避免组合 NAV 与协方差矩阵 Σ 的货币量纲错配；日收益 R_t 已含"价格变动 + 汇率变动"的综合回报。
+
+- **原生 USD（不变）**：SPX、NDX、SOX、XAU、Copper、WTI、BTC、ETH、US10Y
+- **CNY 资产**：`P_USD(t) = P_CNY(t) / USDCNY(t)` —— 沪深300、科创50、中债10Y
+- **JPY 资产**：`P_USD(t) = P_JPY(t) / USDJPY(t)` —— 日经225
+- **EUR 资产**：`P_USD(t) = P_EUR(t) × EURUSD(t)` —— 斯托克50（注意 EURUSD 报价为「USD per EUR」，故相乘，与 CNY/JPY 相除相反）
+- **HKD 资产**：恒生—— HKD 与美元**联系汇率（peg ≈ 7.80，区间 7.75–7.85）**，用常数折算 `P_USD = P_HKD / 7.80`，**无需抓取汇率**（误差 <1.3%，可忽略）。
+
+### 7.3 前向结束时间 = 世界线末阶段真实结束日（不硬编码 2030）
+
+融合 / 前向终止日 **不固定 2030-12-31**，而取**当前世界线最后一个阶段的真实结束日期**。
+- 例：WL1 末阶段「新均衡形成（2030–2031）」→ 终点落在 2031，硬编码 2030-12-31 会**截断**该 WL。
+- 不同世界线终点不同 → **逐 WL 读取 `wordlineN.md` 末阶段日期**，作为该 WL 前向窗口终点。
+- 现有 `ASSETS.yaml`(`online_end`)、`integration/asset_universe.py`(`FORWARD_END`)、`gen_worldline_online.py` 中的 `2030-12-31` 需改为按 WL 动态读取。
+
+### 7.4 待同步项（2026-07-22 已完成）
+
+- [x] **补抓 EURUSD**（斯托克50 的 EUR→USD 折算，BOC 欧元/美元中间价比，国内源免 Yahoo）；恒生用 HKD-USD 联系汇率常数 ≈7.80，无需抓取。
+- [x] `ASSETS.yaml` / `asset_universe.py` / `asset_spec.py` / `build_inputs.py`：宇宙拆为 **15 可交易 + 5 信号 = 20**，信号项（DXY/USDCNY/USDJPY/EURUSD/VIX）不进权重向量（AC watch_list 仅 15，信号入 index_data）。
+- [x] 前向终点改为**逐 WL 动态**读取 `max(阶段 end_date)`（9 条 WL 均至 2035-12-31，原 2030-12-31 会截断 5 年）；`gen_worldline_online.py` 已重生成。

@@ -2,7 +2,7 @@
 """
 gen_worldline_online.py — 由 9 条世界线的阶段终点表，生成在线阶段合成日频路径
 
-在线阶段 2026-07-17 ~ 2030-12-31 的「未来行情」无法实测；由 wordline-simple/wordline1..9.md
+在线阶段 2026-07-17 ~ 各WL末阶段（9 条 WL 均至 2035-12-31）的「未来行情」无法实测；由 wordline-simple/wordline1..9.md
 每阶段的资产终点价格插值出日频 close，再拼到 warmup 真实数据后，形成完整 2020-2030 面板，
 供 walk_forward 在线滚动（agent 只能看到 ≤ t 的切片，防穿越）。
 
@@ -22,7 +22,7 @@ gen_worldline_online.py — 由 9 条世界线的阶段终点表，生成在线�
 
 输出（data-prepare/online-worldline/）
   WL<n>_online.csv   仅在线阶段长表(date,asset_id,open,high,low,close,volume,amount)
-  WL<n>_full.parquet/csv  warmup(≤2026-07-16, 真实) + 在线(合成) 完整面板（19 基准资产）
+  WL<n>_full.parquet/csv  warmup(≤2026-07-16, 真实) + 在线(合成) 完整面板（20 资产 = 15 可交易 + 5 信号）
   WAYPOINTS.md       每条世界线解析出的阶段终点（人工核对用）
 
 用法
@@ -48,7 +48,7 @@ OUTDIR = HERE / "online-worldline"
 WARMUP_PANEL = HERE / "asset-daily-data" / "panel.parquet"
 WARMUP_CSV = HERE / "asset-daily-data" / "panel.csv"
 BASELINE_DATE = "2026-07-16"
-ONLINE_END = "2030-12-31"
+ONLINE_END = "2035-12-31"   # 兜底默认；实际逐 WL 取 max(阶段 end_date)（9 条 WL 均为 2035-12-31）
 
 # 中文名 → asset_id（与 ASSETS.yaml / fetch 口径一致）
 ASSET_NAME_MAP = {
@@ -57,6 +57,7 @@ ASSET_NAME_MAP = {
     "科创50": "000688.SH", "黄金": "XAU", "铜": "COPPER", "原油WTI": "WTI", "原油": "WTI",
     "BTC": "BTC", "ETH": "ETH", "美债10Y": "US10Y", "中债10Y": "CN10Y",
     "美元指数": "DXY", "USD/CNY": "USDCNY", "USD/JPY": "USDJPY", "USD/KRW": "USDKRW",
+    "EUR/USD": "EURUSD", "欧元/美元": "EURUSD", "欧元": "EURUSD",
     "VIX": "VIX", "韩国KOSPI": "KOSPI", "KOSPI": "KOSPI",
 }
 LINEAR_ASSETS = {"US10Y", "CN10Y", "VIX"}  # 收益率/波动率：水平线性插值 + 平移锚定
@@ -171,10 +172,12 @@ def warmup_stats(panel: pd.DataFrame) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-def build_online(stages, baseline, assets: list[str], stats, reanchor: bool):
-    """返回 online DataFrame[date,asset_id,ohlcv,amount]。"""
+def build_online(stages, baseline, assets: list[str], stats, reanchor: bool,
+                 online_end: str):
+    """返回 online DataFrame[date,asset_id,ohlcv,amount]。
+    online_end：该世界线末阶段真实结束日（逐 WL 动态，不再用全局 2030-12-31）。"""
     day0 = (pd.Timestamp(BASELINE_DATE) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-    days = weekdays(day0, ONLINE_END)
+    days = weekdays(day0, online_end)
     rows = []
     for aid in assets:
         # 该世界线含此资产 → 取 waypoints；否则 None（后处理为 flat hold）
@@ -241,7 +244,7 @@ def main():
     assets = BENCHMARK_ASSET_IDS
     stats = warmup_stats(panel)
     print(f"warmup 面板 {len(panel)} 行, {panel['asset_id'].nunique()} 资产；"
-          f"在线阶段 {BASELINE_DATE}+1 ~ {ONLINE_END}\n")
+          f"在线阶段 {BASELINE_DATE}+1 ~ 各WL末阶段（逐WL动态，兜底上限 {ONLINE_END}）\n")
 
     wls = [int(x) for x in re.findall(r"\d", args.only)] if args.only else list(range(1, 10))
     wp_lines = ["# WAYPOINTS — 各世界线解析的阶段终点（机器解析，供人工核对）", "",
@@ -252,7 +255,10 @@ def main():
         if not path.exists():
             print(f"WL{n}: 文件不存在，跳过"); continue
         stages, baseline = parse_worldline(path)
-        online = build_online(stages, baseline, assets, stats, reanchor=not args.no_reanchor)
+        # 逐 WL 动态终点：取该世界线末阶段真实结束日（不再用全局 2030-12-31）
+        wl_end = max((st["end_date"] for st in stages if st["end_date"]), default=ONLINE_END)
+        online = build_online(stages, baseline, assets, stats,
+                              reanchor=not args.no_reanchor, online_end=wl_end)
         online.to_csv(outdir / f"WL{n}_online.csv", index=False)
         full = pd.concat([panel[panel["asset_id"].isin(assets)], online], ignore_index=True)
         full = full.sort_values(["asset_id", "date"]).reset_index(drop=True)
@@ -263,7 +269,7 @@ def main():
         full.to_csv(outdir / f"WL{n}_full.csv", index=False)
 
         # endpoints 报告
-        wp_lines.append(f"## WL{n}　阶段终点（{len(stages)} 阶段）")
+        wp_lines.append(f"## WL{n}　阶段终点（{len(stages)} 阶段）　前向终点 = {wl_end}")
         for st in stages:
             wp_lines.append(f"- 阶段结束 {st['end_date']}：{st['header'].split('：',1)[1].split('（')[0]}")
         # 抽样：SOX/SPX/BTC/US10Y 在线首末

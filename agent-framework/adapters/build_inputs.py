@@ -1,5 +1,5 @@
 """
-build_inputs.py — 19 资产日频数据 → 两套框架的输入
+build_inputs.py — 20 资产（15 可交易 + 5 信号）日频数据 → 两套框架的输入
 
 把一张"规范长表"一次性适配成 AlphaCrafter 的 session 目录 与 FactorMiner 的面板，
 使两套框架都能接受 2020-2025（及 2026-2030）的日频资产数据。
@@ -18,7 +18,7 @@ CSV 或 Parquet，长格式，每行一个 (日期, 资产)：
 1) AlphaCrafter session 目录（由 template_a 复制改造）：
    persistent/stock_data/<asset_id>.csv   每资产日线（AC 表头 + 空 PE/PS/PB/DYR）
    persistent/date.json                   {current_date: 基准日, trading_days: [...]}
-   persistent/account.json                初始现金 + watch_list=19 资产 + 空持仓
+   persistent/account.json                初始现金 + watch_list=15 可交易 + 空持仓
    persistent/stock_news/<asset_id>.json  每月 1 日宏观新闻（占位，可后续填世界线叙事）
 2) FactorMiner 面板：data/panel.parquet（FM loader 原生长表格式）+ walkforward.yaml 配置
 
@@ -81,33 +81,41 @@ def build_alpha_crafter(panel: pd.DataFrame, assets_cfg: dict,
     shutil.copytree(src, dst)
 
     persistent = dst / "persistent"
-    stock_data = persistent / "stock_data"
+    stock_data = persistent / "stock_data"      # 可交易持仓（tradable，15）
+    index_data = persistent / "index_data"      # 宏观/状态信号（signals，5；Screener 参考，不持仓）
     news_dir = persistent / "stock_news"
-    stock_data.mkdir(exist_ok=True)
-    news_dir.mkdir(exist_ok=True)
-    # 清掉模板占位文件
-    for f in stock_data.glob("*.csv"):
-        f.unlink()
+    for d in (stock_data, index_data, news_dir):
+        d.mkdir(exist_ok=True)
+    for d in (stock_data, index_data):
+        for f in d.glob("*.csv"):
+            f.unlink()
     for f in news_dir.glob("*.json"):
         f.unlink()
 
-    asset_ids = [a["asset_id"] for a in assets_cfg["assets"]]
+    tradable_ids = [a["asset_id"] for a in assets_cfg["tradable"]]
+    signal_ids = [a["asset_id"] for a in assets_cfg.get("signals", [])]
 
-    # 1) 每资产日线 CSV（AC 表头；fundamentals 留空，跨资产无基本面）
-    ac_header = ["date", "open", "close", "high", "low", "volume",
-                 "change", "pct_change", "PE", "PS", "PB", "DYR"]
-    for aid in asset_ids:
+    def _write_csv(aid, out_dir, with_fund):
         sub = panel[panel["asset_id"] == aid].copy().sort_values("date")
         if sub.empty:
             print(f"  ⚠️  资产 {aid} 在面板中无数据，跳过")
-            continue
+            return
         sub["change"] = sub["close"].diff()
         sub["pct_change"] = sub["close"].pct_change()
         out = sub[["date", "open", "close", "high", "low", "volume",
                    "change", "pct_change"]].copy()
-        out["PE"] = out["PS"] = out["PB"] = out["DYR"] = np.nan
-        out = out[ac_header]
-        out.to_csv(stock_data / f"{aid}.csv", index=False)
+        if with_fund:  # stock_data 含空 PE/PS/PB/DYR 列；index_data 不含
+            out["PE"] = out["PS"] = out["PB"] = out["DYR"] = np.nan
+            out = out[["date", "open", "close", "high", "low", "volume",
+                       "change", "pct_change", "PE", "PS", "PB", "DYR"]]
+        out.to_csv(out_dir / f"{aid}.csv", index=False)
+
+    # 1) stock_data：可交易持仓（15，含空 fundamentals）
+    for aid in tradable_ids:
+        _write_csv(aid, stock_data, with_fund=True)
+    # 1b) index_data：宏观/状态信号（5，不持仓，供 Screener GetIndexDataTool 读取）
+    for aid in signal_ids:
+        _write_csv(aid, index_data, with_fund=False)
 
     # 2) date.json：trading_days = 面板全量日期升序；current_date = 基准日（前向起点）
     trading_days = sorted(panel["date"].unique().tolist())
@@ -119,7 +127,7 @@ def build_alpha_crafter(panel: pd.DataFrame, assets_cfg: dict,
     (persistent / "date.json").write_text(
         json.dumps(date_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 3) account.json：初始现金 + watch_list = 19 资产 + 空持仓/订单
+    # 3) account.json：初始现金 + watch_list = 15 可交易持仓 + 空持仓/订单
     initial_capital = 10_000_000.0
     account = {
         "total_assets": initial_capital,
@@ -132,7 +140,7 @@ def build_alpha_crafter(panel: pd.DataFrame, assets_cfg: dict,
         "net_position_rate": 0.0,
         "positions": [],
         "orders": [],
-        "watch_list": asset_ids,
+        "watch_list": tradable_ids,   # 仅可交易持仓（15）；信号不进 watch_list
     }
     (persistent / "account.json").write_text(
         json.dumps(account, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -140,7 +148,7 @@ def build_alpha_crafter(panel: pd.DataFrame, assets_cfg: dict,
     # 4) 每月 1 日宏观新闻（占位）。AC 的 get_news 按 publish_date ≤ current_date 过滤，
     #    1 日发布当月即可被 Screener 读到 → 实现"每月 1 日注入新闻"。
     months = _month_first_days(baseline, assets_cfg["online_end"])
-    for aid in asset_ids:
+    for aid in tradable_ids:   # 每月新闻仅注入可交易持仓（信号无需新闻）
         items = [{
             "publish_date": f"{m} 09:00:00",
             "title": f"[{aid}] monthly macro brief ({m[:7]}) — 待填世界线叙事",
@@ -155,7 +163,8 @@ def build_alpha_crafter(panel: pd.DataFrame, assets_cfg: dict,
 
     print(f"  ✅ AC session: {dst}")
     print(f"     trading_days={len(trading_days)}  current_date={baseline}  "
-          f"assets={len(asset_ids)}  months_of_news={len(months)}")
+          f"tradable={len(tradable_ids)}(stock_data)  signals={len(signal_ids)}(index_data)  "
+          f"months_of_news={len(months)}")
     return dst
 
 
@@ -177,10 +186,9 @@ def build_factor_miner(panel: pd.DataFrame, assets_cfg: dict,
     cfg_src = HERE / "FactorMiner" / "factorminer" / "configs" / "default.yaml"
     cfg_dst = HERE / "FactorMiner" / "factorminer" / "configs" / "walkforward.yaml"
     text = cfg_src.read_text(encoding="utf-8")
-    note = ("# [walk-forward 小修] 19 资产前向走步配置；"
-            "execution.cost_bps=3.0 已在 default.yaml 统一为单边 3bps。\n"
-            f"# 面板：data/panel.parquet（{len(fm)} 行，"
-            f"{fm['asset_id'].nunique()} 资产）\n")
+    note = ("# [walk-forward] 前向走步配置；execution.cost_bps=3.0 已统一为单边 3bps。\n"
+            f"# 面板：data/panel.parquet（{len(fm)} 行，{fm['asset_id'].nunique()} 资产，"
+            "15 可交易 + 5 信号）\n")
     cfg_dst.write_text(note + text, encoding="utf-8")
 
     print(f"  ✅ FM panel: {panel_path}  ({len(fm)} rows, "

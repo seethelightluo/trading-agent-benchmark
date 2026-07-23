@@ -7,7 +7,7 @@
 
 ## 0. 一句话现状
 
-- ✅ **数据链路全通**：19 基准资产 warmup 真实日频 (2020-01-02 ~ 2026-07-16) + 9 条世界线在线合成日频 (2026-07-17 ~ 2030-12-31)。
+- ✅ **数据链路全通**：20 资产（15 可交易 + 5 信号）warmup 真实日频 (2020-01-02 ~ 2026-07-16) + 9 条世界线在线合成日频 (2026-07-17 ~ 2035-12-31，逐 WL 末阶段)。
 - ✅ **dryrun 全链路验证**：`build_inputs` → `walk_forward --mode dryrun` 游标/防穿越/每月新闻逻辑通过。
 - ⛔ **live LLM 运行需 API Key**：AlphaCrafter (Trader/Miner/Screener) 与 FactorMiner (LLM 因子矿工) 都要 OpenAI 兼容 LLM；本机未配。提供 key 后即可 `--mode ac/fm/both` 实跑（见 §4）。
 
@@ -100,7 +100,7 @@ OPENAI_API_KEY=sk-...
 模型在 `alphacrafter/config.yaml`（默认 `gpt-5.3-codex`）+ `sandbox/<session>/config/models.json`。
 FactorMiner：LLM 接口见 `FactorMiner/` 配置（`factorminer/agent/llm_interface.py`）。
 
-> 本机当前只有 Claude Code 会话的 Anthropic 凭据（`ANTHROPIC_*`），**无 OpenAI 兼容 key**。提供任一 OpenAI 兼容端点（含可指向 Anthropic 的网关）即可实跑。日频×4.5年×19资产×9世界线×两框架的 LLM 调用量巨大，建议先用 `--limit` 小样本试跑。
+> 本机当前只有 Claude Code 会话的 Anthropic 凭据（`ANTHROPIC_*`），**无 OpenAI 兼容 key**。提供任一 OpenAI 兼容端点（含可指向 Anthropic 的网关）即可实跑。日频×9年×20资产(15可交易+5信号)×9世界线×两框架的 LLM 调用量巨大，建议先用 `--limit` 小样本试跑。
 
 ### 4b. 摩擦（已内置，无需再动）
 

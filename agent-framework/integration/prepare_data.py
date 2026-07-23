@@ -3,7 +3,7 @@
 输入契约（一张长表，CSV/Parquet 均可），列：
     date(或 datetime/trade_date), asset_id(或 symbol/ticker),
     open, high, low, close, volume [, amount]
-覆盖 2020-01-01 → 2030-12-31 的全部交易日（2020~2026.7.16 为 warm-up 历史，
+覆盖 2020-01-01 → 2035-12-31（各WL末阶段）的全部交易日（2020~2026.7.16 为 warm-up 历史，
 2026.7.16~2030 为前向世界线未来）。每资产可不等长（停牌/休市）。
 
 输出：

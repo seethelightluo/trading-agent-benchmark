@@ -6,7 +6,7 @@ make_panel.py — 从 asset-daily-data/<asset_id>.csv 重建规范长表 panel.p
 fetch_daily_data.py 末尾已内联同样的逻辑，本脚本是"只重组件"的轻量入口。
 
 用法
-  python make_panel.py                    # 19 基准资产，≤2026-07-16
+  python make_panel.py                    # 20 资产(15 可交易+5 信号)，≤2026-07-16
   python make_panel.py --all              # 含 KOSPI/USDKRW/JP_SEMI_EQUIP 等全部
   python make_panel.py --end 2026-07-16
 """

@@ -48,7 +48,7 @@ ASSET_SPEC: list[dict] = [
          baseline=5100, note="",
          sources=[("yahoo", "^STOXX50E"), ("em_global", "欧洲Stoxx50指数"), ("sina_global", "欧洲Stoxx50指数")]),
     dict(asset_id="KOSPI", name="韩国KOSPI", klass="equity", unit="指数点",
-         baseline=None, note="WL3 特有，非 19 基准资产",
+         baseline=None, note="WL3 特有，非基准资产",
          sources=[("yahoo", "^KS11"), ("sina_global", "首尔综合指数")]),
     # ---- 商品期货（sina foreign futures 优先，稳定；铜 sina 报价 cents/lb → scale 0.01）----
     dict(asset_id="XAU", name="黄金", klass="commodity", unit="USD/oz",
@@ -82,10 +82,13 @@ ASSET_SPEC: list[dict] = [
          baseline=6.78, note="BOC 美元央行中间价/100",
          sources=[("boc_usdcny", None), ("em_forex", "USDCNH"), ("yahoo", "CNY=X")]),
     dict(asset_id="USDJPY", name="美元/日元", klass="fx", unit="汇率",
-         baseline=162, note="WL5 特有；BOC 美元/日元交叉",
+         baseline=162, note="WL5 特有；BOC 美元/日元交叉；用于日经225 USD 折算",
          sources=[("boc_usdjpy", None), ("em_forex", "USDJPY"), ("yahoo", "JPY=X")]),
+    dict(asset_id="EURUSD", name="欧元/美元", klass="fx", unit="汇率",
+         baseline=1.08, note="BOC 欧元/美元交叉；用于斯托克50 USD 折算（P_usd=P×EURUSD）",
+         sources=[("boc_eur", None), ("em_forex", "EURUSD"), ("yahoo", "EURUSD=X")]),
     dict(asset_id="USDKRW", name="美元/韩元", klass="fx", unit="汇率",
-         baseline=None, note="WL3 特有，非 19 基准资产；BOC 美元/韩国元交叉",
+         baseline=None, note="WL3 特有，非基准资产；BOC 美元/韩国元交叉",
          sources=[("boc_usdkrw", None), ("em_forex", "USDKRW"), ("yahoo", "KRW=X")]),
     # ---- 波动率 ----
     dict(asset_id="VIX", name="波动率指数", klass="vol", unit="指数",
@@ -97,12 +100,33 @@ ASSET_SPEC: list[dict] = [
          sources=[("proxy_jp_semi", None)]),
 ]
 
-# 19 基准资产（与 agent-framework/ASSETS.yaml 一致）—— make_panel 默认仅入这些
-BENCHMARK_ASSET_IDS = [
+# === 资产口径（2026-07-22 关键修订，见 plan.md §7）===
+# 数据层全量 = 20 = 15 可交易 + 5 信号。信号项（DXY/USDCNY/USDJPY/EURUSD/VIX）仅作 Agent
+# 输入特征，不进持仓权重向量 w_t；其中 USDCNY/USDJPY/EURUSD 兼做对应外币资产 USD 折算。
+
+# 可交易持仓（15）：权益8 + 商品3 + 加密2 + 债券2
+TRADABLE_ASSET_IDS = [
     "000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX",
     "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y",
-    "DXY", "USDCNY", "USDJPY", "VIX",
 ]
+
+# 宏观/状态信号（5）：仅特征，不持仓
+SIGNAL_ASSET_IDS = ["DXY", "USDCNY", "USDJPY", "EURUSD", "VIX"]
+
+# 数据层基准资产（make_panel / gen_worldline_online 默认全量）：20
+BENCHMARK_ASSET_IDS = TRADABLE_ASSET_IDS + SIGNAL_ASSET_IDS
+
+# 原生计价货币 → USD 折算（§7.2）。op: div=P/rate, mul=P×rate。rate 为汇率 asset_id 或常数。
+# 未列出的（SPX/NDX/SOX/XAU/COPPER/WTI/BTC/ETH/US10Y）原生 USD，无需折算。
+# HSI 用 HKD-USD 联系汇率常数 7.80（peg，无需抓取）。
+TO_USD = {
+    "000300.SH": dict(ccy="cny", rate="USDCNY", op="div"),
+    "000688.SH": dict(ccy="cny", rate="USDCNY", op="div"),
+    "CN10Y":     dict(ccy="cny", rate="USDCNY", op="div"),
+    "HSI":       dict(ccy="hkd", rate=7.80,     op="div"),  # 联系汇率常数
+    "N225":      dict(ccy="jpy", rate="USDJPY", op="div"),
+    "SX5E":      dict(ccy="eur", rate="EURUSD", op="mul"),
+}
 
 # 铜 USD/lb → USD/吨（1 ton = 2204.62262 lb）
 COPPER_LB_TO_TON = 2204.62262

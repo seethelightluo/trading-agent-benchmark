@@ -18,7 +18,7 @@ fetch_daily_data.py — 抓取 9 条世界线全部可交易资产的日频数�
   <asset_id>.csv         date,open,high,low,close,volume[,adjclose]
   all_close_wide.csv     日期并集 × 资产收盘宽表（非交易日空值, 预期）
   COPPER_USD_PER_TON.csv 铜 USD/吨 = close × 2204.62262
-  panel.parquet / panel.csv  规范长表(仅 19 基准资产, ≤2026-07-16) — 给适配器
+  panel.parquet / panel.csv  规范长表(20 资产=15可交易+5信号, ≤2026-07-16) — 给适配器
   COVERAGE.md            每资产: 来源/ticker/单位/起止/行数/缺失/基线比对/所用源
 
 用法
@@ -289,6 +289,14 @@ def f_boc_usdkrw(symbol, start, end):
     return _close_only(u / k, "BOC 美元/韩国元 cross")
 
 
+def f_boc_eur(symbol, start, end):
+    """EURUSD = BOC 欧元/美元 央行中间价比（国内直连，免 Yahoo）。
+    两边均为「CNY per 100 外币」，比值 = EUR/USD（USD per EUR）。"""
+    e = _boc_close("欧元", start, end).set_index("date")["v"]
+    u = _boc_close("美元", start, end).set_index("date")["v"]
+    return _close_only(e / u, "BOC 欧元/美元 cross")
+
+
 def f_boc_dxy(symbol, start, end):
     """DXY = 官方篮子公式，由 BOC 6 成分货币交叉汇率合成（国内，免 Yahoo）。"""
     comps = {"EUR": "欧元", "JPY": "日元", "GBP": "英镑",
@@ -451,7 +459,7 @@ SOURCES = {
     "em_global": f_em_global, "em_futures": f_em_futures, "em_forex": f_em_forex,
     "sox": f_sox, "us10y": f_us10y, "cn10y": f_cn10y, "binance": f_binance,
     "boc_usdcny": f_boc_usdcny, "boc_usdjpy": f_boc_usdjpy,
-    "boc_usdkrw": f_boc_usdkrw, "boc_dxy": f_boc_dxy,
+    "boc_usdkrw": f_boc_usdkrw, "boc_eur": f_boc_eur, "boc_dxy": f_boc_dxy,
     "yahoo": f_yahoo, "cboe_vix": f_cboe_vix, "proxy_jp_semi": f_proxy_jp_semi,
 }
 
@@ -652,7 +660,7 @@ def write_coverage(results, outdir):
           "- **US10Y/CN10Y**：`close` 为收益率百分数（4.30 = 4.30%）。ASSETS.yaml 基线为小数（0.043），比对时 ×100。",
           "- **COPPER**：源 HG=F 为 USD/lb，基线表为 USD/吨；另出 `COPPER_USD_PER_TON.csv`（×2204.62262）。",
           "- **SOX/债券/汇率无原生 OHLCV**：open/high/low 用 close 填充、volume=0；不影响日频收益计算。",
-          "- **KOSPI/USDKRW/JP_SEMI_EQUIP**：WL3/WL5 特有，非 19 基准资产；CSV 落盘，默认不进 panel。",
+          "- **KOSPI/USDKRW/JP_SEMI_EQUIP**：WL3/WL5 特有，非基准资产；CSV 落盘，默认不进 panel。",
           "- **基线比对说明**：基线来自 refer.md 的「实际市场估计」，与 2026-07 真实价可能有偏差（尤其 SOX/NDX/CN10Y 估计显著偏离真实）；以真实抓取价为准。",
           "- 宽表 `all_close_wide.csv` 取日期并集，各市场交易日历/节假日不同 → 空值为预期，非缺失。",
           "", "## 3. 复跑", "",
