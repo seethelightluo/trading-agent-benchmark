@@ -1,6 +1,6 @@
 # WAYPOINTS — 各世界线解析的阶段终点（机器解析，供人工核对）
 
-> re-anchor=ON；derive-fx=ON（无轨迹汇率由 DXY 按 β 派生）；price-leads-news=ON（news@段内35%处破裂，先走25%leak）
+> re-anchor=ON；derive-fx=ON（无轨迹汇率由 DXY 按 β 派生）；price-leads-news=ON（news@段内35%处破裂，先走25%leak）；GBB噪声=ON（σ=warmup实现波动率，端点归零命中终点）
 
 ## WL1　阶段终点（5 阶段）　前向终点 = 2035-12-31
 - 阶段结束 2027-12-31：矛盾积累与红线警告

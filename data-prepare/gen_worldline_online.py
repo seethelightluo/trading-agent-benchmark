@@ -37,6 +37,7 @@ import calendar
 import json
 import re
 import sys
+import zlib
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -72,6 +73,9 @@ FX_DERIVE = {"USDCNY", "USDJPY", "EURUSD"}
 # → 价格先于 news 变动；news 绝不先于价格。命中阶段终点不变。
 LEAD_TIME_FRAC = 0.35   # news 在段内 35% 时点破裂（前 35% 时间走 leak）
 LEAD_MOVE_FRAC = 0.25   # leak 占该段总移动的 25%（慢 leak）→ 后 65% 时间走 75%（加速反应）
+
+# 线性资产（收益率/波动率）GBB 加性噪声后的下限（防负值；VIX 历史地板 ~9-10）
+LINEAR_FLOOR = {"VIX": 9.0, "US10Y": 0.05, "CN10Y": 0.05}
 
 
 # --------------------------------------------------------------------------- #
@@ -204,6 +208,38 @@ def compute_fx_betas(panel: pd.DataFrame):
     return betas, dxy_real
 
 
+def compute_realized_vols(panel: pd.DataFrame) -> dict:
+    """每资产 warmup 日频已实现波动率 σ：价格类=日 log-return std；线性类(US10Y/CN10Y/VIX)=日差 std。
+    用于 GBB 日频噪声幅度（确定性、无 AI）。"""
+    sigma = {}
+    for aid, g in panel.groupby("asset_id"):
+        g = g.sort_values("date")
+        c = pd.to_numeric(g["close"], errors="coerce").astype(float)
+        sigma[aid] = float(c.diff().std()) if aid in LINEAR_ASSETS else float(np.log(c).diff().std())
+    return sigma
+
+
+def _bridge_noise(days: list[str], wps: list[str], sigma: float, seed: int) -> np.ndarray:
+    """逐段离散布朗桥噪声（len=len(days)）。每段 [wps[k], wps[k+1]] 独立 BB，
+    在段边界（= 世界线阶段终点 / leak 航点）处归零 → 终点值严格命中。σ=日频波动率。"""
+    noise = np.zeros(len(days))
+    if sigma <= 0:
+        return noise
+    dts = pd.to_datetime(pd.Series(days))
+    for k in range(len(wps) - 1):
+        t0, t1 = pd.Timestamp(wps[k]), pd.Timestamp(wps[k + 1])
+        idx = np.where((dts >= t0) & (dts <= t1))[0]
+        m = len(idx)
+        if m < 3:
+            continue
+        rng = np.random.default_rng(zlib.crc32(f"{seed}|{k}".encode()))
+        eps = rng.normal(0.0, sigma, size=m - 1)        # m-1 增量
+        B = np.concatenate([[0.0], np.cumsum(eps)])     # len=m，B[0]=0
+        u = np.arange(m) / (m - 1)
+        noise[idx] += B - B[-1] * u                     # BB：u=0,1 处为 0（B[0]=0→bb[0]=0）
+    return noise
+
+
 # --------------------------------------------------------------------------- #
 def _insert_leak_waypoints(wps, wpd, ltf, lmf, log):
     """每段 [t0,v0]→[t1,v1] 插入一个'抢跑航点'：news 在 t_news=t0+ltf×段长 破裂，
@@ -226,9 +262,11 @@ def _insert_leak_waypoints(wps, wpd, ltf, lmf, log):
 
 
 def _asset_path(aid, stages, baseline, stats, reanchor, days,
-                lead_time_frac=0.0, lead_move_frac=0.0):
+                lead_time_frac=0.0, lead_move_frac=0.0,
+                sigma=0.0, seed=0, noise=False):
     """单资产在线 close 路径。有世界线轨迹→插值+reanchor；返回 (path, used_worldline: bool)。
-    lead_time_frac>0 时在每段插入抢跑航点（价格先于 news 变动）。"""
+    lead_time_frac>0：每段插入抢跑航点（价格先于 news）。
+    noise & sigma>0：叠加几何布朗桥日频噪声（段边界归零→命中终点与 leak）。"""
     wps, wpd = [], []
     if aid in baseline:
         wps.append(BASELINE_DATE); wpd.append(baseline[aid])
@@ -246,26 +284,44 @@ def _asset_path(aid, stages, baseline, stats, reanchor, days,
             path = st_["real_close"] * raw / wl_base if log else st_["real_close"] + (raw - wl_base)
         else:
             path = raw
+        if noise and sigma > 0:
+            nz = _bridge_noise(days, wps, sigma, seed)   # wps 含 leak+终点 → 边界归零
+            if log:
+                path = path * np.exp(nz)
+            else:
+                path = path + nz
+                floor = LINEAR_FLOOR.get(aid, 0.0)       # 线性资产防负
+                if floor:
+                    path = np.maximum(path, floor)
         return np.asarray(path, dtype=float), True
     return None, False
 
 
 def build_online(stages, baseline, assets: list[str], stats, reanchor: bool,
                  online_end: str, fx_betas: dict, dxy_real: float, derive_fx: bool,
-                 lead_time_frac: float = 0.0, lead_move_frac: float = 0.0):
+                 lead_time_frac: float = 0.0, lead_move_frac: float = 0.0,
+                 vol_map: dict | None = None, wl_num: int = 0, noise: bool = False):
     """返回 online DataFrame[date,asset_id,ohlcv,amount]。
     在线阶段逐 WL 动态终点；信号汇率无世界线轨迹时由 DXY 按 β 派生（derive_fx=True）。
-    lead_time_frac>0：每段插入抢跑航点，价格先于 news 变动（内幕 leak 后加速反应）。"""
+    lead_time_frac>0：每段插入抢跑航点（价格先于 news）。
+    noise & vol_map：叠加 GBB 日频噪声（σ=warmup 实现波动率，端点归零→命中阶段终点与 leak）。"""
     day0 = (pd.Timestamp(BASELINE_DATE) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     days = weekdays(day0, online_end)
+    vol_map = vol_map or {}
+
+    def _seed(aid):
+        return zlib.crc32(f"{wl_num}|{aid}".encode())
+
     # DXY 在线路径（9 条 WL 全有）→ 其累计对数收益供派生缺失汇率
     dxy_path, _ = _asset_path("DXY", stages, baseline, stats, reanchor, days,
-                              lead_time_frac, lead_move_frac)
+                              lead_time_frac, lead_move_frac,
+                              sigma=vol_map.get("DXY", 0.0), seed=_seed("DXY"), noise=noise)
     dxy_logret = np.log(dxy_path / dxy_real) if dxy_path is not None else None
     rows = []
     for aid in assets:
         path, used = _asset_path(aid, stages, baseline, stats, reanchor, days,
-                                 lead_time_frac, lead_move_frac)
+                                 lead_time_frac, lead_move_frac,
+                                 sigma=vol_map.get(aid, 0.0), seed=_seed(aid), noise=noise)
         st_ = stats.get(aid, {"real_close": 1.0, "rng": 0.005, "vol": 0.0})
         if path is None:
             if derive_fx and aid in FX_DERIVE and dxy_logret is not None:
@@ -305,6 +361,8 @@ def main():
                     help=f"news 在段内的破裂时点（占段长比例，默认 {LEAD_TIME_FRAC}）")
     ap.add_argument("--lead-move-frac", type=float, default=LEAD_MOVE_FRAC,
                     help=f"news 破裂前已完成的移动比例（leak，默认 {LEAD_MOVE_FRAC}）")
+    ap.add_argument("--no-noise", action="store_true",
+                    help="关闭 GBB 日频噪声（默认 ON：σ=warmup 实现波动率，端点归零命中阶段终点）")
     ap.add_argument("--outdir", default=str(OUTDIR))
     args = ap.parse_args()
     lead_time_frac = 0.0 if args.no_lead else args.lead_time_frac
@@ -318,6 +376,9 @@ def main():
     assets = BENCHMARK_ASSET_IDS
     stats = warmup_stats(panel)
     fx_betas, dxy_real = compute_fx_betas(panel)
+    vol_map = compute_realized_vols(panel) if not args.no_noise else {}
+    if not args.no_noise:
+        print(f"GBB 噪声 σ（warmup 实现波动率）：{ {k: round(v,4) for k,v in vol_map.items()} }")
     if not args.no_derive_fx:
         print(f"信号汇率 vs DXY 实测 β（派生用）：{ {k: round(v,3) for k,v in fx_betas.items()} }；DXY real={dxy_real:.2f}")
     print(f"warmup 面板 {len(panel)} 行, {panel['asset_id'].nunique()} 资产；"
@@ -327,7 +388,8 @@ def main():
     wp_lines = ["# WAYPOINTS — 各世界线解析的阶段终点（机器解析，供人工核对）", "",
                 f"> re-anchor={'OFF' if args.no_reanchor else 'ON'}；"
                 f"derive-fx={'OFF' if args.no_derive_fx else 'ON（无轨迹汇率由 DXY 按 β 派生）'}；"
-                f"price-leads-news={'OFF' if args.no_lead else f'ON（news@段内{lead_time_frac:.0%}处破裂，先走{lead_move_frac:.0%}leak）'}", ""]
+                f"price-leads-news={'OFF' if args.no_lead else f'ON（news@段内{lead_time_frac:.0%}处破裂，先走{lead_move_frac:.0%}leak）'}；"
+                f"GBB噪声={'OFF' if args.no_noise else 'ON（σ=warmup实现波动率，端点归零命中终点）'}", ""]
 
     for n in wls:
         path = WLDIR / f"wordline{n}.md"
@@ -340,7 +402,8 @@ def main():
                               reanchor=not args.no_reanchor, online_end=wl_end,
                               fx_betas=fx_betas, dxy_real=dxy_real,
                               derive_fx=not args.no_derive_fx,
-                              lead_time_frac=lead_time_frac, lead_move_frac=lead_move_frac)
+                              lead_time_frac=lead_time_frac, lead_move_frac=lead_move_frac,
+                              vol_map=vol_map, wl_num=n, noise=not args.no_noise)
         online.to_csv(outdir / f"WL{n}_online.csv", index=False)
 
         # stage_news.json：每阶段的触发 news，dated 在 news_date（价格 leak 之后）。
