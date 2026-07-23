@@ -133,3 +133,4 @@ data-prepare/asset-daily-data/
 8. **OHLCV 合规**：O/H/L/C 须满足 `low ≤ open,close ≤ high`；非权益资产（债券/汇率/VIX）无原生 volume 时，按规则合成或置 0 并保持全段一致。
 9. **合理波动幅度**：σ 的 AI 输出须落入合理区间（建议年化 0.1~1.0）；极端值（如战争级 VIX 飙升）需与该世界线叙事强度匹配，单日跳变不得超出布朗桥方差允许范围。
 10. **产物与校验**：输出结构与第四节一致（`<ASSET>.csv` + 宽表 + `COVERAGE.md`），并额外生成 `generation_meta.json`（每资产每月：σ、News 摘要、种子、起止锚），便于审计与回溯。
+11. **价格-leads-news（内幕抢跑，强制）**：股价变化**必须先于** news。每阶段段 `[t0, t1]` 内，news 在 `t_news = t0 + LEAD_TIME_FRAC×段长`（默认 0.35）处破裂，到 `t_news` 时价格已完成 `LEAD_MOVE_FRAC`（默认 0.25）的移动（leak），剩余在 news 后加速反应。**绝不允许 news 先预警、股价后动**——即任何阶段事件 news 的 `publish_date` 必须晚于该段价格已出现的明显 leak。命中阶段终点不变。`gen_worldline_online.py` 已实现（`--no-lead` 可关、`--lead-time-frac/--lead-move-frac` 可调），并输出 `WL<n>_stage_news.json`（news dated 在 `news_date`，滞后 leak），`build_inputs --stage-news` 据此把对齐 news 注入 AC Screener。

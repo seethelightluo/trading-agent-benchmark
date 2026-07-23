@@ -72,7 +72,8 @@ def load_panel(path: Path) -> pd.DataFrame:
 # AlphaCrafter
 # --------------------------------------------------------------------------- #
 def build_alpha_crafter(panel: pd.DataFrame, assets_cfg: dict,
-                        session_id: str, template: str = "template_a") -> Path:
+                        session_id: str, template: str = "template_a",
+                        stage_news: list | None = None) -> Path:
     repo = HERE / "AlphaCrafter" / "alphacrafter" / "sandbox"
     src = repo / template
     dst = repo / session_id
@@ -145,26 +146,47 @@ def build_alpha_crafter(panel: pd.DataFrame, assets_cfg: dict,
     (persistent / "account.json").write_text(
         json.dumps(account, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 4) 每月 1 日宏观新闻（占位）。AC 的 get_news 按 publish_date ≤ current_date 过滤，
-    #    1 日发布当月即可被 Screener 读到 → 实现"每月 1 日注入新闻"。
-    months = _month_first_days(baseline, assets_cfg["online_end"])
-    for aid in tradable_ids:   # 每月新闻仅注入可交易持仓（信号无需新闻）
-        items = [{
-            "publish_date": f"{m} 09:00:00",
-            "title": f"[{aid}] monthly macro brief ({m[:7]}) — 待填世界线叙事",
-            "summary": ("占位新闻：每月 1 日注入。请用对应世界线（WL1…WL9）"
-                        "该月的宏观因果与该资产的关键驱动替换本条。"),
-            "source": "worldline-injection",
-            "category": "Macro",
-            "sentiment": "neutral",
-        } for m in months]
+    # 4) 新闻注入。优先用世界线 stage_news（对齐阶段事件，dated 在 news_date=价格 leak 之后）；
+    #    无则回退每月 1 日占位新闻。AC get_news 按 publish_date ≤ current_date 过滤。
+    if stage_news:
+        def _items_for(aid):
+            out = []
+            for st in stage_news:
+                endpts = st.get("asset_endpoints", {}) or {}
+                if aid not in endpts:
+                    continue
+                tgt = endpts[aid]
+                out.append({
+                    "publish_date": f"{st['news_date']} 09:00:00",   # news_date 滞后价格 leak
+                    "title": f"[{aid}] {st.get('title','世界线阶段事件')}",
+                    "summary": (f"世界线阶段「{st.get('title','')}」触发（阶段末 {st.get('stage_end')}）。"
+                                f"该资产阶段末目标 {tgt}。注：价格已提前反映（内幕 leak），本新闻为公开确认。"),
+                    "source": "worldline-stage", "category": "Macro",
+                    "sentiment": "neutral",
+                })
+            return out
+        news_src = "stage_news（对齐世界线，滞后 leak）"
+    else:
+        months = _month_first_days(baseline, assets_cfg["online_end"])
+        def _items_for(aid):
+            return [{
+                "publish_date": f"{m} 09:00:00",
+                "title": f"[{aid}] monthly macro brief ({m[:7]}) — 待填世界线叙事",
+                "summary": ("占位新闻：每月 1 日注入。请用对应世界线该月的宏观因果替换本条。"),
+                "source": "worldline-injection", "category": "Macro", "sentiment": "neutral",
+            } for m in months]
+        news_src = f"monthly 占位（{len(months)} 月）"
+    n_news = 0
+    for aid in tradable_ids:   # 新闻仅注入可交易持仓
+        items = _items_for(aid)
+        n_news = max(n_news, len(items))
         (news_dir / f"{aid}.json").write_text(
             json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"  ✅ AC session: {dst}")
     print(f"     trading_days={len(trading_days)}  current_date={baseline}  "
           f"tradable={len(tradable_ids)}(stock_data)  signals={len(signal_ids)}(index_data)  "
-          f"months_of_news={len(months)}")
+          f"news={news_src} (~{n_news}/资产)")
     return dst
 
 
@@ -221,6 +243,8 @@ def main():
     ap.add_argument("--fm-dir", default=str(HERE / "FactorMiner" / "data"))
     ap.add_argument("--skip-ac", action="store_true")
     ap.add_argument("--skip-fm", action="store_true")
+    ap.add_argument("--stage-news", default="",
+                    help="WL<n>_stage_news.json 路径；提供则按世界线阶段事件注入对齐 news（滞后价格 leak）")
     args = ap.parse_args()
 
     assets_cfg = load_assets(Path(args.assets))
@@ -228,8 +252,15 @@ def main():
     print(f"载入面板：{len(panel)} 行，{panel['asset_id'].nunique()} 资产，"
           f"{panel['date'].min()} ~ {panel['date'].max()}")
 
+    stage_news = None
+    if args.stage_news:
+        import json as _json
+        stage_news = _json.loads(Path(args.stage_news).read_text(encoding="utf-8"))
+        print(f"载入阶段新闻：{len(stage_news)} 条（{stage_news[0].get('news_date') if stage_news else '-'} 起）")
+
     if not args.skip_ac:
-        build_alpha_crafter(panel, assets_cfg, args.ac_session, args.ac_template)
+        build_alpha_crafter(panel, assets_cfg, args.ac_session, args.ac_template,
+                            stage_news=stage_news)
     if not args.skip_fm:
         build_factor_miner(panel, assets_cfg, Path(args.fm_dir))
 

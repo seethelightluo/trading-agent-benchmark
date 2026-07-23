@@ -63,26 +63,15 @@
 ### ✅ warmup（2020-01-02 ~ 2026-07-16）：**全部汇率/信号齐全且为真实值**
 20 资产 CSV 全部落盘：8 权益 + 3 商品 + 2 加密 + 2 债券 + 5 信号(DXY/USDCNY/USDJPY/EURUSD/VIX)，外加 WL 特有 KOSPI/USDKRW/JP_SEMI_EQUIP。0 NaN。
 
-### ⚠️ 在线合成（2026-07-17 ~ 2035-12-31）：**汇率/信号"在场但部分是平的"**
-合成数据由世界线 `.md` 的阶段终点表插值而来。**只有世界线表格里写明轨迹的资产才会动；没写的被 flat-hold（常数）**。逐资产世界线覆盖：
+### ✅ 在线合成（2026-07-17 ~ 2035-12-31）：**汇率缺口已补 + 价格-leads-news 已实现**
+（初版曾发现 EURUSD/USDJPY/USDCNY 在多条 WL 为 flat，已修复。）
 
-| 信号资产 | 世界线表格里有其轨迹的 WL | 在线阶段表现 |
-|---|---|---|
-| DXY（美元指数） | 全部 9 条 | ✅ 全动 |
-| VIX | 全部 9 条 | ✅ 全动 |
-| USDCNY | WL1,4,7,9（4 条） | ⚠️ 仅 4 条动，其余 5 条 flat |
-| USDJPY | WL5（1 条） | ⚠️ 仅 WL5 动，其余 8 条 flat |
-| EURUSD | **无任何一条** | ❌ 9 条全 flat（世界线成文时未含 EURUSD，§7 后补仅为折算） |
-
-**所以你的判断基本正确**：2020-2026 的货币汇率是真实齐全的；2026-2035 的在线阶段里，**DXY/VIX 有轨迹，但 USDJPY（仅 WL5）、EURUSD（全无）、USDCNY（仅 4 条）是平的/缺失的**。
-
-### 影响与建议
-- EURUSD/USDJPY 在线为常数 → ① Screener 的汇率信号无信息量；② §7.2 的 USD 折算在在线阶段退化为"只换本币收益、不含汇率变动"。
-- **建议补法**（待你拍板）：对世界线未给轨迹的信号汇率，用 warmup 实测的"该汇率 vs DXY"弹性，由该 WL 的 DXY 路径派生（DXY 9 条全有）。EUR 是 DXY 主成分(57.6%)，派生最稳；JPY(13.6%)/CNY(管理汇率)次之。或由你为各 WL 补汇率叙事。
+- **汇率缺口修复**（commit `0e0798c`）：世界线表格未给轨迹的信号汇率（EURUSD 全 9 条、USDJPY 8 条、USDCNY 5 条）现由 warmup 实测"汇率 vs DXY"的 β 派生。β：EURUSD −1.063、USDJPY +0.889、USDCNY +0.303。有世界线轨迹的（USDJPY@WL5、USDCNY@WL1/4/7/9）保留原轨迹。`--no-derive-fx` 可关。
+- **价格-leads-news（内幕抢跑，commit `194f9cf`）**：每阶段段内 news 在 35% 时点破裂，此前价格已走 25%（leak），剩余 news 后加速反应；**价格先于 news，news 绝不先于价格**；命中阶段终点不变。验证 WL1：SPX 闪电战 7760→(news)7013→5177（leak 29%）、VIX 24→40→86（leak 25%）。输出 `WL<n>_stage_news.json`，`build_inputs --stage-news` 据此把对齐 news 注入 AC Screener（news_date 滞后 leak）。`--no-lead/--lead-time-frac/--lead-move-frac` 可调。
 
 ---
 
-## 四、尚未做 / 阻塞项
+## 四、尚未做 / 阻塞项（2026-07-23 更新）
 - ⛔ **live LLM 跑批**：AC（gpt-5.3-codex，需 OPENAI_API_KEY）+ FM（LLM 因子矿工）。本机仅有 Claude Code 会话的 Anthropic 凭据，无 OpenAI 兼容 key。dryrun 已通；live 待 key。
-- ⚠️ AI-2 的全部改动**尚未 git 提交**（在工作区），process.md 之后应一并提交保存。
-- FM 依赖（torch CPU + sklearn/xgboost 等）大部分已装；FactorMiner 在真实 panel 上的因子评估（MockProvider，无需 key）可作为下一步产出。
+- ✅ **FM 真实 panel 管线已验证**（commit `194f9cf`）：装齐依赖（xgboost 3.3.0，uv+清华源）、修 `cli._doctor_checks` find_spec bug、`fm_mock_real.yaml`（真实 panel+MockProvider）；`mine` 端到端跑通 34007 行/20 资产，产出 mining.log/factor_lifecycle.jsonl/session.json（library 空：mock 因子过不了 IC 准入，真实 key 下才填充）→ 管线本身已验证。产物在 `report-and-output/fm_warmup_mock/`。
+- ✅ AI-2 的 §7 架构改动 + FX 派生 + 价格-leads-news + FM 验证**均已 git 提交并推送**（commits `e4a8f66`/`0e0798c`/`194f9cf`）。
