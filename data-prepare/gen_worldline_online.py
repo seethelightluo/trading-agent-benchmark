@@ -2,6 +2,8 @@
 """
 gen_worldline_online.py — 由 9 条世界线的阶段终点表，生成在线阶段合成日频路径
 
+**生成方法严谨可复现，详见 `data-prepare/process.md`**（σ 取法 / GBB 噪声采样 / 种子 / leak / FX 派生 / re-anchor）。
+
 在线阶段 2026-07-17 ~ 各WL末阶段（9 条 WL 均至 2035-12-31）的「未来行情」无法实测；由 wordline-simple/wordline1..9.md
 每阶段的资产终点价格插值出日频 close，再拼到 warmup 真实数据后，形成完整 2020-2030 面板，
 供 walk_forward 在线滚动（agent 只能看到 ≤ t 的切片，防穿越）。
