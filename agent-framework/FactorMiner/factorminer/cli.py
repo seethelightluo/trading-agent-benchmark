@@ -630,7 +630,13 @@ def _doctor_checks(cfg, raw: dict, output_dir: Path) -> list[dict]:
         "faiss-cpu": "faiss",
     }
     for package, module in optional_modules.items():
-        if find_spec(module) is None:
+        # find_spec may RAISE ModuleNotFoundError for broken namespace packages
+        # (e.g. a partial 'google' namespace), not just return None. Guard it.
+        try:
+            spec = find_spec(module)
+        except ModuleNotFoundError:
+            spec = None
+        if spec is None:
             checks.append(_check("warning", f"optional:{package}", "Not installed"))
         else:
             checks.append(_check("ok", f"optional:{package}", "Installed"))

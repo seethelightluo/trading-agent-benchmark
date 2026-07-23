@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import json
 import re
 import sys
 from datetime import date, timedelta
@@ -64,6 +65,13 @@ LINEAR_ASSETS = {"US10Y", "CN10Y", "VIX"}  # 收益率/波动率：水平线性�
 # 信号汇率：世界线表格未给轨迹时，由 DXY（9 条 WL 全有）按 warmup 实测 β 派生，避免在线阶段 flat。
 # EUR 是 DXY 主成分(57.6%)→β 最显著；JPY(13.6%)、CNY(管理汇率)次之。
 FX_DERIVE = {"USDCNY", "USDJPY", "EURUSD"}
+
+# === 价格-leads-news（内幕抢跑）参数 ===
+# 每个阶段段 [t0=上阶段末, t1=本阶段末] 内，news 在 t_news = t0 + LEAD_TIME_FRAC×段长 处破裂。
+# 到 t_news 时价格已完成 LEAD_MOVE_FRAC 比例的移动（抢跑/leak），剩余在 news 后加速反应。
+# → 价格先于 news 变动；news 绝不先于价格。命中阶段终点不变。
+LEAD_TIME_FRAC = 0.35   # news 在段内 35% 时点破裂（前 35% 时间走 leak）
+LEAD_MOVE_FRAC = 0.25   # leak 占该段总移动的 25%（慢 leak）→ 后 65% 时间走 75%（加速反应）
 
 
 # --------------------------------------------------------------------------- #
@@ -197,8 +205,30 @@ def compute_fx_betas(panel: pd.DataFrame):
 
 
 # --------------------------------------------------------------------------- #
-def _asset_path(aid, stages, baseline, stats, reanchor, days):
-    """单资产在线 close 路径。有世界线轨迹→插值+reanchor；返回 (path, used_worldline: bool)。"""
+def _insert_leak_waypoints(wps, wpd, ltf, lmf, log):
+    """每段 [t0,v0]→[t1,v1] 插入一个'抢跑航点'：news 在 t_news=t0+ltf×段长 破裂，
+    此时价格已到 v_leak（按 lmf 向终点插值）。interp_waypoints 过该点 → leak 后加速。
+    log=True 时 v_leak 在对数空间内插（v0×(v1/v0)^lmf），与 log-linear 插值一致。"""
+    if ltf <= 0 or len(wps) < 2:
+        return wps, wpd
+    nwps, nwpd = [wps[0]], [wpd[0]]
+    for k in range(len(wps) - 1):
+        t0, t1 = pd.Timestamp(wps[k]), pd.Timestamp(wps[k + 1])
+        v0, v1 = float(wpd[k]), float(wpd[k + 1])
+        dur = (t1 - t0).days
+        if dur <= 1:
+            nwps.append(wps[k + 1]); nwpd.append(wpd[k + 1]); continue
+        t_news = t0 + pd.Timedelta(days=int(round(dur * ltf)))
+        v_leak = v0 * (v1 / v0) ** lmf if log else v0 + lmf * (v1 - v0)
+        nwps.append(t_news.strftime("%Y-%m-%d")); nwpd.append(v_leak)
+        nwps.append(wps[k + 1]); nwpd.append(wpd[k + 1])
+    return nwps, nwpd
+
+
+def _asset_path(aid, stages, baseline, stats, reanchor, days,
+                lead_time_frac=0.0, lead_move_frac=0.0):
+    """单资产在线 close 路径。有世界线轨迹→插值+reanchor；返回 (path, used_worldline: bool)。
+    lead_time_frac>0 时在每段插入抢跑航点（价格先于 news 变动）。"""
     wps, wpd = [], []
     if aid in baseline:
         wps.append(BASELINE_DATE); wpd.append(baseline[aid])
@@ -209,6 +239,7 @@ def _asset_path(aid, stages, baseline, stats, reanchor, days):
     st_ = stats.get(aid, {"real_close": 1.0})
     if wps:
         log = aid not in LINEAR_ASSETS
+        wps, wpd = _insert_leak_waypoints(wps, wpd, lead_time_frac, lead_move_frac, log)
         raw = interp_waypoints(days, wps, wpd, log=log)
         if reanchor:
             wl_base = wpd[0]
@@ -220,17 +251,21 @@ def _asset_path(aid, stages, baseline, stats, reanchor, days):
 
 
 def build_online(stages, baseline, assets: list[str], stats, reanchor: bool,
-                 online_end: str, fx_betas: dict, dxy_real: float, derive_fx: bool):
+                 online_end: str, fx_betas: dict, dxy_real: float, derive_fx: bool,
+                 lead_time_frac: float = 0.0, lead_move_frac: float = 0.0):
     """返回 online DataFrame[date,asset_id,ohlcv,amount]。
-    在线阶段逐 WL 动态终点；信号汇率无世界线轨迹时由 DXY 按 β 派生（derive_fx=True）。"""
+    在线阶段逐 WL 动态终点；信号汇率无世界线轨迹时由 DXY 按 β 派生（derive_fx=True）。
+    lead_time_frac>0：每段插入抢跑航点，价格先于 news 变动（内幕 leak 后加速反应）。"""
     day0 = (pd.Timestamp(BASELINE_DATE) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     days = weekdays(day0, online_end)
     # DXY 在线路径（9 条 WL 全有）→ 其累计对数收益供派生缺失汇率
-    dxy_path, _ = _asset_path("DXY", stages, baseline, stats, reanchor, days)
+    dxy_path, _ = _asset_path("DXY", stages, baseline, stats, reanchor, days,
+                              lead_time_frac, lead_move_frac)
     dxy_logret = np.log(dxy_path / dxy_real) if dxy_path is not None else None
     rows = []
     for aid in assets:
-        path, used = _asset_path(aid, stages, baseline, stats, reanchor, days)
+        path, used = _asset_path(aid, stages, baseline, stats, reanchor, days,
+                                 lead_time_frac, lead_move_frac)
         st_ = stats.get(aid, {"real_close": 1.0, "rng": 0.005, "vol": 0.0})
         if path is None:
             if derive_fx and aid in FX_DERIVE and dxy_logret is not None:
@@ -264,8 +299,16 @@ def main():
     ap.add_argument("--no-reanchor", action="store_true", help="用世界线绝对价(边界断层)")
     ap.add_argument("--no-derive-fx", action="store_true",
                     help="关闭：世界线无轨迹的信号汇率(EURUSD/USDJPY/USDCNY)保持 flat（默认由 DXY 按 β 派生）")
+    ap.add_argument("--no-lead", action="store_true",
+                    help="关闭价格-leads-news（默认 ON：每段插入抢跑航点，价格先于 news 变动）")
+    ap.add_argument("--lead-time-frac", type=float, default=LEAD_TIME_FRAC,
+                    help=f"news 在段内的破裂时点（占段长比例，默认 {LEAD_TIME_FRAC}）")
+    ap.add_argument("--lead-move-frac", type=float, default=LEAD_MOVE_FRAC,
+                    help=f"news 破裂前已完成的移动比例（leak，默认 {LEAD_MOVE_FRAC}）")
     ap.add_argument("--outdir", default=str(OUTDIR))
     args = ap.parse_args()
+    lead_time_frac = 0.0 if args.no_lead else args.lead_time_frac
+    lead_move_frac = 0.0 if args.no_lead else args.lead_move_frac
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -283,7 +326,8 @@ def main():
     wls = [int(x) for x in re.findall(r"\d", args.only)] if args.only else list(range(1, 10))
     wp_lines = ["# WAYPOINTS — 各世界线解析的阶段终点（机器解析，供人工核对）", "",
                 f"> re-anchor={'OFF' if args.no_reanchor else 'ON'}；"
-                f"derive-fx={'OFF' if args.no_derive_fx else 'ON（无轨迹汇率由 DXY 按 β 派生）'}", ""]
+                f"derive-fx={'OFF' if args.no_derive_fx else 'ON（无轨迹汇率由 DXY 按 β 派生）'}；"
+                f"price-leads-news={'OFF' if args.no_lead else f'ON（news@段内{lead_time_frac:.0%}处破裂，先走{lead_move_frac:.0%}leak）'}", ""]
 
     for n in wls:
         path = WLDIR / f"wordline{n}.md"
@@ -295,8 +339,29 @@ def main():
         online = build_online(stages, baseline, assets, stats,
                               reanchor=not args.no_reanchor, online_end=wl_end,
                               fx_betas=fx_betas, dxy_real=dxy_real,
-                              derive_fx=not args.no_derive_fx)
+                              derive_fx=not args.no_derive_fx,
+                              lead_time_frac=lead_time_frac, lead_move_frac=lead_move_frac)
         online.to_csv(outdir / f"WL{n}_online.csv", index=False)
+
+        # stage_news.json：每阶段的触发 news，dated 在 news_date（价格 leak 之后）。
+        # build_inputs 可据此注入对齐的月度新闻（news 滞后价格抢跑）。
+        prev_end = BASELINE_DATE
+        news_records = []
+        for st in stages:
+            if not st.get("end_date"):
+                continue
+            t0, t1 = pd.Timestamp(prev_end), pd.Timestamp(st["end_date"])
+            dur = (t1 - t0).days
+            news_date = (t0 + pd.Timedelta(days=int(round(dur * lead_time_frac)))).strftime("%Y-%m-%d") if dur > 1 else st["end_date"]
+            title = st["header"].split("：", 1)[1].split("（")[0].strip() if "：" in st["header"] else st["header"]
+            news_records.append({
+                "stage_end": st["end_date"], "news_date": news_date,
+                "title": title, "stage_header": st["header"],
+                "asset_endpoints": st["rows"],
+            })
+            prev_end = st["end_date"]
+        (outdir / f"WL{n}_stage_news.json").write_text(
+            json.dumps(news_records, ensure_ascii=False, indent=2), encoding="utf-8")
         full = pd.concat([panel[panel["asset_id"].isin(assets)], online], ignore_index=True)
         full = full.sort_values(["asset_id", "date"]).reset_index(drop=True)
         try:
