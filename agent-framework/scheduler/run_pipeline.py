@@ -86,13 +86,46 @@ def run_ac_wl(wl: int, session: str, cfg: Path, cadence: int,
     return False
 
 
-def run_fm_wl(wl: int, panel: Path, retries: int, backoff: float) -> bool:
-    """跑一条 WL 的 FM 因子挖掘（mock 或 live 取决于 fm config 的 provider），带重试。"""
+def _resample_panel(panel: Path, rule: str, out: Path) -> Path:
+    """把日频长表 resample 到 rule（默认 10B=10 交易日），使 FM 的 quintile 回测
+    每 step 再平衡 = 与 AC 同步的 cadence。OHLCV 聚合：open=first/high=max/low=min/close=last/volume/amount=sum。
+    输出列对齐 FM loader：datetime, asset_id, OHLCV, amount。"""
+    import pandas as pd
+    df = pd.read_parquet(panel) if panel.suffix == ".parquet" else pd.read_csv(panel)
+    df.columns = [c.lower() for c in df.columns]
+    dc = "datetime" if "datetime" in df.columns else "date"
+    df[dc] = pd.to_datetime(df[dc])
+    agg = {c: f for c, f in {"open": "first", "high": "max", "low": "min",
+                             "close": "last", "volume": "sum", "amount": "sum"}.items()
+           if c in df.columns}
+    parts = []
+    for aid, g in df.groupby("asset_id"):
+        r = (g.set_index(dc).sort_index().resample(rule).agg(agg)
+             .dropna(subset=["close"]).reset_index().rename(columns={dc: "datetime"}))
+        r["asset_id"] = aid
+        parts.append(r[["datetime", "asset_id"] + list(agg)])
+    out_df = pd.concat(parts, ignore_index=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out_df.to_parquet(out, index=False)
+    return out
+
+
+def run_fm_wl(wl: int, panel: Path, retries: int, backoff: float,
+              cadence_rule: str = "10B") -> bool:
+    """跑一条 WL 的 FM：先 resample 到 cadence_rule（默认 10B→10 交易日再平衡，与 AC 对齐），
+    再挖掘因子。FM 的再平衡=纯计算(0 LLM)；挖掘(LLM)频次由调度器/调用方决定，与此处的再平衡 cadence 无关。"""
     cfg = FM_REPO / "factorminer" / "configs" / "walkforward.yaml"
     env = {**os.environ, "PYTHONPATH": str(FM_REPO)}
+    panel_res = RESULTS / f"WL{wl}_panel_{cadence_rule}.parquet"
+    try:
+        _resample_panel(panel, cadence_rule, panel_res)
+        print(f"  FM panel resample → {cadence_rule}（{panel_res}）", flush=True)
+    except Exception as e:
+        print(f"  ⚠️ resample 失败({e})，用原日频 panel", flush=True)
+        panel_res = panel
     script = ("from factorminer.cli import main; import sys; "
               "sys.argv=['factorminer','-c',%r,'mine','--data',%r]; main()"
-              % (str(cfg), str(panel)))
+              % (str(cfg), str(panel_res)))
     for attempt in range(1, retries + 1):
         print(f"\n=== WL{wl} FM attempt {attempt}/{retries} ===", flush=True)
         rc = subprocess.call([str(VENV_PY), "-c", script], cwd=str(FM_REPO), env=env)
@@ -108,6 +141,7 @@ def main():
     ap.add_argument("--only", default="", help="逗号分隔 WL 号（默认 1-9 全跑）")
     ap.add_argument("--mode", default="ac", choices=["ac", "fm", "both"])
     ap.add_argument("--cadence", type=int, default=10, help="AC 再平衡频次（交易日/cycle）")
+    ap.add_argument("--fm-cadence", default="10B", help="FM 再平衡 resample 规则（默认 10B=10交易日，与 AC 对齐）")
     ap.add_argument("--max-cycles", type=int, default=300, help="AC run config 的 max_cycles")
     ap.add_argument("--max-retries", type=int, default=5)
     ap.add_argument("--backoff", type=float, default=30.0, help="失败退避秒")
@@ -139,7 +173,7 @@ def main():
             save_state(state_path, state)
             ok = ok and ok_ac
         if args.mode in ("fm", "both") and ok and not st.get("fm_done") and panel.exists():
-            ok_fm = run_fm_wl(wl, panel, args.max_retries, args.backoff)
+            ok_fm = run_fm_wl(wl, panel, args.max_retries, args.backoff, args.fm_cadence)
             st["fm_done"] = ok_fm
             state[key] = st
             save_state(state_path, state)
