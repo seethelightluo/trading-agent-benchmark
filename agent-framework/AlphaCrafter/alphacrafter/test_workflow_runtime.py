@@ -99,6 +99,40 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(checkpoint, 0)
         self.assertEqual(launcher.cycle_records, [])
 
+    def test_only_interrupted_cycle_reuses_resume_inputs(self):
+        launcher = Launcher.__new__(Launcher)
+        launcher.resume = True
+        launcher.max_cycles = 2
+        launcher.miner_ids = ["miner_1"]
+        launcher.miner_agents = {}
+        launcher.cycle_records = []
+        launcher.log_path = "workflow.json"
+        launcher.original_sigint_handler = None
+        launcher.stop_event = MagicMock()
+        launcher.stop_event.is_set.return_value = False
+
+        with (
+            patch.object(launcher, "_setup_signal_handler"),
+            patch.object(launcher, "_get_session_workspace", return_value="workspace"),
+            patch.object(launcher, "_setup_workspace"),
+            patch.object(launcher, "_load_resume_inputs"),
+            patch.object(launcher, "_load_previous_workflow_state", return_value=0),
+            patch.object(launcher, "_create_miner_agent", return_value=MagicMock()),
+            patch.object(launcher, "_create_screener_agent", return_value=MagicMock()),
+            patch.object(launcher, "_create_trader_agent", return_value=MagicMock()),
+            patch.object(launcher, "_run_single_cycle", return_value=True) as run_cycle,
+        ):
+            result = launcher.run()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            run_cycle.call_args_list,
+            [
+                unittest.mock.call(1, is_resume_cycle=True),
+                unittest.mock.call(2, is_resume_cycle=False),
+            ],
+        )
+
     def test_step_reloads_strategy_hook_before_advancing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

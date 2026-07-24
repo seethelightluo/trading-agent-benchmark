@@ -1,4 +1,4 @@
-# plan.md — 世界线可交易资产每日数据抓取与仓库托管
+# plan.md — 世界线基准数据宇宙与 Agent 执行计划
 
 > 创建：2026-07-20　|　目标来源：`data-prepare/wordline-simple/wordline1-9.md` + 统一基线价格表
 
@@ -6,35 +6,22 @@
 
 ## 一、总目标
 
-为 9 条世界线中出现的全部**可交易资产**，抓取 **2020-01-01 至 2026-07-15 的每日价格/收益率数据**，
-作为后续因子挖掘、回测、Agent 决策的基础数据集。以 `wordline` 基线表为资产口径，单位与基线对齐。
+为 9 条世界线准备基准数据宇宙：**15 项可交易资产 + 5 项只读指数/宏观参考**。真实历史严格截至
+**2026-07-15**；从 **2026-07-16** 起的数据均为虚构世界线数据。该数据用于因子挖掘、回测与 Agent
+决策，资产定义以 `data-prepare/asset_spec.py` 和 `agent-framework/ASSETS.yaml` 为单一事实源。
 
-## 二、资产清单（21 项 + 1 可选代理）
+## 二、基准数据宇宙（15 可交易 + 5 只读参考）
 
-| # | 资产 | 中文 | 数据源 | Ticker / 代码 | 单位 | 备注 |
-|---|------|------|--------|--------------|------|------|
-| 1 | CSI300 | 沪深300 | Yahoo | `000300.SS` | 指数点 | |
-| 2 | SP500 | 标普500 | Yahoo | `^GSPC` | 指数点 | |
-| 3 | HSI | 恒生指数 | Yahoo | `^HSI` | 指数点 | |
-| 4 | N225 | 日经225 | Yahoo | `^N225` | 指数点 | |
-| 5 | SX5E | 欧洲斯托克50 | Yahoo | `^STOXX50E` | 指数点 | |
-| 6 | STAR50 | 科创50 | Yahoo | `000688.SS` | 指数点 | |
-| 7 | SOX | 费城半导体 | Yahoo | `^SOX` | 指数点 | |
-| 8 | NDX | 纳斯达克100 | Yahoo | `^NDX` | 指数点 | |
-| 9 | KOSPI | 韩国KOSPI | Yahoo | `^KS11` | 指数点 | WL3 特有 |
-| 10 | GOLD | 黄金 | Yahoo | `GC=F` | USD/oz | COMEX 期货，≈XAU |
-| 11 | COPPER | 铜 | Yahoo | `HG=F` | USD/lb | COMEX；附 USD/吨(×2204.62)列 |
-| 12 | WTI | WTI原油 | Yahoo | `CL=F` | USD/桶 | |
-| 13 | BTC | 比特币 | Binance | `BTCUSDT` | USD(USDT) | klines 日线 |
-| 14 | ETH | 以太坊 | Binance | `ETHUSDT` | USD(USDT) | klines 日线 |
-| 15 | US10Y | 美债10Y收益率 | Yahoo | `^TNX` | % | |
-| 16 | CN10Y | 中债10Y收益率 | akshare | `bond_china_yield`(10年) | % | chinabond.com.cn |
-| 17 | DXY | 美元指数 | Yahoo | `DX-Y.NYB` | 指数 | |
-| 18 | USDCNY | 美元/人民币 | Yahoo | `CNY=X` | 汇率 | |
-| 19 | USDJPY | 美元/日元 | Yahoo | `JPY=X` | 汇率 | WL5 特有 |
-| 20 | USDKRW | 美元/韩元 | Yahoo | `KRW=X` | 汇率 | WL3 特有 |
-| 21 | VIX | 波动率指数 | Yahoo | `^VIX` | 指数 | |
-| 可选 | JP_SEMI_EQUIP | 日本半导体设备指数 | (代理) | `6857.T`+`8035.T` | — | WL5；无公开指数，用 Advantest/Tokyo Electron 等权代理，标注 |
+| 角色 | 类别 | 数量 | 资产 ID |
+|---|---|---:|---|
+| 可交易 | 权益 | 8 | `000300.SH`, `SPX`, `HSI`, `N225`, `SX5E`, `000688.SH`, `SOX`, `NDX` |
+| 可交易 | 商品 | 3 | `XAU`, `COPPER`, `WTI` |
+| 可交易 | 加密 | 2 | `BTC`, `ETH` |
+| 可交易 | 债券 | 2 | `US10Y`, `CN10Y` |
+| 只读参考 | 指数/宏观/汇率 | 5 | `DXY`, `USDCNY`, `USDJPY`, `EURUSD`, `VIX` |
+
+只读参考仅供 Agent 识别宏观状态或完成 USD 折算，不进入持仓权重向量。仓库仍保留旧世界线抓取产生的
+`KOSPI`、`USDKRW`、`JP_SEMI_EQUIP` 文件用于历史兼容和审计，但它们**不属于基准 Agent 输入宇宙**。
 
 ## 三、数据源与口径
 
@@ -63,12 +50,12 @@ data-prepare/asset-daily-data/
 | 1 | `git init` + `.gitignore` + user 配置 + 初始提交 | ✅ 完成（commit ea78c80，314 文件） |
 | 2 | `uv venv .venv` + 装 pandas/requests/akshare/pyarrow/pyyaml | ✅ 完成 |
 | 3 | 写 `data-prepare/fetch_daily_data.py`（多源 + 重试 + 宽表 + COVERAGE） | ✅ 完成（含 asset_spec/make_panel） |
-| 4 | 运行抓取，产出 `asset-daily-data/`（19 基准 + 3 世界线特有） | ✅ 完成（2020-01-02 ~ 2026-07-21，0 NaN） |
+| 4 | 运行抓取，产出 `asset-daily-data/`（20 基准 + 3 历史兼容产物） | ✅ 完成（Agent 真实历史截断至 2026-07-15） |
 | 5 | 校验：每资产日期范围/行数/缺失，与基线 2026-07 价比对 | ✅ 完成（见 `COVERAGE.md`） |
 | 6 | 提交并推送到 GitHub（SSH） | ✅ 完成（commit b086837+） |
-| 7 | 合成在线世界线日频（2026-07-17 ~ 2035-12-31，逐 WL 末阶段） | ✅ 完成（`gen_worldline_online.py` + 9 条 WL，re-anchor） |
+| 7 | 合成在线世界线日频（2026-07-16 ~ 2035-12-31，逐 WL 末阶段） | ✅ 完成（`gen_worldline_online.py` + 9 条 WL，re-anchor） |
 | 8 | build_inputs + walk_forward dryrun 全链路 | ✅ 完成（详见 [`RUN.md`](RUN.md)） |
-| 9 | live LLM 前向跑批（ac/fm/both） | ⛔ 待 API Key（dryrun 已验证逻辑） |
+| 9 | live LLM 前向跑批（ac/fm/both） | 🟡 AC 2-cycle 真烟测完成；全量待受控启动 |
 
 ## 六、注意事项
 
@@ -80,8 +67,7 @@ data-prepare/asset-daily-data/
 
 ## 七、Agent 配置宇宙与计价基准（关键架构修订 · 2026-07-22）
 
-> 本节决定 **Agent 如何使用数据**，适用于 2026-07-16 之后的前向持仓阶段。
-> 第二节"资产清单"是**数据抓取口径**（更宽，含信号与 WL 特有项）；本节是 **Agent 持仓配置口径**（更窄）。
+> 本节细化第二节的同一套 **15 可交易 + 5 只读参考**口径，适用于 2026-07-16 之后的虚构前向持仓阶段。
 > 需同步：`agent-framework/ASSETS.yaml`、`integration/asset_universe.py`、`gen_worldline_online.py`。
 
 ### 7.1 可交易持仓宇宙 = 15（汇率 / 波动率剔除为信号）

@@ -770,8 +770,13 @@ class Launcher:
             cycle = current_cycle
             while cycle < self.max_cycles and not self.stop_event.is_set():
                 cycle += 1
-                is_resume = (self.resume and cycle == current_cycle + 1 and current_cycle > 0)
-                should_continue = self._run_single_cycle(cycle, is_resume_cycle=is_resume)
+                # Any interrupted cycle has already been resumed explicitly above.
+                # Later cycles must receive freshly built inputs for their current
+                # date rather than replaying the saved Agent input once more.
+                should_continue = self._run_single_cycle(
+                    cycle,
+                    is_resume_cycle=False,
+                )
                 if not should_continue:
                     break
             

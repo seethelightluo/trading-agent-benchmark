@@ -9,7 +9,8 @@
 - AlphaCrafter（AC）使用 OpenAI **Responses API** 驱动工具循环；FactorMiner（FM）使用 OpenAI **Chat Completions API** 生成因子候选。
 - 2026-07-24 已用一次性凭证验证指定服务：正确 base URL 必须带 `/v1`；`gpt-5.6-terra` 存在，并能返回原生 `function_call`、JSON arguments 和 `call_id`。
 - AC 的正确 CLI 是位置参数：`python main.py wl1 --config run_config.yaml --resume`。上游 README 中的 `--session_id` 与当前代码不一致，不能照抄。
-- 首轮真实冒烟已连续发现并修复/定位多个运行器问题，完整 2-cycle 尚未通过，不能启动全量。
+- WL1 的 2-cycle 真冒烟已完整通过，确认 `gpt-5.6-terra` 能驱动 AC 的 Responses API 工具循环；本轮未使用一次性凭证启动无限全量任务。
+- 数据时间口径已再次锁定：真实历史只到 **2026-07-15**，从 **2026-07-16** 起（包括烟测推进到的 2026-08-13）均为项目生成的虚构世界线数据。
 
 ## 2. 数据如何进入两个 Agent 框架
 
@@ -89,7 +90,7 @@ PYTHONPATH=/home/lxx/trade-agent-benchmark/agent-framework/AlphaCrafter \
 
 ### 3.4 `--resume` 的语义
 
-AC 从 `workflow.json` 找到最后一个 Miner、Screener、Trader 都成功的完整 cycle，并从下一 cycle 继续；各 Agent 还会从自己的日志恢复最后输入。调度器外层再用 `results/run_state.json` 记录每条世界线 AC/FM 是否完成。
+AC 从 `workflow.json` 找到最后一个 Miner、Screener、Trader 都成功的完整 cycle，并从下一 cycle 继续；各 Agent 只在恢复这个首个中断 cycle 时复用自己的日志输入。恢复完成后的后续 cycle 必须按新日期和新 cycle record 构造 fresh context，不能再次回放旧输入。调度器外层再用 `results/run_state.json` 记录每条世界线 AC/FM 是否完成。
 
 注意：重建 session 或删除其 logs 会清掉 AC 的 cycle 恢复点；只删除 `results/run_state.json` 不会删除 AC 内部日志。
 
@@ -165,14 +166,16 @@ tail -f agent-framework/results/run_pipeline.log
 - API 探测：不带 `/v1` 的 `/models` 不是标准 JSON；带 `/v1/models` 正常列出 `gpt-5.6-terra`。
 - Responses tool probe：成功收到 `function_call(name=probe, arguments={"value":7})` 和有效 `call_id`。
 
-当前真实冒烟状态：
+真冒烟最终结果：
 
 - 数据重建成功：83,347 行、20 资产，WL1 起点 `2026-07-16`。
-- AC 已成功启动全部 Miner/Screener/Trader，真实 Miner function calling、`shell` 和 `write_file` 均可工作，证明 `gpt-5.6-terra` 与 AC 工具协议兼容。
-- 冒烟暴露两个运行时问题：Agent shell 找不到 `python`（调度器 PATH 未包含 `.venv/bin`），以及并发 Miner 首次写入时 `workspace/factors`、`workspace/scripts` 尚未创建。
-- 冒烟还暴露数据语义错配：旧提示硬编码 CSI300/数百只股票，Miner 因 15 资产小截面而主动判无效，导致 cycle 1 的 Screener/Trader 正确跳过且时间未前进。
+- 续跑明确命中 `Found incomplete cycle 1; resuming it from agent logs.`，随后 cycle 1、2 均完成，pipeline 输出 `WL1 AC 完成` 和 `1/1 WL 完成`；状态文件标记 `ac_done=true, done=true`。
+- Responses `function_call`、`shell`、`write_file`、`backtest`、`step` 均真实成功；Trader 日志恰有两次 `step`，即每 cycle 一次。沙箱 cadence 将模型请求的 `days=5` 统一覆盖为每轮 10 个交易日。
+- cycle 1：最终 120 日验证回报 -0.10%、Sharpe -0.13、平均仓位 16.82%；虚构 live 10 日回报 +0.91%、平均仓位 20.11%。
+- cycle 2：120 日验证回报 +1.35%、Sharpe 0.46、平均仓位 16.12%；虚构 live 10 日回报 +0.60%、平均仓位 24.64%。
+- 最终虚构游标为 `2026-08-13`；账户净值 10,151,837.894，3 个持仓、6 条订单、15 项 watch list，证明策略产生了真实模拟动作而非空跑。
 
-本轮已修复并通过本地回归、待提交/真实复测：
+本轮已修复并完成复测：
 
 - AC 子进程 PATH 将 uv 环境 `.venv/bin` 放在首位，同时保留继承 PATH；Miner 的 `python` 脚本可在同一环境执行。
 - session 构建时确定性预建 `workspace/factors` 和 `workspace/scripts`，消除并发首次写入竞态。
@@ -182,9 +185,11 @@ tail -f agent-framework/results/run_pipeline.log
 - 首次复测中 Miner 已真实执行脚本并持久化因子，Screener 也成功给出 factor ensemble；随后发现 `BacktestTool` 与旧版 `StepTool` 一样缓存 Agent 初始化时的空策略 hook，导致 Trader 改写策略后回测仍为零持仓。
 - `BacktestTool` 现于每次调用前重载 `strategy.py`，并确保结果日志目录存在。针对性单测覆盖初始化 hook 与运行 hook 的切换。
 - 修复后用冒烟中真实生成的策略做 20 日本地回测，得到非零仓位和收益（平均 gross position 约 28.89%），确认不再执行空模板。
-- 本地回归共 10 项通过，另通过 `git diff --check`。
+- 当时本地回归共 10 项通过；本轮加入 resume-context 回归后，目标测试共 12 项通过，另通过 `git diff --check`。
 - 中断发生在 cycle 1 的 Trader 回测期间时，workflow 已有 Miner/Screener 成功项却没有完整 cycle；旧恢复逻辑会把这种状态误判为“全新运行”，浪费已经完成的 Agent 调用。现在首轮存在部分记录时返回 cycle 0 检查点，使 `--resume` 从 Agent 日志续接 cycle 1，并新增对应回归测试。
 - 外部强制终止 AC 子进程可能来不及执行 `BacktestTool` 的 `finally`，本次留下了被临时回测覆盖的 `date.json.current_date`。续跑前只恢复该字段到 WL1 基准日 `2026-07-16`，保留 Agent 日志、因子和交易日历；后续烟测继续观察是否需要将回测状态彻底隔离到临时副本。
+- 2-cycle 通过后发现一个后续语义 bug：恢复 cycle 1 后，旧 `run()` 又把 cycle 2 标为 resume，导致 Miner/Screener 复用 cycle 1 的持久化输入。现已让专用恢复块独占 resume 输入，之后所有 cycle 都使用 fresh context，并增加回归测试断言调用序列为 `(cycle 1, resume=True)`、`(cycle 2, resume=False)`。
+- 计划文件历史复核表明：旧版第二节一直是“21+1 抓取清单”，后续提交另加“15+5 Agent 宇宙”，因而形成冲突，不能整文件回滚。现已统一 `plan.md`、`data-prepare/plan.md`、`agent-framework/plan.md` 为 15 可交易 + 5 只读参考，并把 KOSPI、USDKRW、JP_SEMI_EQUIP 标为非基准历史兼容产物；GBB、price-leads-news、USD 折算和 2026-07-15/16 边界均保留。
 
 ## 7. 密钥安全
 
