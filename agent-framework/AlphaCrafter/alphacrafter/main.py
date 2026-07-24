@@ -248,7 +248,20 @@ class Launcher:
             
             return last_complete_cycle
         else:
-            print("No complete cycles found in previous workflow. Starting fresh.")
+            # A first-cycle interruption can leave valid agent logs and partial
+            # workflow entries but no *complete* cycle.  Return the cycle-zero
+            # checkpoint so run() resumes cycle 1 with those agent inputs
+            # instead of discarding the useful work and starting from scratch.
+            partial_cycles = [cycle for cycle in cycles if isinstance(cycle, int) and cycle >= 1]
+            if partial_cycles:
+                first_partial_cycle = min(partial_cycles)
+                checkpoint = first_partial_cycle - 1
+                print(
+                    f"Found incomplete cycle {first_partial_cycle}; "
+                    "resuming it from agent logs."
+                )
+                return checkpoint
+            print("No complete or partial cycles found in previous workflow. Starting fresh.")
             return None
     
     def _load_resume_inputs(self):

@@ -68,6 +68,37 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertIn("Never impose a 50/80/300-instrument minimum", MINER_INSTRUCTION)
         self.assertNotIn("CSI 300 index constituent stocks", QUANTITATIVE_TRADING_INSTRUCTION_A)
 
+    def test_partial_first_cycle_resumes_from_cycle_zero_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "workflow.json"
+            log_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "cycle": 1,
+                            "phase": "miner_miner_1",
+                            "success": True,
+                            "output_text": "factor ready",
+                        },
+                        {
+                            "cycle": 1,
+                            "phase": "screener",
+                            "success": True,
+                            "output_text": "ensemble ready",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            launcher = Launcher.__new__(Launcher)
+            launcher.log_path = str(log_path)
+            launcher.cycle_records = []
+
+            checkpoint = launcher._load_previous_workflow_state()
+
+        self.assertEqual(checkpoint, 0)
+        self.assertEqual(launcher.cycle_records, [])
+
     def test_step_reloads_strategy_hook_before_advancing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -183,6 +183,8 @@ tail -f agent-framework/results/run_pipeline.log
 - `BacktestTool` 现于每次调用前重载 `strategy.py`，并确保结果日志目录存在。针对性单测覆盖初始化 hook 与运行 hook 的切换。
 - 修复后用冒烟中真实生成的策略做 20 日本地回测，得到非零仓位和收益（平均 gross position 约 28.89%），确认不再执行空模板。
 - 本地回归共 10 项通过，另通过 `git diff --check`。
+- 中断发生在 cycle 1 的 Trader 回测期间时，workflow 已有 Miner/Screener 成功项却没有完整 cycle；旧恢复逻辑会把这种状态误判为“全新运行”，浪费已经完成的 Agent 调用。现在首轮存在部分记录时返回 cycle 0 检查点，使 `--resume` 从 Agent 日志续接 cycle 1，并新增对应回归测试。
+- 外部强制终止 AC 子进程可能来不及执行 `BacktestTool` 的 `finally`，本次留下了被临时回测覆盖的 `date.json.current_date`。续跑前只恢复该字段到 WL1 基准日 `2026-07-16`，保留 Agent 日志、因子和交易日历；后续烟测继续观察是否需要将回测状态彻底隔离到临时副本。
 
 ## 7. 密钥安全
 
