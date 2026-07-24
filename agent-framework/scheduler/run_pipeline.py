@@ -35,6 +35,23 @@ VENV_PY = Path("/home/lxx/trade-agent-benchmark/.venv/bin/python")
 ONLINE_DIR = HERE.parent / "data-prepare" / "online-worldline"
 
 
+class EscalatingBackoff:
+    """配额 5h 刷新模型下的重试退避：立即→1分→10分→1小时，封顶 1 小时。
+    失败累加索引；**任一成功立即重置到立即**。共享于全 pipeline（一条 WL 成功后，下条 WL 的失败重新从立即开始）。"""
+    SCHEDULE = [0, 60, 600, 3600]  # 秒：立即 / 1分 / 10分 / 1小时
+
+    def __init__(self):
+        self.idx = 0
+
+    def on_fail(self) -> float:
+        wait = self.SCHEDULE[min(self.idx, len(self.SCHEDULE) - 1)]
+        self.idx += 1
+        return wait
+
+    def on_success(self):
+        self.idx = 0
+
+
 def ac_env(cadence: int) -> dict:
     """AC 子进程环境：再平衡频次 + 继承当前 env（含 LLM key）。"""
     e = os.environ.copy()
@@ -69,21 +86,26 @@ def save_state(path: Path, state: dict) -> None:
 
 
 def run_ac_wl(wl: int, session: str, cfg: Path, cadence: int,
-              retries: int, backoff: float) -> bool:
-    """跑一条 WL 的 AC，带重试。返回是否最终成功。"""
+              bk: EscalatingBackoff) -> bool:
+    """跑一条 WL 的 AC，失败按递增退避(立即→1分→10分→1h)无限重试（配额5h刷新模型）。
+    AC --resume 从最近 cycle 续跑，不丢进度；成功则重置退避。永不放弃（只能手动 kill）。"""
     cmd = [str(VENV_PY), "main.py", "--session_id", session,
            "--config", str(cfg), "--resume"]
-    for attempt in range(1, retries + 1):
-        print(f"\n=== WL{wl} AC attempt {attempt}/{retries} ===\n  $ {' '.join(cmd)}  (cwd={AC_REPO})", flush=True)
+    attempt = 0
+    while True:
+        attempt += 1
+        print(f"\n=== WL{wl} AC attempt {attempt}（退避档{min(bk.idx, len(bk.SCHEDULE)-1)+1}）===\n  $ {' '.join(cmd)}  (cwd={AC_REPO})", flush=True)
         t0 = time.time()
         rc = subprocess.call(cmd, cwd=str(AC_REPO), env=ac_env(cadence))
         dur = time.time() - t0
         if rc == 0:
-            print(f"  ✅ WL{wl} AC 完成（{dur/3600:.1f}h）", flush=True)
+            bk.on_success()
+            print(f"  ✅ WL{wl} AC 完成（{dur/3600:.1f}h），退避已重置", flush=True)
             return True
-        print(f"  ❌ WL{wl} AC rc={rc}（{dur/60:.1f}min），{backoff}s 后 --resume 重试", flush=True)
-        time.sleep(backoff)
-    return False
+        wait = bk.on_fail()
+        print(f"  ❌ WL{wl} AC rc={rc}（{dur/60:.1f}min）；{wait}s 后 --resume 重试（配额5h刷新，递增退避）", flush=True)
+        if wait:
+            time.sleep(wait)
 
 
 def _resample_panel(panel: Path, rule: str, out: Path) -> Path:
@@ -110,11 +132,12 @@ def _resample_panel(panel: Path, rule: str, out: Path) -> Path:
     return out
 
 
-def run_fm_wl(wl: int, panel: Path, retries: int, backoff: float,
-              cadence_rule: str = "10B") -> bool:
+def run_fm_wl(wl: int, panel: Path, bk: EscalatingBackoff,
+              cadence_rule: str = "10B", live: bool = True) -> bool:
     """跑一条 WL 的 FM：先 resample 到 cadence_rule（默认 10B→10 交易日再平衡，与 AC 对齐），
-    再挖掘因子。FM 的再平衡=纯计算(0 LLM)；挖掘(LLM)频次由调度器/调用方决定，与此处的再平衡 cadence 无关。"""
-    cfg = FM_REPO / "factorminer" / "configs" / "walkforward.yaml"
+    再挖掘因子。live=True 用 fm_live.yaml（OpenAI兼容/glm-5.2），False 用 fm_mock_real.yaml。
+    失败按递增退避(立即→1分→10分→1h)无限重试；成功重置。"""
+    cfg = FM_REPO / "factorminer" / "configs" / ("fm_live.yaml" if live else "fm_mock_real.yaml")
     env = {**os.environ, "PYTHONPATH": str(FM_REPO)}
     panel_res = RESULTS / f"WL{wl}_panel_{cadence_rule}.parquet"
     try:
@@ -126,14 +149,19 @@ def run_fm_wl(wl: int, panel: Path, retries: int, backoff: float,
     script = ("from factorminer.cli import main; import sys; "
               "sys.argv=['factorminer','-c',%r,'mine','--data',%r]; main()"
               % (str(cfg), str(panel_res)))
-    for attempt in range(1, retries + 1):
-        print(f"\n=== WL{wl} FM attempt {attempt}/{retries} ===", flush=True)
+    attempt = 0
+    while True:
+        attempt += 1
+        print(f"\n=== WL{wl} FM attempt {attempt}（退避档{min(bk.idx, len(bk.SCHEDULE)-1)+1}，cfg={cfg.name}）===", flush=True)
         rc = subprocess.call([str(VENV_PY), "-c", script], cwd=str(FM_REPO), env=env)
         if rc == 0:
+            bk.on_success()
+            print(f"  ✅ WL{wl} FM 完成，退避已重置", flush=True)
             return True
-        print(f"  ❌ WL{wl} FM rc={rc}，{backoff}s 后重试", flush=True)
-        time.sleep(backoff)
-    return False
+        wait = bk.on_fail()
+        print(f"  ❌ WL{wl} FM rc={rc}；{wait}s 后重试（配额5h刷新，递增退避）", flush=True)
+        if wait:
+            time.sleep(wait)
 
 
 def main():
@@ -143,8 +171,7 @@ def main():
     ap.add_argument("--cadence", type=int, default=10, help="AC 再平衡频次（交易日/cycle）")
     ap.add_argument("--fm-cadence", default="10B", help="FM 再平衡 resample 规则（默认 10B=10交易日，与 AC 对齐）")
     ap.add_argument("--max-cycles", type=int, default=300, help="AC run config 的 max_cycles")
-    ap.add_argument("--max-retries", type=int, default=5)
-    ap.add_argument("--backoff", type=float, default=30.0, help="失败退避秒")
+    ap.add_argument("--fm-mock", action="store_true", help="FM 用 mock provider（默认 live：fm_live.yaml/glm-5.2）")
     ap.add_argument("--state", default=str(RESULTS / "run_state.json"))
     args = ap.parse_args()
 
@@ -152,8 +179,10 @@ def main():
     cfg = write_run_config(args.max_cycles, AC_REPO / "run_config.yaml")
     state_path = Path(args.state)
     state = load_state(state_path)
+    bk = EscalatingBackoff()  # 全 pipeline 共享：立即→1分→10分→1h，成功重置
     print(f"运行器启动：WL={wls} mode={args.mode} cadence={args.cadence} "
-          f"max_cycles={args.max_cycles} retries={args.max_retries}", flush=True)
+          f"max_cycles={args.max_cycles} fm={'mock' if args.fm_mock else 'live'}", flush=True)
+    print(f"  退避档(秒)：{EscalatingBackoff.SCHEDULE}（配额5h刷新模型，成功重置）", flush=True)
     print(f"  AC run_config → {cfg}；状态 → {state_path}", flush=True)
 
     for wl in wls:
@@ -167,13 +196,13 @@ def main():
 
         ok = True
         if args.mode in ("ac", "both") and not st.get("ac_done"):
-            ok_ac = run_ac_wl(wl, session, cfg, args.cadence, args.max_retries, args.backoff)
+            ok_ac = run_ac_wl(wl, session, cfg, args.cadence, bk)
             st["ac_done"] = ok_ac
             state[key] = st
             save_state(state_path, state)
             ok = ok and ok_ac
         if args.mode in ("fm", "both") and ok and not st.get("fm_done") and panel.exists():
-            ok_fm = run_fm_wl(wl, panel, args.max_retries, args.backoff, args.fm_cadence)
+            ok_fm = run_fm_wl(wl, panel, bk, args.fm_cadence, live=not args.fm_mock)
             st["fm_done"] = ok_fm
             state[key] = st
             save_state(state_path, state)

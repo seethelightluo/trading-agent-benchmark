@@ -20,6 +20,11 @@ VENV=/home/lxx/trade-agent-benchmark/.venv/bin/python
 LOG=agent-framework/results/run_pipeline.log
 mkdir -p agent-framework/results
 
+# 导出 LLM 凭证（AC 自带 load_dotenv；FM 读环境变量，故需在此 export）
+if [ -f agent-framework/AlphaCrafter/.env ]; then
+  set -a; . agent-framework/AlphaCrafter/.env; set +a
+fi
+
 while true; do
   echo "$(date '+%F %T') === 拉起 run_pipeline: $* ===" >> "$LOG"
   setsid "$VENV" -m scheduler.run_pipeline "$@" >> "$LOG" 2>&1

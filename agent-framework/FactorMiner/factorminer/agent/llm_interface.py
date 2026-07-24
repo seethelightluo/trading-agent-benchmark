@@ -81,7 +81,10 @@ class OpenAIProvider(LLMProvider):
                     "openai package is required for OpenAIProvider. "
                     "Install with: pip install openai"
                 )
-            self._client = OpenAI(api_key=self.api_key)
+            self._client = OpenAI(
+                api_key=self.api_key,
+                base_url=os.environ.get("OPENAI_API_URL") or os.environ.get("OPENAI_BASE_URL"),
+            )
         return self._client
 
     def generate(
