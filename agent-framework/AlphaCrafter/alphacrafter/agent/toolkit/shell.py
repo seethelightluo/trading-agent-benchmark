@@ -116,6 +116,14 @@ class ShellTool(BaseTool):
             
             process = None
             try:
+                # 沙箱：阻断子进程联网（防 LLM 用 urllib/requests 搜未来行情）。
+                # 指向黑洞端口 → urllib/requests 立即连接失败；factor 脚本（仅本地计算）不受影响。
+                # 完整保证（防裸 socket）建议进程级 network namespace 隔离。
+                _env = os.environ.copy()
+                for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                    _env[_k] = "http://127.0.0.1:1"
+                _env["NO_PROXY"] = ""
+                _env["no_proxy"] = ""
                 # Unix: create new process group so we can kill all children
                 process = subprocess.Popen(
                     command,
@@ -124,7 +132,7 @@ class ShellTool(BaseTool):
                     stderr=subprocess.PIPE,
                     text=True,
                     cwd=self.working_dir,
-                    env=os.environ.copy(),
+                    env=_env,
                     preexec_fn=os.setsid  # Create new process group
                 )
                 

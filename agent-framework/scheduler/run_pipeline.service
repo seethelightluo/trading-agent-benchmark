@@ -1,0 +1,27 @@
+# systemd 单元模板 —— 断电/重启后自动恢复 live 跑批
+# 安装（用 lxx 用户跑，需密码时 echo 'lxx' | sudo -S）：
+#   sudo cp scheduler/run_pipeline.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now run_pipeline
+# 查日志： journalctl -u run_pipeline -f
+# 改参数：编辑下方 ExecStart 后 daemon-reload + restart
+
+[Unit]
+Description=trade-agent-benchmark live pipeline (AC + FM, 断电可恢复)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lxx
+WorkingDirectory=/home/lxx/trade-agent-benchmark
+Environment=AC_CADENCE_DAYS=10
+EnvironmentFile=-/home/lxx/trade-agent-benchmark/agent-framework/AlphaCrafter/.env
+ExecStart=/home/lxx/trade-agent-benchmark/.venv/bin/python -m scheduler.run_pipeline --mode both --cadence 10 --max-cycles 300
+Restart=always
+RestartSec=15
+StandardOutput=append:/home/lxx/trade-agent-benchmark/agent-framework/results/run_pipeline.log
+StandardError=append:/home/lxx/trade-agent-benchmark/agent-framework/results/run_pipeline.log
+
+[Install]
+WantedBy=multi-user.target

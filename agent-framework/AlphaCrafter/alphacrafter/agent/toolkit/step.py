@@ -308,19 +308,24 @@ class StepTool(BaseTool):
         return "\n\n".join(lines)
     
     def get_implementation(self) -> Callable:
+        # 再平衡频次：AC_CADENCE_DAYS env 强制每 cycle 推进 N 个交易日（默认 10）。
+        # 覆盖 agent 传入值 → agent 无法绕过到更高频；0 = 沿用原生（min 5）。
+        _CADENCE = int(os.environ.get("AC_CADENCE_DAYS", "10"))
         def step(days: int) -> str:
             """
             Advance the simulation by N trading days.
-            
+
             Args:
                 days: Number of trading days to advance
-                
+
             Returns:
                 String containing the results of the step execution, metrics, and raw account JSON
             """
             try:
-                # Validate input            
-                if days < 5:
+                # 强制再平衡频次（沙箱级，agent 不可绕过）
+                if _CADENCE > 0:
+                    days = _CADENCE
+                elif days < 5:
                     days = 5
                     print(f"Starting step execution for {days} trading days...")
                 
