@@ -40,6 +40,7 @@ class BacktestTool(BaseTool):
         self.original_account_data = None
         self.exchange = Exchange(dataset_dir_path, account_file_path, date_file_path)
         self.hook = Hook(strategy_file_path)
+        Path(self.log_file_path).parent.mkdir(parents=True, exist_ok=True)
         # Backtest snapshots for this run
         self.backtest_snapshots = []
 
@@ -355,6 +356,11 @@ class BacktestTool(BaseTool):
                 
                 if days >= 120:
                     days = 120  # Cap at 120 days to prevent excessively long backtests
+
+                # Trader agents rewrite strategy.py during their turn.  The tool
+                # object is created before that edit, so refresh the hook for
+                # every invocation instead of backtesting the startup template.
+                self.hook = Hook(self.strategy_file_path)
                 
                 # Save original state
                 self._save_original_state()

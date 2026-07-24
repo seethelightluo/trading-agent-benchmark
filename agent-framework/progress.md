@@ -179,7 +179,10 @@ tail -f agent-framework/results/run_pipeline.log
 - AC 公共、Miner、Screener、Trader 和 factor-mining skill 提示已改成真实的 15 个可交易跨资产 + 5 个只读信号语义，明确不得要求 50/80/300 个成分股。
 - Trader 明确遵循当前模拟器的 long-only、T+1、100 单位整手和单边 3 bps 摩擦；不再建议不可执行的裸空头。
 - 每个 Miner 现在收到当前日期和自己的上一周期反馈，不再统一传入空上下文。
-- 本地回归共 9 项通过，另通过 `git diff --check`。
+- 首次复测中 Miner 已真实执行脚本并持久化因子，Screener 也成功给出 factor ensemble；随后发现 `BacktestTool` 与旧版 `StepTool` 一样缓存 Agent 初始化时的空策略 hook，导致 Trader 改写策略后回测仍为零持仓。
+- `BacktestTool` 现于每次调用前重载 `strategy.py`，并确保结果日志目录存在。针对性单测覆盖初始化 hook 与运行 hook 的切换。
+- 修复后用冒烟中真实生成的策略做 20 日本地回测，得到非零仓位和收益（平均 gross position 约 28.89%），确认不再执行空模板。
+- 本地回归共 10 项通过，另通过 `git diff --check`。
 
 ## 7. 密钥安全
 
