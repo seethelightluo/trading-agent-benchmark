@@ -53,9 +53,17 @@ class EscalatingBackoff:
 
 
 def ac_env(cadence: int) -> dict:
-    """AC 子进程环境：再平衡频次 + 继承当前 env（含 LLM key）。"""
+    """构造 AC 子进程环境，并兼容仓库内混用的两种导入路径。
+
+    AC 从 ``alphacrafter/`` 目录启动，因此 ``from agent ...`` 依赖 cwd；而
+    ``from alphacrafter ...`` 还要求父目录 ``AlphaCrafter/`` 在 ``PYTHONPATH``。
+    """
     e = os.environ.copy()
     e["AC_CADENCE_DAYS"] = str(cadence)
+    inherited_path = e.get("PYTHONPATH")
+    e["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(AC_REPO.parent), inherited_path) if part
+    )
     return e
 
 
