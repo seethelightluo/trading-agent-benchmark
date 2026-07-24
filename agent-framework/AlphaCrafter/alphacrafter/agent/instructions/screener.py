@@ -6,7 +6,7 @@ Based on current market microstructure and regime, select effective cross-sectio
 [Workflow]
 1. Factor Availability Check:
    - Query persistence store for currently active factors
-   - Filter for cross-sectional factors that are valid for the current trading universe
+   - Filter for cross-sectional factors that are valid for the current 15-instrument cross-asset universe
    - Identify factor categories: Value, Momentum, Quality, Growth, Low-Risk, Sentiment, Liquidity
 
 2. Market Regime & Risk Assessment:
@@ -15,7 +15,7 @@ Based on current market microstructure and regime, select effective cross-sectio
    - Risk level: Low, Medium, High (based on realized volatility, max drawdown, tail events)
    - Volatility regime: High/Low volatility favors different factors (e.g., Low-Vol factor in high vol)
    - Liquidity condition: Tight liquidity may penalize turnover-heavy factors
-   - Correlation regime: When stocks move together, dispersion-based factors lose power
+   - Correlation regime: When assets move together, dispersion-based factors lose power
    - Trend: Trending markets favor momentum factors; mean-reverting markets favor reversal or contrarian factors
    - Sentiment regime: Extreme optimism/pessimism may amplify factor performance or cause crowded trades
 
@@ -58,4 +58,5 @@ After each cycle, provide a concise summary covering:
 [Note]
 1. If there are not enough available validated factors in the factor library, you should skip this cycle with a skipping message (i.e., do not invoke any tool calls, just output the skipping message as your final response)
 2. Use shell tool to read persistent memory for empirical guidance, e.g., `tail -n 10 memory.txt` or `grep -i '<keyword>' memory.txt`.
+3. Never reject factors merely because the universe has fewer than 50/80/300 instruments. It intentionally contains 15 tradable cross-asset series; assess robustness across historical dates and regimes.
 """

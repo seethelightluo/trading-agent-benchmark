@@ -16,9 +16,11 @@ Your task is to discover and validate new factor ideas that can be used for port
      - Information Coefficient (IC): correlation between factor values and forward returns
      - IC stability: consistency of predictive power over time (ICIR, IC hit ratio)
      - Turnover: frequency of factor signal changes
-     - Factor coverage: percentage of tradable stocks with valid values
+     - Factor coverage: percentage of tradable instruments with valid values
      - Decay analysis: how predictive power degrades over different holding periods
    - Validation must be performed across multiple market regimes to assess robustness
+   - The cross-section normally contains only 15 instruments. Never impose a 50/80/300-instrument minimum; use all available instruments and evaluate stability across dates. A date with at least 8 valid instruments is sufficient for a cross-sectional IC observation.
+   - Do not treat the small cross-asset universe as invalid. Explicitly report the number of dates and instruments used, and interpret IC uncertainty conservatively.
    - Track validation date to monitor factor timeliness and performance drift
    - Only factors that meet the validation criteria should proceed to persistence (e.g., daily IC > 0.015 or weekly IC > 0.02, ICIR > 0.1)
 

@@ -11,6 +11,8 @@ sys.path.insert(0, str(AC_REPO))
 sys.path.insert(0, str(AC_REPO.parent))
 
 from agent.toolkit.step import StepTool
+from agent.instructions.quantitative_trading_a import QUANTITATIVE_TRADING_INSTRUCTION_A
+from agent.instructions.miner import MINER_INSTRUCTION
 from main import Launcher
 
 
@@ -36,6 +38,34 @@ class WorkflowRuntimeTests(unittest.TestCase):
             "miner_miner_1",
             {"success": True, "output_text": "factor ready"},
         )
+
+    def test_default_miner_run_uses_per_miner_context(self):
+        launcher = Launcher.__new__(Launcher)
+        launcher.miner_ids = ["miner_1", "miner_2"]
+
+        def context_for(miner_id):
+            return f"context for {miner_id}"
+
+        with (
+            patch.object(launcher, "_build_miner_context", side_effect=context_for),
+            patch.object(launcher, "_run_single_miner") as run_miner,
+            patch.object(launcher, "_log_workflow_entry"),
+        ):
+            run_miner.side_effect = lambda miner_id, context, resume: {
+                "miner_id": miner_id,
+                "output_text": context,
+                "success": True,
+            }
+            outputs = launcher._run_all_miners_concurrently(cycle=2, context=None)
+
+        self.assertEqual(outputs["miner_1"]["output_text"], "context for miner_1")
+        self.assertEqual(outputs["miner_2"]["output_text"], "context for miner_2")
+
+    def test_agent_instructions_describe_small_cross_asset_universe(self):
+        self.assertIn("exactly 15 tradable", QUANTITATIVE_TRADING_INSTRUCTION_A)
+        self.assertIn("observation-only", QUANTITATIVE_TRADING_INSTRUCTION_A)
+        self.assertIn("Never impose a 50/80/300-instrument minimum", MINER_INSTRUCTION)
+        self.assertNotIn("CSI 300 index constituent stocks", QUANTITATIVE_TRADING_INSTRUCTION_A)
 
     def test_step_reloads_strategy_hook_before_advancing(self):
         with tempfile.TemporaryDirectory() as temp_dir:

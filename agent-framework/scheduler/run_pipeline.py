@@ -53,16 +53,22 @@ class EscalatingBackoff:
 
 
 def ac_env(cadence: int) -> dict:
-    """构造 AC 子进程环境，并兼容仓库内混用的两种导入路径。
+    """构造 AC 子进程环境，并兼容仓库导入和虚拟环境命令。
 
     AC 从 ``alphacrafter/`` 目录启动，因此 ``from agent ...`` 依赖 cwd；而
     ``from alphacrafter ...`` 还要求父目录 ``AlphaCrafter/`` 在 ``PYTHONPATH``。
+    Agent 的 shell 工具会执行 ``python``，所以还必须把 uv 环境的 ``bin``
+    放在 PATH 首位，避免落到系统 Python 或在精简环境中找不到命令。
     """
     e = os.environ.copy()
     e["AC_CADENCE_DAYS"] = str(cadence)
     inherited_path = e.get("PYTHONPATH")
     e["PYTHONPATH"] = os.pathsep.join(
         part for part in (str(AC_REPO.parent), inherited_path) if part
+    )
+    inherited_executable_path = e.get("PATH")
+    e["PATH"] = os.pathsep.join(
+        part for part in (str(VENV_PY.parent), inherited_executable_path) if part
     )
     return e
 

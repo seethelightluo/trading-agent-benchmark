@@ -18,7 +18,8 @@ This skill explains how to research, evaluate, and persist factors using a scrip
   - Testing factor logic variations
   - Exploring combinations or transformations of existing factors
 - Validate only ONE idea (i.e. single type of factor) per script
-- **Performance note**: The watchlist contains hundreds of stocks (CSI300/S&P500 constituents). Scripts must be very efficient
+- **Universe note**: The watchlist intentionally contains 15 tradable cross-asset instruments. Never require 50/80/300 stocks; use the available cross-section and seek robustness across many historical dates and regimes.
+- Scripts should still be efficient and should print the number of dates and instruments actually used.
 
 ### 2. Execute Script
 
@@ -33,7 +34,7 @@ Based on script output, evaluate:
 - **Information Coefficient (IC)**: correlation between factor value and forward return
 - **ICIR**: IC stability over time
 - **Turnover**: signal change frequency
-- **Coverage**: percentage of watchlist with valid factor values
+- **Coverage**: percentage of the 15-instrument watchlist with valid factor values
 - **Concentration**: measure of factor value distribution across stocks
   - Identify if factor is broadly applicable or selective
   - A factor with low coverage but high effectiveness on targeted stocks can still be valuable

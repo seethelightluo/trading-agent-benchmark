@@ -12,14 +12,21 @@ from scheduler.run_pipeline import AC_REPO, VENV_PY, ac_command, ac_env, main
 
 
 class AcEnvironmentTests(unittest.TestCase):
-    def test_adds_package_parent_and_preserves_existing_path(self):
-        with patch.dict(os.environ, {"PYTHONPATH": "already-present"}):
+    def test_adds_package_and_venv_paths_while_preserving_existing_values(self):
+        with patch.dict(
+            os.environ,
+            {"PYTHONPATH": "already-present", "PATH": "/usr/local/bin:/usr/bin"},
+        ):
             env = ac_env(cadence=7)
 
         self.assertEqual(env["AC_CADENCE_DAYS"], "7")
         self.assertEqual(
             env["PYTHONPATH"].split(os.pathsep),
             [str(AC_REPO.parent), "already-present"],
+        )
+        self.assertEqual(
+            env["PATH"].split(os.pathsep),
+            [str(VENV_PY.parent), "/usr/local/bin", "/usr/bin"],
         )
 
     def test_subprocess_can_resolve_both_import_styles(self):

@@ -447,9 +447,14 @@ class Launcher:
         
         return miner_output
     
-    def _run_all_miners_concurrently(self, cycle: int, context: str,
+    def _run_all_miners_concurrently(self, cycle: int, context: Optional[str],
                                      is_resume_cycle: bool = False) -> Dict[str, Dict[str, Any]]:
-        """Run all miner agents concurrently and collect results."""
+        """Run all miner agents concurrently and collect results.
+
+        ``context=None`` selects each miner's own date/history context.  A
+        concrete string remains supported for resume tests and explicit caller
+        overrides.
+        """
         print(f"\n{'='*60}")
         print(f"🚀 RUNNING {len(self.miner_ids)} MINERS CONCURRENTLY")
         print(f"{'='*60}")
@@ -459,7 +464,12 @@ class Launcher:
         with ThreadPoolExecutor(max_workers=len(self.miner_ids)) as executor:
             # Submit all miner tasks
             future_to_miner = {
-                executor.submit(self._run_single_miner, miner_id, context, is_resume_cycle): miner_id
+                executor.submit(
+                    self._run_single_miner,
+                    miner_id,
+                    self._build_miner_context(miner_id) if context is None else context,
+                    is_resume_cycle,
+                ): miner_id
                 for miner_id in self.miner_ids
             }
             
@@ -621,7 +631,7 @@ class Launcher:
         record = CycleRecord(cycle=cycle)
         
         # Step 1: Run ALL Miner Agents concurrently
-        miner_outputs = self._run_all_miners_concurrently(cycle, "", is_resume_cycle)
+        miner_outputs = self._run_all_miners_concurrently(cycle, None, is_resume_cycle)
         
         # Check if any miner failed
         all_miners_success = all(output['success'] for output in miner_outputs.values())

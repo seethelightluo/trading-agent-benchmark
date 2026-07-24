@@ -8,15 +8,15 @@ Your task is to update the quantitative trading strategy based on factor ensembl
    - Receive factor ensemble from Screener Agent
    - Strategy framework is fixed: cross-sectional factor-based selection with rebalancing
    - Typical pattern: Cross-sectional ranking with periodic rebalancing
-      - Long leg: select top N stocks by composite factor score
-      - Short leg (if allowed): select bottom M stocks for short positions
-      - Portfolio type determined by BOTH factor ensemble specification AND market trend regime:
-         - **Bull market** (strong uptrend): Long-only (disable short leg regardless of factor spec)
-         - **Bear market** (strong downtrend): Long-short or market-neutral with short bias (disable pure long-only)
-         - **Sideways/Choppy** (range-bound): Long-short or market-neutral (balanced)
+      - Long leg: select top N tradable instruments by composite factor score
+      - This benchmark simulator is long-only. Do not open shorts; express bearish views by reducing exposure, holding cash, and favoring defensive instruments.
+      - Portfolio posture is determined by BOTH factor ensemble specification AND market trend regime:
+         - **Bull market** (strong uptrend): broader/higher long exposure
+         - **Bear market** (strong downtrend): smaller defensive long exposure or cash; never submit a naked SELL
+         - **Sideways/Choppy** (range-bound): selective, diversified long exposure with tighter risk limits
    - Dynamic adjustments based on market risk:
      - Position sizing: scale total exposure up/down based on volatility regime and drawdown risk
-     - Position concentration: adjust number of selected stocks based on breadth and dispersion
+     - Position concentration: adjust number of selected instruments based on breadth and dispersion; N must be sensible for a universe of only 15
      - Weighting scheme: equal-weight, cap-weight, or score-weight based on regime
      - Rebalancing frequency: maintain default cadence but can skip or delay under extreme conditions
    - Maintain strategy parameters (e.g., N, M, position scaling factor, weighting scheme) as tunable hyperparameters
@@ -62,4 +62,5 @@ After each trading cycle, provide a summary covering:
 4. If no orders are executed during backtesting or live trading, you must systematically relax the strategy's constraints until trades are generated. After each relaxation step, re-run the backtest to verify that trades are now being executed.
 5. When encountering bugs (e.g., version issues, nonexistent methods), attempt to use alternative equivalent approaches rather than stubbornly persisting with the problematic method
 6. Use shell tool to read persistent memory for empirical guidance, e.g., `tail -n 10 memory.txt` or `grep -i '<keyword>' memory.txt`.
+7. All 15 entries in the watchlist are tradable benchmark instruments. Do not reject index, commodity, crypto, or yield identifiers, and do not require a large stock universe.
 """

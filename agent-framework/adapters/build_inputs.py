@@ -82,6 +82,7 @@ def build_alpha_crafter(panel: pd.DataFrame, assets_cfg: dict,
     shutil.copytree(src, dst)
 
     persistent = dst / "persistent"
+    workspace = dst / "workspace"
     stock_data = persistent / "stock_data"      # 可交易持仓（tradable，15）
     index_data = persistent / "index_data"      # 宏观/状态信号（signals，5；Screener 参考，不持仓）
     news_dir = persistent / "stock_news"
@@ -92,6 +93,12 @@ def build_alpha_crafter(panel: pd.DataFrame, assets_cfg: dict,
             f.unlink()
     for f in news_dir.glob("*.json"):
         f.unlink()
+
+    # Miners run concurrently and may write their first factor/script at the same
+    # time.  Create the shared targets before any agent starts instead of making
+    # each agent race to create them through the shell tool.
+    for d in (workspace / "factors", workspace / "scripts"):
+        d.mkdir(parents=True, exist_ok=True)
 
     tradable_ids = [a["asset_id"] for a in assets_cfg["tradable"]]
     signal_ids = [a["asset_id"] for a in assets_cfg.get("signals", [])]

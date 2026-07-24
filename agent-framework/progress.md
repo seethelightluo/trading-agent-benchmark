@@ -110,7 +110,12 @@ FM 的 OpenAI provider 使用 Chat Completions，不依赖 AC 的 Responses tool
 
 ```bash
 cd /home/lxx/trade-agent-benchmark
-.venv/bin/python -m unittest -v agent-framework/scheduler/test_run_pipeline.py
+.venv/bin/python -m unittest -v \
+  agent-framework/scheduler/test_run_pipeline.py \
+  agent-framework/adapters/test_build_inputs.py
+(cd agent-framework/AlphaCrafter/alphacrafter && \
+  /home/lxx/trade-agent-benchmark/.venv/bin/python -m unittest -v \
+  test_workflow_runtime.py)
 ```
 
 ### 5.2 1 WL × 2 cycle 真冒烟
@@ -156,26 +161,25 @@ tail -f agent-framework/results/run_pipeline.log
 已完成并推送：
 
 - `f555190`：AC 子进程补 `AlphaCrafter/` 到 `PYTHONPATH`，修复 `ModuleNotFoundError: alphacrafter`；增加回归测试；AC/FM 切换到 `gpt-5.6-terra` 模型注册和配置。
+- `8e85860`：修复 AC session 位置参数、失败退出码、Miner cycle 日志、Trader shell 工具和 `StepTool` 策略热加载，并补充回归测试与本文档。
 - API 探测：不带 `/v1` 的 `/models` 不是标准 JSON；带 `/v1/models` 正常列出 `gpt-5.6-terra`。
 - Responses tool probe：成功收到 `function_call(name=probe, arguments={"value":7})` 和有效 `call_id`。
-
-已修复、待提交：
-
-- 调度器错误地传 `--session_id wl1`；当前 AC argparse 要求位置参数 `wl1`。
-- 某条 WL 失败时 `run_pipeline` 仍退出 0；现改为任何选中 WL 失败就退出 1，让 `run_all.sh` 能识别并重拉。
-
-代码审查新发现并已修复、待回归/提交：
-
-- Miner workflow 日志原先把 cycle 固定写成 0，导致 `--resume` 无法识别完整 cycle；现记录真实 cycle。
-- Trader 创建时 `StepTool` 就加载 `strategy.py` hook；现改为每次执行 `step` 前重新加载，确保运行本 cycle 新策略。
-- Trader 指令要求用 shell 读/追加 `memory.txt`，现已给 Trader toolkit 加入 `shell`，使指令与能力一致。
 
 当前真实冒烟状态：
 
 - 数据重建成功：83,347 行、20 资产，WL1 起点 `2026-07-16`。
-- import 阶段已通过。
-- 第二次冒烟在 AC argparse 阶段发现位置参数 bug，尚未消耗完整 cycle 配额。
-- 修复上述结构性问题并通过本地测试后，继续同一条 WL1 两周期冒烟。
+- AC 已成功启动全部 Miner/Screener/Trader，真实 Miner function calling、`shell` 和 `write_file` 均可工作，证明 `gpt-5.6-terra` 与 AC 工具协议兼容。
+- 冒烟暴露两个运行时问题：Agent shell 找不到 `python`（调度器 PATH 未包含 `.venv/bin`），以及并发 Miner 首次写入时 `workspace/factors`、`workspace/scripts` 尚未创建。
+- 冒烟还暴露数据语义错配：旧提示硬编码 CSI300/数百只股票，Miner 因 15 资产小截面而主动判无效，导致 cycle 1 的 Screener/Trader 正确跳过且时间未前进。
+
+本轮已修复并通过本地回归、待提交/真实复测：
+
+- AC 子进程 PATH 将 uv 环境 `.venv/bin` 放在首位，同时保留继承 PATH；Miner 的 `python` 脚本可在同一环境执行。
+- session 构建时确定性预建 `workspace/factors` 和 `workspace/scripts`，消除并发首次写入竞态。
+- AC 公共、Miner、Screener、Trader 和 factor-mining skill 提示已改成真实的 15 个可交易跨资产 + 5 个只读信号语义，明确不得要求 50/80/300 个成分股。
+- Trader 明确遵循当前模拟器的 long-only、T+1、100 单位整手和单边 3 bps 摩擦；不再建议不可执行的裸空头。
+- 每个 Miner 现在收到当前日期和自己的上一周期反馈，不再统一传入空上下文。
+- 本地回归共 9 项通过，另通过 `git diff --check`。
 
 ## 7. 密钥安全
 
