@@ -51,16 +51,16 @@
 | 可交易·权益 | 费城半导体 (SOX) | 5,800 | 世界线统一基线（虚构段起点） |
 | 可交易·权益 | 纳斯达克100 (NDX) | 20,500 | 世界线统一基线（虚构段起点） |
 | 可交易·商品 | 黄金 (XAU) | $4,050/oz | 世界线统一基线（虚构段起点） |
-| 可交易·商品 | 铜 (LME Copper) | $13,600/t | 世界线统一基线（虚构段起点） |
+| 可交易·商品 | 铜 (COPPER) | $13,600/t | 世界线统一基线（虚构段起点） |
 | 可交易·商品 | 原油 (WTI) | $79/bbl | 世界线统一基线（虚构段起点） |
 | 可交易·加密 | BTC | $64,800 | 世界线统一基线（虚构段起点） |
 | 可交易·加密 | ETH | $1,920 | 世界线统一基线（虚构段起点） |
 | 可交易·债券 | 美债10Y (US10Y) | 4.30% | 世界线统一基线（虚构段起点） |
 | 可交易·债券 | 中债10Y (CN10Y) | 2.20% | 世界线统一基线（虚构段起点） |
 | 只读参考 | 美元指数 (DXY) | 100.5 | 世界线统一基线（不持仓） |
-| 只读参考 | USD/CNY | 6.78 | 世界线统一基线（不持仓） |
-| 只读参考 | USD/JPY | 162 | 世界线统一基线（不持仓） |
-| 只读参考 | EUR/USD | 1.16 | 世界线统一基线（不持仓） |
+| 只读参考 | USD/CNY (USDCNY) | 6.78 | 世界线统一基线（不持仓） |
+| 只读参考 | USD/JPY (USDJPY) | 162 | 世界线统一基线（不持仓） |
+| 只读参考 | EUR/USD (EURUSD) | 1.08 | 世界线统一基线（不持仓） |
 | 只读参考 | VIX | 16 | 世界线统一基线（不持仓） |
 
 ### 2.3 统一交易费率（全资产）
@@ -80,7 +80,7 @@
 | **FactorMiner** | arXiv:2602.14670（Ralph Loop：retrieve-generate-evaluate-distill，含 Skills + Experience Memory） | **纯量价日频因子**自进化开采（不读新闻） | `github.com/minihellboy/factorminer`（**社区重实现**，93★，MIT；论文官方作者尚未公开代码） | `agent-framework/FactorMiner/` |
 
 > **出处说明（PROVENANCE）**：
-> - AlphaCrafter 为论文官方仓库，结构已核实：根包 `alphacrafter/`，入口 `python main.py --session_id <id>`，Docker Compose 跑沙箱，session 目录含 `config/`、`logs/`、`persistent/{index_data,stock_data,stock_financial_statements,stock_news,account.json,date.json}`、`workspace/`。
+> - AlphaCrafter 为论文官方仓库，结构已核实：根包 `alphacrafter/`，当前入口为位置参数 `python main.py <session_id> --config <config>`，session 目录含 `config/`、`logs/`、`persistent/{index_data,stock_data,stock_financial_statements,stock_news,account.json,date.json}`、`workspace/`。
 > - FactorMiner `minihellboy/factorminer` 是第三方"based on the paper"的独立重实现（README 自述，并打包了论文 PDF `2602.14670v1.pdf`），**非作者官方代码**。其模块路径（`core/cli.py`、`core/miner/registry.py`、`user_workspace/custom_fitness/turnover_aware.py`、`user_workspace/config.json`）需在下载后核对——若与 refer.md / 本计划引用的路径不一致，以实际仓库为准并回写本文件。底层依赖 `gplearn`（遗传规划）。
 
 ### 3.2 目标目录结构

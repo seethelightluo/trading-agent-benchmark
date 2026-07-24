@@ -25,9 +25,10 @@
 
 ## 三、数据源与口径
 
-- **Binance**（加密）：`GET /api/v3/klines?symbol=&interval=1d&startTime=&limit=1000`，按 1000 根分页，O/H/L/C/Volume。实测可用，3 段即可覆盖。
-- **Yahoo Finance**（股/汇/商/波）：`query1.finance.yahoo.com/v8/finance/chart/{sym}?period1=&period2=&interval=1d`，含 adjclose。已验证全部 ticker 可用。带 UA + 退避重试（429）。
-- **akshare**（中债10Y）：`ak.bond_china_yield(start_date, end_date)` 取「10 年」列。Stooq 已加 JS 反爬，弃用。
+- 每个资产的当前来源优先级以 `data-prepare/asset_spec.py` 为准，抓取器按候选顺序先成先用，避免文档与代码映射漂移。
+- **新浪 / 东方财富 / akshare / 中国银行**：覆盖权益、商品、债券、DXY 与汇率，是当前国内可达环境下的主要来源。
+- **Binance**：提供 BTC/ETH 日线 O/H/L/C/Volume。
+- **Yahoo Finance / CBOE**：作为国际源或长尾兜底；请求失败时由抓取器执行退避和来源切换。
 
 ## 四、输出结构
 
@@ -68,7 +69,7 @@ data-prepare/asset-daily-data/
 ## 七、Agent 配置宇宙与计价基准（关键架构修订 · 2026-07-22）
 
 > 本节细化第二节的同一套 **15 可交易 + 5 只读参考**口径，适用于 2026-07-16 之后的虚构前向持仓阶段。
-> 需同步：`agent-framework/ASSETS.yaml`、`integration/asset_universe.py`、`gen_worldline_online.py`。
+> 已同步：`agent-framework/ASSETS.yaml`、`integration/asset_universe.py`、`gen_worldline_online.py`。
 
 ### 7.1 可交易持仓宇宙 = 15（汇率 / 波动率剔除为信号）
 
