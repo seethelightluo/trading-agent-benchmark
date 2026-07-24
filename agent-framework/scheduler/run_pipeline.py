@@ -86,9 +86,10 @@ def save_state(path: Path, state: dict) -> None:
 
 
 def run_ac_wl(wl: int, session: str, cfg: Path, cadence: int,
-              bk: EscalatingBackoff) -> bool:
-    """跑一条 WL 的 AC，失败按递增退避(立即→1分→10分→1h)无限重试（配额5h刷新模型）。
-    AC --resume 从最近 cycle 续跑，不丢进度；成功则重置退避。永不放弃（只能手动 kill）。"""
+              bk: EscalatingBackoff, max_attempts: int = 0) -> bool:
+    """跑一条 WL 的 AC，失败按递增退避(立即→1分→10分→1h)重试（配额5h刷新模型）。
+    AC --resume 从最近 cycle 续跑，不丢进度；成功则重置退避。
+    max_attempts=0 无限重试（全量默认）；>0 限次（冒烟用，遇真 bug 不死循环）。"""
     cmd = [str(VENV_PY), "main.py", "--session_id", session,
            "--config", str(cfg), "--resume"]
     attempt = 0
@@ -102,6 +103,9 @@ def run_ac_wl(wl: int, session: str, cfg: Path, cadence: int,
             bk.on_success()
             print(f"  ✅ WL{wl} AC 完成（{dur/3600:.1f}h），退避已重置", flush=True)
             return True
+        if max_attempts and attempt >= max_attempts:
+            print(f"  ⛔ WL{wl} AC 达 max_attempts={max_attempts}，放弃（冒烟模式）", flush=True)
+            return False
         wait = bk.on_fail()
         print(f"  ❌ WL{wl} AC rc={rc}（{dur/60:.1f}min）；{wait}s 后 --resume 重试（配额5h刷新，递增退避）", flush=True)
         if wait:
@@ -133,10 +137,10 @@ def _resample_panel(panel: Path, rule: str, out: Path) -> Path:
 
 
 def run_fm_wl(wl: int, panel: Path, bk: EscalatingBackoff,
-              cadence_rule: str = "10B", live: bool = True) -> bool:
+              cadence_rule: str = "10B", live: bool = True, max_attempts: int = 0) -> bool:
     """跑一条 WL 的 FM：先 resample 到 cadence_rule（默认 10B→10 交易日再平衡，与 AC 对齐），
     再挖掘因子。live=True 用 fm_live.yaml（OpenAI兼容/glm-5.2），False 用 fm_mock_real.yaml。
-    失败按递增退避(立即→1分→10分→1h)无限重试；成功重置。"""
+    失败按递增退避(立即→1分→10分→1h)重试；成功重置。max_attempts=0 无限，>0 限次（冒烟）。"""
     cfg = FM_REPO / "factorminer" / "configs" / ("fm_live.yaml" if live else "fm_mock_real.yaml")
     env = {**os.environ, "PYTHONPATH": str(FM_REPO)}
     panel_res = RESULTS / f"WL{wl}_panel_{cadence_rule}.parquet"
@@ -158,6 +162,9 @@ def run_fm_wl(wl: int, panel: Path, bk: EscalatingBackoff,
             bk.on_success()
             print(f"  ✅ WL{wl} FM 完成，退避已重置", flush=True)
             return True
+        if max_attempts and attempt >= max_attempts:
+            print(f"  ⛔ WL{wl} FM 达 max_attempts={max_attempts}，放弃（冒烟模式）", flush=True)
+            return False
         wait = bk.on_fail()
         print(f"  ❌ WL{wl} FM rc={rc}；{wait}s 后重试（配额5h刷新，递增退避）", flush=True)
         if wait:
@@ -172,6 +179,7 @@ def main():
     ap.add_argument("--fm-cadence", default="10B", help="FM 再平衡 resample 规则（默认 10B=10交易日，与 AC 对齐）")
     ap.add_argument("--max-cycles", type=int, default=300, help="AC run config 的 max_cycles")
     ap.add_argument("--fm-mock", action="store_true", help="FM 用 mock provider（默认 live：fm_live.yaml/glm-5.2）")
+    ap.add_argument("--max-attempts", type=int, default=0, help="每 WL 最大尝试次数（0=无限重试，全量默认；冒烟设 3 遇真bug不死循环）")
     ap.add_argument("--state", default=str(RESULTS / "run_state.json"))
     args = ap.parse_args()
 
@@ -196,13 +204,13 @@ def main():
 
         ok = True
         if args.mode in ("ac", "both") and not st.get("ac_done"):
-            ok_ac = run_ac_wl(wl, session, cfg, args.cadence, bk)
+            ok_ac = run_ac_wl(wl, session, cfg, args.cadence, bk, args.max_attempts)
             st["ac_done"] = ok_ac
             state[key] = st
             save_state(state_path, state)
             ok = ok and ok_ac
         if args.mode in ("fm", "both") and ok and not st.get("fm_done") and panel.exists():
-            ok_fm = run_fm_wl(wl, panel, bk, args.fm_cadence, live=not args.fm_mock)
+            ok_fm = run_fm_wl(wl, panel, bk, args.fm_cadence, not args.fm_mock, args.max_attempts)
             st["fm_done"] = ok_fm
             state[key] = st
             save_state(state_path, state)
