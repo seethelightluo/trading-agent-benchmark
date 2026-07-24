@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -101,11 +102,16 @@ def run_ac_cycle(session: str) -> int:
 
 
 def run_fm_mining(panel_t: Path, fm_config: Path) -> int:
-    """调用 FM 在切片后面板上做一次因子挖掘。返回 returncode。"""
-    cmd = [sys.executable, "-m", "factorminer", "mine",
-           "--data", str(panel_t), "--config", str(fm_config)]
-    print(f"    [FM] $ {' '.join(cmd)}  (cwd={FM_REPO})")
-    return subprocess.call(cmd, cwd=str(FM_REPO))
+    """调用 FM 在切片后面板上做一次因子挖掘。返回 returncode。
+    FM 未装为模块（无 __main__），用 PYTHONPATH + cli.main 直调；
+    click 参数顺序：factorminer -c <cfg> mine --data <panel>。"""
+    env = {**os.environ, "PYTHONPATH": str(FM_REPO)}
+    script = ("from factorminer.cli import main; import sys; "
+              "sys.argv=['factorminer','-c',%r,'mine','--data',%r]; main()"
+              % (str(fm_config), str(panel_t)))
+    cmd = [sys.executable, "-c", script]
+    print(f"    [FM] factorminer -c {fm_config} mine --data {panel_t}  (cwd={FM_REPO})")
+    return subprocess.call(cmd, cwd=str(FM_REPO), env=env)
 
 
 def append_equity(rows: list[dict], out_csv: Path) -> None:
