@@ -13,7 +13,7 @@
 #   disown
 #
 # 看进度：tail -f agent-framework/results/run_pipeline.log
-# 停止：pkill -f run_pipeline.py ; pkill -f "main.py --session_id"
+# 停止：pkill -f run_pipeline.py ; pkill -f "main.py wl"
 set -u
 cd /home/lxx/trade-agent-benchmark
 VENV=/home/lxx/trade-agent-benchmark/.venv/bin/python

@@ -338,6 +338,7 @@ class Launcher:
         toolkit = [
             ReadFileTool(),
             WriteFileTool(),
+            ShellTool(),
             BacktestTool(),
             StepTool(),
         ]
@@ -446,7 +447,8 @@ class Launcher:
         
         return miner_output
     
-    def _run_all_miners_concurrently(self, context: str, is_resume_cycle: bool = False) -> Dict[str, Dict[str, Any]]:
+    def _run_all_miners_concurrently(self, cycle: int, context: str,
+                                     is_resume_cycle: bool = False) -> Dict[str, Dict[str, Any]]:
         """Run all miner agents concurrently and collect results."""
         print(f"\n{'='*60}")
         print(f"🚀 RUNNING {len(self.miner_ids)} MINERS CONCURRENTLY")
@@ -472,7 +474,7 @@ class Launcher:
                     print(f"Output length: {len(miner_output['output_text'])}")
                     
                     # Log miner result
-                    self._log_workflow_entry(0, f"miner_{miner_id}", {
+                    self._log_workflow_entry(cycle, f"miner_{miner_id}", {
                         'success': miner_output['success'],
                         'output_text': miner_output['output_text']
                     })
@@ -619,7 +621,7 @@ class Launcher:
         record = CycleRecord(cycle=cycle)
         
         # Step 1: Run ALL Miner Agents concurrently
-        miner_outputs = self._run_all_miners_concurrently("", is_resume_cycle)
+        miner_outputs = self._run_all_miners_concurrently(cycle, "", is_resume_cycle)
         
         # Check if any miner failed
         all_miners_success = all(output['success'] for output in miner_outputs.values())

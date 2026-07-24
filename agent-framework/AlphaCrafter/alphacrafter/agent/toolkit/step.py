@@ -322,6 +322,11 @@ class StepTool(BaseTool):
                 String containing the results of the step execution, metrics, and raw account JSON
             """
             try:
+                # Trader may rewrite strategy.py after this StepTool instance was created.
+                # Reload the hook at execution time so the current cycle runs the new strategy,
+                # rather than the template/no-op function cached during agent initialization.
+                self.hook = Hook(self.strategy_file_path)
+
                 # 强制再平衡频次（沙箱级，agent 不可绕过）
                 if _CADENCE > 0:
                     days = _CADENCE

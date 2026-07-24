@@ -3,7 +3,7 @@
 run_pipeline.py — 断电可恢复的 live 跑批运行器（9 WL × AC [+FM]）
 
 设计：长任务（数小时~数天）必须抗断电、抗崩溃、可续跑。
-- **逐 WL 调 AC**：每条世界线一次 `python main.py --session_id wlN --config run_config.yaml --resume`。
+- **逐 WL 调 AC**：每条世界线一次 `python main.py wlN --config run_config.yaml --resume`。
   AC 自带 cycle 级 --resume（从 logs 续跑），崩在哪条 cycle 重启即续。
 - **失败重试**：AC 非零退出 → 等待退避后重新 --resume，直到 --max-retries。
 - **状态持久化**：`results/run_state.json` 原子写入每条 WL 的完成状态 → 断电重启后自动跳过已完成项。
@@ -93,13 +93,17 @@ def save_state(path: Path, state: dict) -> None:
     tmp.replace(path)  # 原子写（防断电半写）
 
 
+def ac_command(session: str, cfg: Path) -> list[str]:
+    """Build the AlphaCrafter CLI command (``session_id`` is positional)."""
+    return [str(VENV_PY), "main.py", session, "--config", str(cfg), "--resume"]
+
+
 def run_ac_wl(wl: int, session: str, cfg: Path, cadence: int,
               bk: EscalatingBackoff, max_attempts: int = 0) -> bool:
     """跑一条 WL 的 AC，失败按递增退避(立即→1分→10分→1h)重试（配额5h刷新模型）。
     AC --resume 从最近 cycle 续跑，不丢进度；成功则重置退避。
     max_attempts=0 无限重试（全量默认）；>0 限次（冒烟用，遇真 bug 不死循环）。"""
-    cmd = [str(VENV_PY), "main.py", "--session_id", session,
-           "--config", str(cfg), "--resume"]
+    cmd = ac_command(session, cfg)
     attempt = 0
     while True:
         attempt += 1
@@ -186,7 +190,7 @@ def main():
     ap.add_argument("--cadence", type=int, default=10, help="AC 再平衡频次（交易日/cycle）")
     ap.add_argument("--fm-cadence", default="10B", help="FM 再平衡 resample 规则（默认 10B=10交易日，与 AC 对齐）")
     ap.add_argument("--max-cycles", type=int, default=300, help="AC run config 的 max_cycles")
-    ap.add_argument("--fm-mock", action="store_true", help="FM 用 mock provider（默认 live：fm_live.yaml/glm-5.2）")
+    ap.add_argument("--fm-mock", action="store_true", help="FM 用 mock provider（默认 live：fm_live.yaml/gpt-5.6-terra）")
     ap.add_argument("--max-attempts", type=int, default=0, help="每 WL 最大尝试次数（0=无限重试，全量默认；冒烟设 3 遇真bug不死循环）")
     ap.add_argument("--state", default=str(RESULTS / "run_state.json"))
     args = ap.parse_args()
@@ -201,6 +205,7 @@ def main():
     print(f"  退避档(秒)：{EscalatingBackoff.SCHEDULE}（配额5h刷新模型，成功重置）", flush=True)
     print(f"  AC run_config → {cfg}；状态 → {state_path}", flush=True)
 
+    all_ok = True
     for wl in wls:
         key = f"wl{wl}"
         session = f"wl{wl}"
@@ -228,11 +233,13 @@ def main():
         st["ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
         state[key] = st
         save_state(state_path, state)
+        all_ok = all_ok and ok
         print(f"\n{'✅' if ok else '⚠️'} WL{wl} 结束（done={ok}）", flush=True)
 
-    done = sum(1 for v in state.values() if v.get("done"))
+    done = sum(1 for wl in wls if state.get(f"wl{wl}", {}).get("done"))
     print(f"\n========== 全部结束：{done}/{len(wls)} WL 完成 ==========", flush=True)
+    return 0 if all_ok else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main() or 0)
+    sys.exit(main())
