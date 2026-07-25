@@ -538,7 +538,12 @@ def _write_fm_window_config(base_cfg: Path, panel: Path, cutoff: str, out: Path,
                             target: int | None = None,
                             batch_size: int | None = None,
                             admission: dict | None = None) -> Path:
-    """Generate a dynamic train/test split while keeping the official FM CLI/core."""
+    """Generate an internal visible-history split for FM self-validation.
+
+    Both sides of this split are always ``<= cutoff``.  It is an Agent research
+    aid inside one forward worldline, not a benchmark train/test partition and
+    never a license to expose or tune against unrevealed worldline data.
+    """
     df, date_col = _read_panel(panel)
     dates = sorted(df[date_col].drop_duplicates())
     if len(dates) < 20:
