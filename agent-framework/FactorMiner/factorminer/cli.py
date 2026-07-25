@@ -588,6 +588,10 @@ def _json_safe(value):
     """Convert common runtime values to JSON-serializable objects."""
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, np.ndarray):
+        return [_json_safe(v) for v in value.tolist()]
+    if isinstance(value, np.generic):
+        return value.item()
     if isinstance(value, dict):
         return {str(k): _json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -1236,6 +1240,7 @@ def quickstart(
             batch_size=batch_size,
             target=target,
             resume=None,
+            resume_checkpoint=False,
             mock=True,
             data_path=None,
         )
@@ -1279,6 +1284,11 @@ def quickstart(
 @click.option("--batch-size", "-b", type=int, default=None, help="Override batch_size.")
 @click.option("--target", "-t", type=int, default=None, help="Override target_library_size.")
 @click.option("--resume", type=click.Path(exists=True), default=None, help="Resume from a saved library.")
+@click.option(
+    "--resume-checkpoint",
+    is_flag=True,
+    help="Resume factor library, experience memory, budget, and iteration from output/checkpoint.",
+)
 @click.option("--mock", is_flag=True, help="Use mock data and mock LLM provider (for testing).")
 @click.option("--data", "data_path", type=click.Path(exists=True), default=None, help="Path to market data file.")
 @click.pass_context
@@ -1288,12 +1298,16 @@ def mine(
     batch_size: int | None,
     target: int | None,
     resume: str | None,
+    resume_checkpoint: bool,
     mock: bool,
     data_path: str | None,
 ) -> None:
     """Run a factor mining session."""
     cfg = ctx.obj["config"]
     output_dir = ctx.obj["output_dir"]
+
+    if resume and resume_checkpoint:
+        raise click.UsageError("Use either --resume or --resume-checkpoint, not both.")
 
     if iterations is not None:
         cfg.mining.max_iterations = iterations
@@ -1373,7 +1387,10 @@ def mine(
             llm_provider=llm_provider,
             library=library,
         )
-        result_library = loop.run(callback=_progress_callback)
+        result_library = loop.run(
+            callback=_progress_callback,
+            resume=resume_checkpoint,
+        )
     except KeyboardInterrupt:
         click.echo("\nMining interrupted by user.")
         return
@@ -1546,6 +1563,29 @@ def combine(
         select_top_k,
     )
 
+    fit_split = resolve_split_for_fit_eval(fit_period)
+    eval_split = resolve_split_for_fit_eval(eval_period)
+    if library.size == 0:
+        # A short smoke run can legitimately admit no factors.  Treat that as a
+        # valid all-cash research result instead of aborting the crash-resumable
+        # benchmark pipeline after the library and memory were already saved.
+        combination_payload = {
+            "fit_split": fit_split,
+            "eval_split": eval_split,
+            "top_k": top_k,
+            "selected_factor_ids": [],
+            "methods": {},
+            "status": "no_admitted_factors",
+        }
+        output_dir.mkdir(parents=True, exist_ok=True)
+        combination_path = output_dir / "combination_results.json"
+        combination_path.write_text(
+            json.dumps(combination_payload, indent=2), encoding="utf-8"
+        )
+        click.echo("No admitted factors; persisted an all-cash combination result.")
+        click.echo(f"  Saved combination artifact: {combination_path}")
+        return
+
     try:
         dataset = _load_runtime_dataset_for_analysis(cfg, data_path, mock)
     except Exception as e:
@@ -1558,9 +1598,6 @@ def combine(
         cfg.evaluation.signal_failure_policy,
     )
     failures = _report_artifact_failures(artifacts, header="Combination warnings")
-
-    fit_split = resolve_split_for_fit_eval(fit_period)
-    eval_split = resolve_split_for_fit_eval(eval_period)
 
     selected_artifacts = select_top_k(artifacts, fit_split, top_k)
     if not selected_artifacts:
@@ -1643,6 +1680,14 @@ def combine(
     else:
         methods_to_run = [method]
 
+    combination_payload = {
+        "fit_split": fit_split,
+        "eval_split": eval_split,
+        "top_k": top_k,
+        "selected_factor_ids": selected_ids,
+        "methods": {},
+    }
+
     for m in methods_to_run:
         click.echo(f"\n  {m.upper()} combination:")
         try:
@@ -1656,6 +1701,7 @@ def combine(
                 continue
 
             stats = backtester.quintile_backtest(composite, eval_returns_tn)
+            combination_payload["methods"][m] = _json_safe(stats)
             click.echo(f"    IC Mean:      {stats['ic_mean']:.4f}")
             click.echo(f"    Paper IC:     {abs(stats['ic_mean']):.4f}")
             click.echo(f"    ICIR:         {stats['icir']:.4f}")
@@ -1663,8 +1709,16 @@ def combine(
             click.echo(f"    Monotonicity: {stats['monotonicity']:.2f}")
             click.echo(f"    Avg Turnover: {stats['avg_turnover']:.4f}")
         except Exception as e:
+            combination_payload["methods"][m] = {"error": str(e)}
             click.echo(f"    Error: {e}")
             logger.exception("Combination method %s failed", m)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    combination_path = output_dir / "combination_results.json"
+    combination_path.write_text(
+        json.dumps(combination_payload, indent=2), encoding="utf-8"
+    )
+    click.echo(f"\n  Saved combination artifact: {combination_path}")
 
     if cfg.research.enabled and cfg.benchmark.mode == "research":
         click.echo("\n  Research model suite:")

@@ -77,6 +77,15 @@ class Launcher:
         self.miner_model_config = self.config['miner']['model']
         self.screener_model_config = self.config['screener']['model']
         self.trader_model_config = self.config['trader']['model']
+        factor_validation = self.config.get('factor_validation', {})
+        self.factor_ic_threshold = float(os.environ.get(
+            "AC_FACTOR_IC_THRESHOLD",
+            factor_validation.get('ic_threshold', 0.04),
+        ))
+        self.factor_icir_threshold = float(os.environ.get(
+            "AC_FACTOR_ICIR_THRESHOLD",
+            factor_validation.get('icir_threshold', 0.10),
+        ))
         
         # Agent instances
         self.miner_agents: Dict[str, Agent] = {}
@@ -108,6 +117,16 @@ class Launcher:
         
         # Load additional info
         self.additional_info = self.config.get('additional_info', '')
+        if os.environ.get("AC_WARMUP_ONLY", "0").lower() in {"1", "true", "yes"}:
+            self.additional_info += """
+
+SHARED WARM-UP PHASE (binding): All nine worldlines share this single
+2020-01-01 through 2026-07-15 research run. Mine and persist factors, let the
+Screener choose a maximum of 10 active factors, backtest, and register a ready
+strategy.py. Do not create live holdings or advance the date; the step tool is
+intentionally disabled and the 100,000,000 USD-equivalent account must remain
+fully frozen in cash until 2026-07-16.
+"""
         
     def _setup_signal_handler(self):
         """Setup signal handler for graceful interruption."""
@@ -307,7 +326,11 @@ class Launcher:
         skills = [QuantitativeTradingSkill(), FactorMiningSkill()]
         
         # Use MINER_INSTRUCTION with miner_id formatting
-        miner_instruction = MINER_INSTRUCTION.format(miner_id=miner_id)
+        miner_instruction = MINER_INSTRUCTION.format(
+            miner_id=miner_id,
+            ic_threshold=self.factor_ic_threshold,
+            icir_threshold=self.factor_icir_threshold,
+        )
         
         agent = Agent(
             model_code=self.miner_model_config['code'],
@@ -731,6 +754,23 @@ class Launcher:
                 last_complete_cycle = self._load_previous_workflow_state()
             else:
                 last_complete_cycle = None
+
+            if (
+                self.resume
+                and last_complete_cycle is not None
+                and last_complete_cycle >= self.max_cycles
+            ):
+                print(
+                    f"\n✅ Resume checkpoint already reached max_cycles="
+                    f"{self.max_cycles}; no extra cycle will be started."
+                )
+                return {
+                    "success": True,
+                    "total_cycles": len(self.cycle_records),
+                    "miner_count": len(self.miner_ids),
+                    "cycle_records": [asdict(r) for r in self.cycle_records],
+                    "stopped_by_user": False,
+                }
             
             # Create all agents
             print(f"\n📊 Creating {len(self.miner_ids)} miner agents...")

@@ -130,6 +130,7 @@ class Exchange:
             
 
             return AccountSchema(
+                initial_capital=data.get('initial_capital', data.get('total_assets', 10_000_000.0)),
                 total_assets=data.get('total_assets', 0),
                 net_assets=data.get('net_assets', 0),
                 available_cash=data.get('available_cash', 0),
@@ -443,7 +444,7 @@ class Exchange:
         self.account.total_assets = self.account.net_assets
         
         # Calculate total profit/loss based on total assets vs initial capital
-        initial_capital = 10000000  # Initial capital is 10 million USD
+        initial_capital = self.account.initial_capital
         
         # total_profit_loss = total_assets - initial_capital
         self.account.total_profit_loss = round(self.account.total_assets - initial_capital, 4)

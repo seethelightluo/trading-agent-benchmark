@@ -1,5 +1,31 @@
 # 详细落地计划：日频 + 统一 3bps 摩擦的 AlphaCrafter & FactorMiner 前向走步（Walk-Forward）测试
 
+> **当前实施合约（2026-07-25）**：下文含早期逐日/月度方案与旧文件名，仅作设计演进记录。实际运行以 `ASSETS.yaml`、`progress.md` 和 `scheduler/run_pipeline.py` 为准：历史研究截止 2026-07-15；2026-07-16 起 100M 全现金前向；AC/FM 各共享热身一次，随后九条 WL 独立；每 10 个交易日做 Agent 研究/调仓，逐日本地撮合估值；研究库可大于 10，活跃组合最多 10 因子；单边成本 3bps、最低往返边际 6bps。
+
+## 2026-07-25：15 资产 IC/ICIR 门槛适配计划
+
+### 依据与判断
+
+- FactorMiner 论文（Wang et al., *FactorMiner: A Self-Evolving Agent with Skills and Experience Memory for Financial Alpha Discovery*, arXiv:2602.14670）以 CSI500/CSI1000/HS300 的 10 分钟股票横截面为主要实验，股票筛选在 CSI500 训练集上使用 `|IC| >= 0.05`、`|ICIR| >= 0.5`；附录给出的 A 股挖掘默认 IC 门槛为 `0.04`。论文的机制消融为增加样本量曾临时放宽到 `|IC| > 0.02`，该值不作为本 benchmark 的正式门槛。
+- 论文效率实验明确使用 `12,610 × 500` 的 CSI500 面板；本 benchmark 每日只有 15 个可交易跨资产标的。横截面秩相关在独立噪声近似下有 `std(IC_t) ~ 1/sqrt(M-1)`，因此在保持相近预测强度时，ICIR 随 `sqrt(M-1)` 缩放。
+- 从 500 缩到 15 的换算为：`0.5 * sqrt((15-1)/(500-1)) = 0.08375`。正式值向上取整到 `0.10`，不低于规模换算值并保留保守余量。
+- IC 是原始预测强度而不是稳定性比率；缩小横截面不会为降低 IC 门槛提供统计依据，因此仍使用论文默认 `0.04`，不采用为了消融样本量而设置的 `0.02`。
+- 真实 20 轮诊断提供了交叉验证：160 个候选中有 3 个达到 `IC >= 0.04`（最高 0.0438），对应 ICIR 约 0.110–0.120；旧的 `ICIR >= 0.5` 将它们全部拒绝。这与 15 资产缩放后的数量级一致。
+
+### 统一实施口径
+
+1. `ASSETS.yaml.factor_admission` 是单一事实源：`IC >= 0.04`、`ICIR >= 0.10`、因子间 `|rho| < 0.5`。
+2. Scheduler 为每个 FM warm-up/online window 显式写入门槛，并将门槛加入 profile、fingerprint 和 manifest，旧门槛 checkpoint 不得污染新运行。
+3. Scheduler 通过 `AC_FACTOR_IC_THRESHOLD` / `AC_FACTOR_ICIR_THRESHOLD` 将同一门槛注入 AlphaCrafter；AC 直接运行时由 `config.yaml.factor_validation` 提供相同后备值。
+4. AC Miner 的提示必须明确使用 daily paper IC/ICIR 的统一门槛；Screener/Trader 仍负责相关性、换手和组合约束，不另设冲突的 IC 门槛。
+5. 先运行 live 验证：共享历史 Ralph 5 轮；WL1 推进 5 个十日窗口；第一窗口直接使用共享库，第二窗口起每窗口追加 1 轮在线 Ralph。验收 API、因子录取、checkpoint iteration、逐窗口可见边界、账户和持久化。
+
+### 不做的事
+
+- 不把 2020 单独挖矿的 memory/library 续接后称为与一次性 2020–2026 warm-up 等价。
+- 不因为短烟测没有入库就关闭 IC/ICIR 门控或降到接近零。
+- 不修改 FactorMiner 全局论文默认配置；15 资产适配只进入 benchmark live 配置和调度器生成配置。
+
 > 本文件基于 [refer.md](refer.md) 的核心讨论整理而成，是该测试的**权威工程蓝图**。
 > 关键结论：**恢复两个框架的原生日频（Daily）**，叠加**全资产统一单边 3bps（1bp 佣金 + 2bp 滑点）交易摩擦**，仅对两个框架各做**一处最小改造**，即可让大模型自主学会"静若处子、动若脱兔"的日频调仓艺术。
 > 编写日期：2026-07-20

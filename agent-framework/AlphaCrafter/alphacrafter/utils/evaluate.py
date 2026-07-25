@@ -5,7 +5,7 @@ from datetime import datetime
 import os
 
 # Configuration
-INITIAL_CAPITAL = 10000000
+INITIAL_CAPITAL = 100000000
 TRADING_DAYS_PER_YEAR = 243  # Number of trading days
 BENCHMARK_ANNUAL_RETURN = 0.0125  # Benchmark annual return
 BENCHMARK_DAILY_RETURN = (1 + BENCHMARK_ANNUAL_RETURN) ** (1 / TRADING_DAYS_PER_YEAR) - 1  # Daily compounded

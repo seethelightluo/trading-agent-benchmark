@@ -1,8 +1,42 @@
 # process.md — 两位 AI 的协作进展总结
 
+> **当前 benchmark 合约（2026-07-25）优先于下方历史记录**：原始行情抓取可含 2026-07-16，但 Agent 共享研究可见区间只到 2026-07-15；2026-07-16 是 100M 全现金、空持仓账户的首个前向执行日。当前调度为每 10 个交易日一次 Agent 研究/决策、逐日本地撮合估值，并非旧版逐日/月度 Agent 调度。完整口径见 `RUN.md` 与 `agent-framework/progress.md`。
+
 > 项目：`trade-agent-benchmark`（量化交易 Agent 基准：AlphaCrafter + FactorMiner 日频前向走步，9 条世界线为未来行情，统一 3bps 摩擦）。
 > 本文件汇总 **AI-1（数据/管线派）** 与 **AI-2（架构/计价派）** 两人各自完成的工作，并确认当前数据状态。
-> 更新：2026-07-23
+> 更新：2026-07-25
+
+---
+
+## 〇、2026-07-25 最新进展（AC warm-up 实际已跑通 / 两 bug 已修）
+
+**本轮把 AC 共享 warm-up 从"看似失败"推进到"已可复用生成 manifest"，并修掉两个真 bug。** 下方 §一~§四 为历史记录，状态以本节为准。
+
+### 1. 进展
+- **AC warm-up 实际已跑通**（session `ws1`，07-25 12:45）：3 个 Miner 均只用 ≤2026-07-15 数据，严格筛选后**无因子入库**（合理结果，非失败）；Screener/Trader 合法选择全现金、不交易、不前进日期。账户冻结核验通过：`current_date=2026-07-16`、`visible_through=2026-07-15`、`simulation_complete=false`、`available_cash=net_assets=100M`、0 持仓 / 0 订单；`workspace/strategy.py` 带 `@register_hook`。
+- 之前 `ensure_ac_shared_warmup` 返 `AC=False` **只是验收器不认 AC 实际的 `miner_miner_1` 双前缀 phase 名**，并非 warm-up 没跑完。
+- **FM 腿结构已验证**（07-25 01:48 mock 烟测 `shared_warmup_mock`）：mine → combine → all-cash 组合端到端跑通；0 因子是 mock provider 预期（IC 准入过不了，真实 key 下才填充）。
+
+### 2. 已修 bug（根因 + 修复位置）
+- **Bug A — 验收器 phase 命名不兼容** · `scheduler/ac_shared_warmup.py: workflow_cycle_complete`。
+  根因：AC `main.py` 的 `_log_workflow_entry` 用 `f"miner_{miner_id}"`，而 `miner_id` 本就是 `miner_1`（来自 `config.yaml: miner.ids`），落盘 phase 变成 **`miner_miner_1`**（双前缀）。验收器原只认 `miner_1` → cycle-1 被误判未完成。
+  修复：同时接受 `miner_1` / `miner_miner_1`（已核验 `workflow_cycle_complete(ws1,...) == True`）。
+- **Bug B — `--resume` 达 `max_cycles` 仍启动新 cycle** · `AlphaCrafter/alphacrafter/main.py:745-760`。
+  根因：`last_complete_cycle == max_cycles` 时 `--resume` 仍走进"启动 cycle `last_complete_cycle+1`"分支。12:45 日志可见残留 `cycle 2 / miner_miner_3`（被手动停止）——这就是用户观察到的"仍错误启动 cycle 2/1"，会浪费配额并改写研究产物。
+  修复：加早退守卫——`resume and last_complete_cycle >= max_cycles` → 直接 success 返回，**在创建任何 agent 之前**，故不调 LLM、不启新 cycle、不动账户。后续 `--resume` 命中守卫即复用 cycle 1。
+
+### 3. 待决策 / 待办
+- ⚠️ **指纹闸 vs 复用**（烟测前必须定）：`ac_warmup_fingerprint` 把 `main.py` 也算进研究代码 sha；本轮加 Bug B 守卫后 `main.py` 变 → ws1 指纹 `5dc3… → 2038…`。已核实 **12:45 warm-up 之后仅 `main.py` 控制流改动**（instructions/toolkit/sim/skills/utils 均未动），ws1 cycle-1 研究产物对当前代码**仍有效**。两条路：
+  - **复用（省 LLM）**：把 saved contract 指纹重盖为当前值，跳过归档重建；`--resume` 命中 Bug B 守卫直接成功退出 → 生成 manifest，不调 LLM。
+  - **重建（审计干净）**：归档 ws1、用当前代码重跑 1 个 warmup cycle（耗配额），指纹干净匹配。
+- 🟡 **34 个文件 / +1808 行未提交**（含本轮 Bug A/B 修复、新 `test_workflow_runtime.py`、`ac_shared_warmup.py`、`fm_walk_forward.py`）；AC warm-up 跑通后应一次性提交（提交前确认 `sandbox/template_*/persistent/*.json` 改动预期、无 secret）。
+- ⚠️ **端点稳定性**：现用自建裸 IP 端点；多天长跑前需确认其可用率 / 配额约束是否仍匹配 5h 退避假设。
+
+### 4. 接下来的流程
+1. 定指纹闸决策（复用 vs 重建）。
+2. 小烟测：`--warmup-only --mode both --fm-mock --max-attempts 3`，确认 AC warm-up 复用 cycle 1 生成 manifest（不重跑 LLM、不启 cycle 2）。
+3. 小范围真实模拟：1 条 WL × 少量 cycle，确认 `gpt-5.6-terra` 驱动 AC agent loop + FM live mining 填充因子库。
+4. 提交推送 → `nohup`/systemd 全量（9 WL × ac/fm，cadence=10）。
 
 ---
 

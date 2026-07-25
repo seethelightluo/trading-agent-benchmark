@@ -41,8 +41,32 @@ to_usd:
 
 # === 全局参数 ===
 baseline_date: "2026-07-16"      # warm-up 与在线滚动分界
+history_end:   "2026-07-15"      # Agent 首轮决策可见数据截止日；首笔成交从 baseline_date 开始
 warmup_start:  "2020-01-01"      # 历史数据起点
 # 前向终点：不硬编码 2030；取世界线末阶段真实结束日。9 条 WL 末阶段均结束于 2035-12-31。
 # gen_worldline_online.py 逐 WL 读 max(阶段 end_date)；此处置全局上限/默认。
 online_end:    "2035-12-31"
 friction_bps:  3                 # 统一单边摩擦（1bp 佣金 + 2bp 滑点）
+initial_capital_usd: 100000000    # 2026-07-16 实盘起点；warm-up 期间冻结、不建仓
+decision_cadence_trading_days: 10 # Agent 每 10 个交易日研究/决定一次
+max_active_factors: 10            # 两框架进入组合的统一活跃因子上限（采纳 refer.md Top-10；研究库仍可更大）
+min_round_trip_edge_bps: 6        # 至少覆盖双边 3bps×2；低于该门槛允许不交易
+
+# === 统一因子录取门槛（FM 数值门控 + AC Miner 研究提示）===
+# FactorMiner 论文在 CSI500（500 只股票）上使用股票筛选门槛
+# |IC|>=0.05、|ICIR|>=0.5，附录默认 A 股挖掘 IC 门槛为 0.04。
+# 本 benchmark 只有 15 个跨资产标的。横截面秩相关在独立噪声近似下
+# std(IC_t) 与 1/sqrt(M-1) 同阶，因此保持相同信噪要求时，ICIR 随
+# sqrt(M-1) 缩放：0.5*sqrt((15-1)/(500-1))=0.08375。向上取整到
+# 0.10 保留保守余量；原始 IC 仍保持论文默认 0.04，不为强行入库而放宽。
+factor_admission:
+  metric_version: "paper_ic_v2"
+  universe_size: 15
+  reference_universe: "CSI500"
+  reference_universe_size: 500
+  reference_ic_threshold: 0.04
+  reference_icir_threshold: 0.5
+  scaled_icir_threshold: 0.08375
+  ic_threshold: 0.04
+  icir_threshold: 0.10
+  correlation_threshold: 0.5

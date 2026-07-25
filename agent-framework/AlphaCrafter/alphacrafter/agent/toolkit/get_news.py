@@ -116,9 +116,11 @@ class GetNewsTool(BaseTool):
                 if days <= 0:
                     return f"Error: days must be positive, got {days}"
                 
-                # Read date file to get current date
+                # News follows the same pre-trade visibility boundary as prices.
+                # On an execution day, same-day publications are not observable
+                # until that day's exchange tick has completed.
                 date_data = self._read_date_file()
-                current_date_str = date_data.get('current_date')
+                current_date_str = date_data.get('visible_through', date_data.get('current_date'))
                 
                 if not current_date_str:
                     return "Error: current_date not found in date file"
@@ -182,9 +184,9 @@ class GetNewsTool(BaseTool):
                 List of filtered news items, or None if error
             """
             try:
-                # Read date file to get current date
+                # Keep the raw and formatted variants on the exact same cutoff.
                 date_data = self._read_date_file()
-                current_date_str = date_data.get('current_date')
+                current_date_str = date_data.get('visible_through', date_data.get('current_date'))
                 
                 if not current_date_str:
                     return None

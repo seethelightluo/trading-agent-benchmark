@@ -43,7 +43,7 @@ def get_index_daily_data(
         with open(date_file_path, 'r', encoding='utf-8') as f:
             date_data = json.load(f)
         
-        current_date_str = date_data.get('current_date')
+        current_date_str = date_data.get('visible_through', date_data.get('current_date'))
         if not current_date_str:
             raise KeyError("current_date not found in date file")
         

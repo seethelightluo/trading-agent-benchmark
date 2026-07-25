@@ -113,3 +113,93 @@ data-prepare/asset-daily-data/
 - [x] **补抓 EURUSD**（斯托克50 的 EUR→USD 折算，BOC 欧元/美元中间价比，国内源免 Yahoo）；恒生用 HKD-USD 联系汇率常数 ≈7.80，无需抓取。
 - [x] `ASSETS.yaml` / `asset_universe.py` / `asset_spec.py` / `build_inputs.py`：宇宙拆为 **15 可交易 + 5 信号 = 20**，信号项（DXY/USDCNY/USDJPY/EURUSD/VIX）不进权重向量（AC watch_list 仅 15，信号入 index_data）。
 - [x] 前向终点改为**逐 WL 动态**读取 `max(阶段 end_date)`（9 条 WL 均至 2035-12-31，原 2030-12-31 会截断 5 年）；`gen_worldline_online.py` 已重生成。
+
+---
+
+## 八、Agent 执行架构与实现（2026-07-25）
+
+> 数据宇宙与计价口径见 §二/§七；本节描述两框架如何**消费**该数据走步前向。
+> 设计目标：**公平**（两框架见同一研究历史）· **防穿越**（只用 ≤t 数据）· **抗断**（长任务可续跑）· **可审计**（指纹 + 状态持久化）。
+> 代码主入口：`agent-framework/scheduler/run_pipeline.py`（断电可恢复运行器）。
+
+### 8.1 两框架角色（核心对照 = news 是否有用）
+
+| 框架 | 机制 | 信息优势 | 决策节奏 |
+|---|---|---|---|
+| **AlphaCrafter (AC)** | 3×Miner → Screener → Trader 多智能体轮转 | 吃 macro+event **news**（含内幕抢跑对齐） | 每 cycle 推进 10 交易日 |
+| **FactorMiner (FM)** | RalphLoop 公式化因子自进化 + IC 加权组合 | 纯价量，**不吃 news** | 每 10 交易日重算 + 本地每日盯盘 |
+
+### 8.2 共享 warm-up + 逐 WL 播种（核心架构）
+
+9 条世界线的真实研究历史在 ≤2026-07-15 段**字节一致**，故每框架只做**一次冻结资金的研究 warm-up**，再把不可变成果播种到 9 条独立世界线账户：
+
+- **AC warm-up**（session `ws1`，`AC_WARMUP_ONLY=1`，`max_cycles=1`）：跑 1 个完整 Miner×3 + Screener + Trader cycle；资金冻结（100M 全现金、0 持仓）、step 工具禁用、不前进日期；产出 `workspace/strategy.py`（带 `@register_hook`）+ `workspace/factors/*.json`。
+- **FM warm-up**（`results/fm/shared_warmup/`）：Ralph loop 在 ≤2026-07-15 切片上挖因子库 + checkpoint + 经验记忆，再 `combine` 出 IC 加权组合。
+- **指纹闸（防漂移）**：`history_digest + 研究代码 sha + 配置 sha + assets sha` → 任一改动 → 归档旧 session、强制重跑，保证 warm-up 永远匹配当前代码。
+- **逐 WL 播种**：`seed_worldline_workspace`（AC）把 ws1 的 workspace 拷进 `sandbox/wlN/`，`execute_seeded_first_block` 用共享 strategy 本地跑前 10 天，再 `--resume` 进入 WL 专属 cycle；FM 则 `seed_fm_online_state` 克隆 library/checkpoint/memory 到每条 WL，每 10 天做 1 次 Ralph 小更新 + `run_forward` 确定性撮合。
+- **收益**：省 9× 重复 warm-up 的 LLM 成本；保证两框架研究输入完全一致（公平性基准）。
+
+### 8.3 节奏、摩擦、资金
+
+- **决策节奏 = 10 交易日**（`ASSETS.yaml: decision_cadence_trading_days`）。AC：`agent/toolkit/step.py` 读 `AC_CADENCE_DAYS` 强制每 cycle 推进 N 天。FM：`scheduler/fm_walk_forward.py: run_forward` 在 `idx % cadence == 0` 重算因子权重；**日间盯盘本地确定性、不调 LLM**。
+- **统一摩擦 = 单边 3bps**（1bp 佣金 + 2bp 滑点）：AC 的 `sim/exchange_a.py`/`sim/exchange_us.py` 在 `executed_price` 上叠加 `slippage_rate=0.0002`；FM 的 `run_forward` 按 `turnover × cost_bps` 扣成本，并有 `min_round_trip_edge_bps=6` 门槛（预期收益不覆盖双边成本则不交易）。
+- **初始资金 100M USD**，warm-up 期间冻结；`baseline_date=2026-07-16` 为首笔前向执行日。
+
+### 8.4 沙箱（防作弊 / 防穿越）
+
+- **两框架均移除 web-search**；AC `agent/toolkit/shell.py` 给子进程注入黑洞代理（`HTTP_PROXY=http://127.0.0.1:1`、`NO_PROXY=""`），禁止联网偷看未来。
+- **防穿越**：walk-forward 游标——每个决策日 t 只喂 ≤t 数据；FM `_slice_fm_panel`/`slice_panel` 切片后断言 `datetime.max() <= cutoff`；AC news 经 `build_inputs --stage-news` 对齐（news_date 滞后 leak 时点，价格先于 news）。
+
+### 8.5 韧性（长任务抗断电 / 抗崩溃）
+
+- **递增退避** `EscalatingBackoff [0, 60, 600, 3600]s`，**任一成功立即重置**（匹配配额刷新模型）；全 pipeline 共享一条退避链。
+- **逐 WL 原子状态** `results/run_state.json`（`.tmp` + `replace` 原子写）→ 断电重启跳过已完成 WL；AC `--resume` cycle 级续跑。
+- **卡死检测**：`run_ac_wl` 若 `rc==0` 但日期游标未推进（且非 warmup_only）→ 判失败（rc=2）→ 退避重试（catches「agent loop ran but never called step」）。
+- **完成判定**：`ac_session_complete` 只认 `date.json.simulation_complete=true`（走完最后在线日），**max_cycles 到了不算 WL 完成**——避免烟测被误标为全量完成。
+- **三层守护**：`setsid nohup run_all.sh`（脱离终端）+ 内层 while（崩溃 10s 重拉）+ systemd `run_pipeline.service`（断电重启）。
+
+### 8.6 模型与端点（已锁定，勿擅改）
+
+- **统一 `glm-5.2`**（智谱 BigModel OpenAI 兼容端点 `https://open.bigmodel.cn/api/coding/paas/v4`）：AC `config.yaml` miner/screener/trader 三处 `model.code` + FM `fm_live.yaml` `model` 必须三处一致；密钥在 gitignored `AlphaCrafter/.env`（`run_all.sh` 用 `set -a` 导出）。**用户已锁定，改前须征得同意。**
+- FM `OpenAIProvider` 读 `OPENAI_API_URL`/`OPENAI_BASE_URL`；`models.json` 已加 `glm-5.2` 条目（AC `_load_model_config` 找不到会 ValueError）；`.env` 被 root `.gitignore`（第 30-31 行）覆盖、未追踪。
+- `glm-5.2` 为**推理模型**（返回带 `reasoning_content`），单调用 token 含推理、偏慢——成本估算见 §8.8。
+
+### 8.7 评估口径
+
+- **真值** = 9 条世界线 2026-07-16→2035-12-31 的虚构未来行情（GBB 噪声 σ=warmup 实现波动率、端点归零命中阶段终点；price-leads-news 内幕抢跑；DXY-β 派生缺失汇率）。生成方法见 `data-prepare/process.md`。
+- **核心问题**：扣 3bps 摩擦后，LLM Agent 能否盈利？两框架 NAV 曲线 + 风险调整收益对照；AC vs FM = news 价值的最直接 A/B。
+
+### 8.8 成本估算与可行域（2026-07-25，基于 ws1 实测外推）
+
+> 口径：决策点 = 前向 2468 交易日 ÷ 10 ≈ **246/WL × 9 WL = 2214 个**。
+> AC 每 cycle 5 相位（3 Miner 并发 + Screener + Trader，各最多 25 迭代）**全调 LLM**；FM 唯一花 API 的是 `mine`（`combine`/`run_forward` 确定性、免费）。
+> 基线取自 ws1 12:45 真实 warm-up cycle 实测：**单 cycle 27 次调用、~181k token**（input 主导 170k / output 11k）。
+
+**单决策点开销**
+
+| 框架 | 每点 LLM 调用 | token | 说明 |
+|---|---|---|---|
+| AC | ~27（warm-up 实测）~ 45（前向 screener/trader 多跑选/回测/注册） | ~180k–300k | 5 相位全 LLM；glm-5.2 推理模型，output 含 reasoning |
+| FM（实时挖，默认） | 1 Ralph 迭代/窗口 | ~5k | `mine --resume-checkpoint` 追加 1 次；combine/forward 免费 |
+
+**全量估算（9 WL × 246 决策点）**
+
+| 框架 | warm-up（共享 1×） | 前向（9 WL） | **总量级** |
+|---|---|---|---|
+| **AC** | 1 cycle ≈ 27 调用 / 181k tok | 2214 cycle × 27–45 | **~60k–100k 调用 / ~4.5亿–7亿 token** |
+| **FM（实时挖）** | mine ≈ 10–100 调用（target=110, batch=40, 封顶 200 迭代）/ ~150k tok | 2214 窗 × 1 iter ≈ 2.2k 调用 / ~11M tok | **~2.3k 调用 / ~11M token** |
+
+**结论**
+
+1. **warm-up（2020-2026）是小头**：AC 占 1/2214 ≈ 0.045%；FM 占 ~1.3%。两框架 warm-up 各只跑 1 次共享，前向是 9 WL × 246 点。
+2. **FM ≪ AC**：FM 实时挖的调用量约为 AC 的 **1/30–1/60**、token 约 **1/40–1/64**。根因：AC 每 cycle 5 个 LLM 相位；FM 只 `mine` 调 LLM。
+
+**FM 实时挖矿机制（已确认 = 所需）**：从第 2 个决策点起，每 10 个交易日用**截至当天的世界线数据**（expanding window、防穿越）追加 1 次 Ralph 迭代进化因子库 → `combine` 选 top-10 + IC 加权 → 确定性盯盘 10 天。即"实时根据虚拟世界线数据更新因子"。旋钮 `--fm-online-iterations`（默认 1）。
+
+**⚠️ 可行性提示**：AC 的 ~60k–100k 调用 / ~5亿 token 对单一智谱 key 是很大体量；退避按"5h 配额刷新"设计，全量 AC 光配额等待可能拖成数天–数周挂机，且 glm-5.2 推理模型单调用慢。**建议先 `--only 1 --max-cycles 2` 小范围验通再定全量参数。**
+
+**压 AC 开销旋钮**（任选组合）：
+- `--only 1,3,5,7,9` 跑 5 条 WL → 砍 ~45%。
+- `ASSETS.yaml: decision_cadence_trading_days` 10→20 → cycle 数减半。
+- `online_end` 提前（如 2032）→ 按比例砍。
+- `config.yaml` 三处 `max_iterations: 25→12` → 每相位迭代上限减半。

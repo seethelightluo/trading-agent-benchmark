@@ -75,9 +75,10 @@ class BacktestTool(BaseTool):
         if not os.path.exists(file_path):
             # Return default account structure if file doesn't exist
             return {
-                "total_assets": 10000000.0,
-                "net_assets": 10000000.0,
-                "available_cash": 10000000.0,
+                "initial_capital": 100000000.0,
+                "total_assets": 100000000.0,
+                "net_assets": 100000000.0,
+                "available_cash": 100000000.0,
                 "market_value": 0.0,
                 "total_profit_loss": 0.0,
                 "total_profit_loss_rate": 0.0,
@@ -369,22 +370,29 @@ class BacktestTool(BaseTool):
                 date_data = self._read_date_file(self.date_file_path)
                 current_date_str = date_data['current_date']
                 trading_days = date_data['trading_days']
-                
-                # Calculate past date
-                past_date_str = self._find_past_trading_day(
-                    current_date_str, 
-                    trading_days, 
-                    days
-                )
+                # In the benchmark, ``current_date`` is the next execution day;
+                # the latest legally observable bar is ``visible_through``.
+                # Legacy sessions without that field keep their old inclusive
+                # current-date behavior.
+                end_date_str = date_data.get('visible_through', current_date_str)
+                if end_date_str not in trading_days:
+                    raise ValueError(
+                        f"Backtest visibility date {end_date_str} not found in trading days"
+                    )
+                end_idx = trading_days.index(end_date_str)
+                days = min(days, end_idx + 1)
+                past_date_str = trading_days[end_idx - days + 1]
                 
                 # Set date to past date for backtest
+                past_idx = trading_days.index(past_date_str)
                 temp_date_data = {
                     "current_date": past_date_str,
+                    "visible_through": trading_days[max(0, past_idx - 1)],
                     "trading_days": trading_days
                 }
                 self._write_date_file(temp_date_data, self.date_file_path)
                 
-                print(f"Backtest period: {past_date_str} → {current_date_str} ({days} trading days)")
+                print(f"Backtest period: {past_date_str} → {end_date_str} ({days} trading days)")
                 
                 # Log initial account snapshot
                 initial_account = self._read_account_file(self.account_file_path)
@@ -398,9 +406,13 @@ class BacktestTool(BaseTool):
                     self.exchange.pre_tick()
                     sleep(0.4)  # Small delay to simulate time passage   
 
-                    # Execute strategy hook
-                    self.hook.on_tick()
-                    sleep(0.4)  # Small delay to simulate time passage
+                    # Match the live benchmark: a fresh portfolio decision is
+                    # allowed only at the start of each cadence block.  Prices are
+                    # still marked and pending orders are processed every day.
+                    cadence = max(1, int(os.environ.get("AC_CADENCE_DAYS", "10")))
+                    if i % cadence == 0:
+                        self.hook.on_tick()
+                        sleep(0.4)  # Small delay to simulate time passage
 
                     self.exchange.post_tick()
                     sleep(0.4)  # Small delay to simulate time passage        
@@ -416,6 +428,7 @@ class BacktestTool(BaseTool):
                     )
                     print(f"  Current trading day: {next_date_str}")
                     
+                    temp_date_data['visible_through'] = self.backtest_snapshots[-1]['date']
                     temp_date_data['current_date'] = next_date_str
 
                     self._write_date_file(temp_date_data, self.date_file_path)
@@ -427,7 +440,7 @@ class BacktestTool(BaseTool):
                 
                 # Prepare output
                 output_lines = []
-                output_lines.append(f"✅ Backtest completed: {past_date_str} → {current_date_str} ({days} trading days)")
+                output_lines.append(f"✅ Backtest completed: {past_date_str} → {end_date_str} ({days} trading days)")
                 output_lines.append("")
                 output_lines.append("📊 Performance Metrics (based on Net Assets):")
                 for metric_name, metric_value in metrics.items():
@@ -436,7 +449,7 @@ class BacktestTool(BaseTool):
                 # Prepare result for logging
                 backtest_result["period"] = {
                     "start_date": past_date_str,
-                    "end_date": current_date_str
+                    "end_date": end_date_str
                 }
                 backtest_result["metrics"] = metrics
                 backtest_result["snapshots"] = self.backtest_snapshots  # Save snapshots for reference

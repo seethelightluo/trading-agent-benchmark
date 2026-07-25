@@ -311,6 +311,12 @@ class StepTool(BaseTool):
         # 再平衡频次：AC_CADENCE_DAYS env 强制每 cycle 推进 N 个交易日（默认 10）。
         # 覆盖 agent 传入值 → agent 无法绕过到更高频；0 = 沿用原生（min 5）。
         _CADENCE = int(os.environ.get("AC_CADENCE_DAYS", "10"))
+        _REBALANCE_ON_CYCLE_START = os.environ.get(
+            "AC_REBALANCE_ONLY_ON_CYCLE_START", "1"
+        ).lower() not in {"0", "false", "no"}
+        _WARMUP_ONLY = os.environ.get("AC_WARMUP_ONLY", "0").lower() in {
+            "1", "true", "yes"
+        }
         def step(days: int) -> str:
             """
             Advance the simulation by N trading days.
@@ -322,6 +328,14 @@ class StepTool(BaseTool):
                 String containing the results of the step execution, metrics, and raw account JSON
             """
             try:
+                if _WARMUP_ONLY:
+                    return (
+                        "Shared warm-up mode: live step is disabled. Historical "
+                        "research, backtesting, factor persistence, and strategy "
+                        "registration are allowed, but capital remains frozen until "
+                        "the 2026-07-16 forward phase."
+                    )
+
                 # Trader may rewrite strategy.py after this StepTool instance was created.
                 # Reload the hook at execution time so the current cycle runs the new strategy,
                 # rather than the template/no-op function cached during agent initialization.
@@ -341,6 +355,10 @@ class StepTool(BaseTool):
                 date_data = self._read_date_file()
                 current_date_str = date_data['current_date']
                 trading_days = date_data['trading_days']
+                if current_date_str not in trading_days:
+                    raise ValueError(
+                        f"Current date {current_date_str} not found in trading days list"
+                    )
                 
                 all_results = []
                 next_date_str = current_date_str
@@ -366,10 +384,13 @@ class StepTool(BaseTool):
                     print(f"  ✓ Exchange pre tick processed")
                     sleep(0.4)
                     
-                    print(f"  Executing strategy hook...")
-                    self.hook.on_tick()
-                    print(f"  ✓ Strategy hook executed")
-                    sleep(0.4)
+                    if i == 0 or not _REBALANCE_ON_CYCLE_START:
+                        print(f"  Executing strategy hook...")
+                        self.hook.on_tick()
+                        print(f"  ✓ Strategy hook executed")
+                        sleep(0.4)
+                    else:
+                        print("  ↷ No new rebalance decision inside this 10-day cycle")
 
                     print(f"  Processing exchange tick...")
                     results = self.exchange.post_tick()
@@ -387,11 +408,25 @@ class StepTool(BaseTool):
                     }
                     all_results.append(day_result)
 
-                    next_date_str = self._find_next_trading_day(
-                        next_date_str, 
-                        trading_days, 
-                        1
-                    )
+                    # The completed bar becomes observable only after its execution
+                    # has finished.  The next decision can therefore see this date,
+                    # never the next execution day's close.
+                    completed_date = all_results[-1]['date']
+                    date_data['visible_through'] = completed_date
+                    reached_end = completed_date == trading_days[-1]
+                    if reached_end:
+                        # Keep the execution cursor on the final valid date, but
+                        # distinguish "processed" from merely "ready to process".
+                        # This prevents both skipping and replaying the last bar.
+                        next_date_str = completed_date
+                        date_data['simulation_complete'] = True
+                    else:
+                        next_date_str = self._find_next_trading_day(
+                            completed_date,
+                            trading_days,
+                            1,
+                        )
+                        date_data['simulation_complete'] = False
                     print(f"  Next trading day: {next_date_str}")
 
                     date_data['current_date'] = next_date_str
@@ -400,13 +435,19 @@ class StepTool(BaseTool):
                     sleep(0.4)      
                     
                     print(f"  Day {i+1} completed\n")
+                    if reached_end:
+                        print("  ✓ Final trading day processed exactly once")
+                        break
                 
                 # Calculate metrics from snapshots
                 metrics = self._calculate_metrics()
                 
                 # Create output
                 output_lines = []
-                output_lines.append(f"Advanced {days} trading days: {current_date_str} → {next_date_str}")
+                output_lines.append(
+                    f"Advanced {len(all_results)} trading days: "
+                    f"{current_date_str} → {next_date_str}"
+                )
                 
                 # Add metrics section
                 if metrics.get("Period Return (%)", 0.0) != 0.0 or any(v != 0.0 for k, v in metrics.items() if "Position Rate" not in k):

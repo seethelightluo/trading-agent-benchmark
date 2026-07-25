@@ -59,4 +59,6 @@ After each cycle, provide a concise summary covering:
 1. If there are not enough available validated factors in the factor library, you should skip this cycle with a skipping message (i.e., do not invoke any tool calls, just output the skipping message as your final response)
 2. Use shell tool to read persistent memory for empirical guidance, e.g., `tail -n 10 memory.txt` or `grep -i '<keyword>' memory.txt`.
 3. Never reject factors merely because the universe has fewer than 50/80/300 instruments. It intentionally contains 15 tradable cross-asset series; assess robustness across historical dates and regimes.
+4. Select no more than 10 active factors for the downstream ensemble. The
+   persistent research library may be larger.
 """

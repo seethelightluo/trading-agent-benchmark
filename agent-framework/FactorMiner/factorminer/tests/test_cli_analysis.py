@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import numpy as np
@@ -229,6 +230,7 @@ def test_combine_uses_fit_split_for_factor_preselection(tmp_path, monkeypatch):
             "ic_mean": 0.12,
             "icir": 1.23,
             "ls_return": 0.04,
+            "ls_cumulative": np.array([1.0, 1.01, 1.02]),
             "monotonicity": 1.0,
             "avg_turnover": 0.10,
         },
@@ -260,6 +262,50 @@ def test_combine_uses_fit_split_for_factor_preselection(tmp_path, monkeypatch):
     assert "Fit split:  train" in result.output
     assert "Eval split: test" in result.output
     assert captured_factor_ids == [2]
+    payload = json.loads(
+        (tmp_path / "out" / "combination_results.json").read_text(encoding="utf-8")
+    )
+    assert payload["methods"]["equal-weight"]["ls_cumulative"] == [1.0, 1.01, 1.02]
+
+
+def test_combine_persists_empty_library_as_cash_compatible_artifact(
+    tmp_path, monkeypatch
+):
+    """A zero-admission smoke is valid and should not fail orchestration."""
+    library = FactorLibrary(correlation_threshold=0.5, ic_threshold=0.04)
+    base_path = tmp_path / "empty_library"
+    save_library(library, base_path, save_signals=False)
+    dataset = _make_dataset()
+    monkeypatch.setattr(
+        "factorminer.cli._load_runtime_dataset_for_analysis",
+        lambda cfg, data_path, mock: dataset,
+    )
+    monkeypatch.setattr(
+        "factorminer.cli._recompute_analysis_artifacts",
+        lambda library_arg, dataset_arg, signal_failure_policy: [],
+    )
+
+    output_dir = tmp_path / "out-empty"
+    result = CliRunner().invoke(
+        main,
+        [
+            "--cpu",
+            "--output-dir",
+            str(output_dir),
+            "combine",
+            str(base_path.with_suffix(".json")),
+            "--mock",
+            "--method",
+            "ic-weighted",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(
+        (output_dir / "combination_results.json").read_text(encoding="utf-8")
+    )
+    assert payload["status"] == "no_admitted_factors"
+    assert payload["selected_factor_ids"] == []
 
 
 def test_visualize_defaults_factor_specific_plots_to_split_top_factor(tmp_path, monkeypatch):

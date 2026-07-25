@@ -17,7 +17,7 @@ CSV 或 Parquet，长格式，每行一个 (日期, 资产)：
 ----
 1) AlphaCrafter session 目录（由 template_a 复制改造）：
    persistent/stock_data/<asset_id>.csv   每资产日线（AC 表头 + 空 PE/PS/PB/DYR）
-   persistent/date.json                   {current_date: 基准日, trading_days: [...]}
+   persistent/date.json                   {current_date: 执行日, visible_through: 可见行情截止日, ...}
    persistent/account.json                初始现金 + watch_list=15 可交易 + 空持仓
    persistent/stock_news/<asset_id>.json  每月 1 日宏观新闻（占位，可后续填世界线叙事）
 2) FactorMiner 面板：data/panel.parquet（FM loader 原生长表格式）+ walkforward.yaml 配置
@@ -125,19 +125,38 @@ def build_alpha_crafter(panel: pd.DataFrame, assets_cfg: dict,
     for aid in signal_ids:
         _write_csv(aid, index_data, with_fund=False)
 
-    # 2) date.json：trading_days = 面板全量日期升序；current_date = 基准日（前向起点）
+    # 2) date.json：warm-up 只研究、不交易。2026-07-16 为首个执行日，但日线数据
+    #    只能看到前一交易日（通常为 2026-07-15），避免用当天收盘价做当天交易。
     trading_days = sorted(panel["date"].unique().tolist())
     baseline = assets_cfg["baseline_date"]
     if baseline not in trading_days:
         # 取基准日当天或之后的第一个交易日
         baseline = next((d for d in trading_days if d >= baseline), trading_days[0])
-    date_json = {"current_date": baseline, "trading_days": trading_days}
+    baseline_idx = trading_days.index(baseline)
+    if baseline_idx == 0:
+        raise ValueError(
+            f"panel must contain at least one warm-up trading day before {baseline}"
+        )
+    visible_through = trading_days[baseline_idx - 1]
+    configured_history_end = assets_cfg.get("history_end")
+    if configured_history_end and configured_history_end != visible_through:
+        raise ValueError(
+            "history_end must equal the last panel trading day before the first "
+            f"execution day: configured={configured_history_end}, actual={visible_through}"
+        )
+    date_json = {
+        "current_date": baseline,
+        "visible_through": visible_through,
+        "simulation_complete": False,
+        "trading_days": trading_days,
+    }
     (persistent / "date.json").write_text(
         json.dumps(date_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 3) account.json：初始现金 + watch_list = 15 可交易持仓 + 空持仓/订单
-    initial_capital = 10_000_000.0
+    initial_capital = float(assets_cfg.get("initial_capital_usd", 100_000_000.0))
     account = {
+        "initial_capital": initial_capital,
         "total_assets": initial_capital,
         "net_assets": initial_capital,
         "available_cash": initial_capital,
@@ -192,6 +211,7 @@ def build_alpha_crafter(panel: pd.DataFrame, assets_cfg: dict,
 
     print(f"  ✅ AC session: {dst}")
     print(f"     trading_days={len(trading_days)}  current_date={baseline}  "
+          f"visible_through={visible_through}  initial_capital=${initial_capital:,.0f}  "
           f"tradable={len(tradable_ids)}(stock_data)  signals={len(signal_ids)}(index_data)  "
           f"news={news_src} (~{n_news}/资产)")
     return dst
@@ -203,8 +223,15 @@ def build_alpha_crafter(panel: pd.DataFrame, assets_cfg: dict,
 def build_factor_miner(panel: pd.DataFrame, assets_cfg: dict,
                        fm_data_dir: Path) -> Path:
     fm_data_dir.mkdir(parents=True, exist_ok=True)
+    # FM 的横截面资产只能是可交易宇宙。观察型信号（VIX、利率、FX 等）若混在
+    # asset_id 维度中，会被错误地当成候选持仓并污染 IC/分位数组合。
+    tradable_ids = {str(item["asset_id"]) for item in assets_cfg["tradable"]}
+    fm = panel[panel["asset_id"].astype(str).isin(tradable_ids)].copy()
+    if fm.empty:
+        raise ValueError("FactorMiner panel has no rows from the tradable universe")
+
     # FM loader 期望长表：datetime, asset_id, open, high, low, close, volume, amount
-    fm = panel.rename(columns={"date": "datetime"}).copy()
+    fm = fm.rename(columns={"date": "datetime"})
     fm["datetime"] = pd.to_datetime(fm["datetime"])
     keep = ["datetime", "asset_id", "open", "high", "low", "close", "volume", "amount"]
     fm = fm[keep].sort_values(["asset_id", "datetime"]).reset_index(drop=True)
@@ -217,7 +244,7 @@ def build_factor_miner(panel: pd.DataFrame, assets_cfg: dict,
     text = cfg_src.read_text(encoding="utf-8")
     note = ("# [walk-forward] 前向走步配置；execution.cost_bps=3.0 已统一为单边 3bps。\n"
             f"# 面板：data/panel.parquet（{len(fm)} 行，{fm['asset_id'].nunique()} 资产，"
-            "15 可交易 + 5 信号）\n")
+            "仅含可交易资产；观察型信号不伪装成横截面资产）\n")
     cfg_dst.write_text(note + text, encoding="utf-8")
 
     print(f"  ✅ FM panel: {panel_path}  ({len(fm)} rows, "

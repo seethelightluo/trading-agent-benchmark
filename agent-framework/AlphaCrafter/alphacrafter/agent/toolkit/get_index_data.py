@@ -187,7 +187,7 @@ class GetIndexDataTool(BaseTool):
                 
                 # Read date file to get current date
                 date_data = self._read_date_file()
-                current_date_str = date_data.get('current_date')
+                current_date_str = date_data.get('visible_through', date_data.get('current_date'))
                 
                 if not current_date_str:
                     return "Error: current_date not found in date file"

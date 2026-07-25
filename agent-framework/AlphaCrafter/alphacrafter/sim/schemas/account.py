@@ -24,6 +24,7 @@ class PositionData(BaseModel):
 class AccountSchema(BaseModel):
     """Account related data - all parts that can be controlled"""
     
+    initial_capital: float = Field(default=100_000_000.0, description="Initial capital used as the P&L baseline")
     total_assets: float = Field(..., description="Total assets")
     net_assets: float = Field(..., description="Net assets")
     available_cash: float = Field(..., description="Available cash")

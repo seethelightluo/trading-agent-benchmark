@@ -15,20 +15,28 @@
 # 看进度：tail -f agent-framework/results/run_pipeline.log
 # 停止：pkill -f run_pipeline.py ; pkill -f "main.py wl"
 set -u
-cd /home/lxx/trade-agent-benchmark
+cd /home/lxx/trade-agent-benchmark/agent-framework
 VENV=/home/lxx/trade-agent-benchmark/.venv/bin/python
-LOG=agent-framework/results/run_pipeline.log
-mkdir -p agent-framework/results
+LOG=results/run_pipeline.log
+mkdir -p results
 
 # 导出 LLM 凭证（AC 自带 load_dotenv；FM 读环境变量，故需在此 export）
-if [ -f agent-framework/AlphaCrafter/.env ]; then
-  set -a; . agent-framework/AlphaCrafter/.env; set +a
+if [ -f AlphaCrafter/.env ]; then
+  set -a; . AlphaCrafter/.env; set +a
+fi
+if [ -z "${OPENAI_API_URL:-}" ] || [ -z "${OPENAI_API_KEY:-}" ]; then
+  echo "$(date '+%F %T') live LLM 凭证为空，未启动跑批" >> "$LOG"
+  exit 1
 fi
 
 while true; do
   echo "$(date '+%F %T') === 拉起 run_pipeline: $* ===" >> "$LOG"
   setsid "$VENV" -m scheduler.run_pipeline "$@" >> "$LOG" 2>&1
   rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "$(date '+%F %T') run_pipeline 已成功完成；守护进程正常退出" >> "$LOG"
+    exit 0
+  fi
   echo "$(date '+%F %T') run_pipeline 退出 rc=$rc；10s 后重拉（state 跳过已完成 WL）" >> "$LOG"
   sleep 10
 done

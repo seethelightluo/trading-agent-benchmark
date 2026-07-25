@@ -16,6 +16,8 @@
 
 **AlphaCrafter** is a multi‑agent framework for cross‑sectional factor investing. It integrates LLM‑driven factor discovery, regime‑aware factor selection, and adaptive execution into a single autonomous pipeline. The system operates through three specialized agents — **Miner**, **Screener**, and **Trader** — in a daily rotation, forming a closed hypothesis–validation–execution loop.
 
+> **This benchmark fork:** use the repository-root uv environment and `scheduler.run_pipeline`. The benchmark freezes research through 2026-07-15, starts a 100M all-cash forward account on 2026-07-16, and invokes the Agent cycle every 10 trading days while local execution/valuation remains daily.
+
 ---
 
 ## 🚀 Getting Started
@@ -45,7 +47,7 @@ AlphaCrafter manages isolated pipeline runs through a sandbox directory. Each ne
 **Reference Directory Tree**
 ```bash
 ├── sandbox/
-│   ├── gpt-5.3-backtest-csi300/    # Example custom session
+│   ├── example-backtest-csi300/    # Example custom session
 │   │   ├── config/
 │   │   ├── logs/
 │   │   ├── persistent/
@@ -64,8 +66,10 @@ The main entry point is `main.py`. Navigate to the `alphacrafter` directory and 
 
 ```bash
 # From within /alphacrafter inside the container
-python main.py --session_id gpt-5.3-backtest-csi300 --resume (optional)
+python main.py example-backtest-csi300 --resume
 ```
+
+`session_id` is a positional argument in the current CLI; `--session_id` is not accepted.
 
 ## 📄 Citation
 If you find AlphaCrafter useful for your research, please cite our paper:

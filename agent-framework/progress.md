@@ -1,6 +1,19 @@
 # Trade Agent Benchmark：Agent 使用与执行进度
 
-最后更新：2026-07-24（Asia/Shanghai）
+最后更新：2026-07-25（Asia/Shanghai）
+
+## 0. 2026-07-25 FM live 门槛与五窗口烟测
+
+- FactorMiner 论文以 CSI500（500 只股票）作为主要股票筛选池，股票实现细节使用 `|IC|>=0.05`、`|ICIR|>=0.5`，附录默认 A 股 IC 门槛为 `0.04`。本 benchmark 只有 15 个跨资产标的，统一门槛已调整为 `|IC|>=0.04`、`|ICIR|>=0.10`、`|rho|<0.5`。
+- ICIR 规模换算：`0.5*sqrt((15-1)/(500-1))=0.08375`；正式值向上取整为 `0.10`。IC 保持 `0.04`，没有采用论文为机制消融增加样本而临时放宽的 `0.02`。
+- `ASSETS.yaml.factor_admission` 现在是 AC/FM 单一事实源；Scheduler 将门槛写进 FM profile/fingerprint/manifest，并通过环境变量同步给 AC Miner。AC 直接运行时由 `config.yaml.factor_validation` 使用相同后备值。
+- 第一次真实新门槛 warm-up（5 轮、batch 8）在第 1 轮录取了 1 个因子：40 候选、1 录取、2.5% yield，证明门槛可工作且没有关闭质量控制。
+- 该非空库随后暴露 `combine` 将 NumPy `ndarray` 直接 JSON 序列化的 bug；现已递归转换 `ndarray`/NumPy scalar，并用真实 1 因子历史组合复验：`ls_cumulative` 成功保存为长度 176 的 JSON array。
+- 修复改变 FactorMiner 代码指纹后，按新指纹诚实重跑了完整 smoke，没有伪造或搬运旧 checkpoint。第二次随机候选 5 轮未录取因子，但流程合法继续全现金。
+- 完整 smoke 参数：共享 warm-up 5 轮；WL1 累计推进 5 个十日窗口；第一窗口使用共享库，第 2～5 窗口各追加 1 轮在线 Ralph。最终 checkpoint iteration=9、`next_window_index=5`、五次组合决策、50 行日度净值、模拟完成日 2026-09-23、NAV=100M、空持仓。
+- 日期红线：现实当前日期是 **2026-07-25**；2026-07-26 以后均是未来。上述 2026-07-30～2026-09-23 日期来自项目预先生成的**合成世界线**，不能描述成现实市场结果。
+- `--fm-max-windows` 已修正为累计窗口上限。此前的“每次额外推进 N 个”语义会让相同 smoke 命令在 resume 时误入第 6 窗口；现在重复 `--fm-max-windows 5` 会在 5 停住，0 LLM、Python 原始退出码 0。
+- 研究限制仍需记录：Ralph 当前在 full 可见历史上录取因子，`combine` 才做 train→test 评估。首次录取因子在 held-out test 上 paper IC≈0.0295、ICIR≈0.0762，未达到正式门槛，因此“被 mining 入库”不能等同于“样本外通过”。
 
 ## 1. 当前结论
 

@@ -11,7 +11,10 @@ Your sole function is to operate as an automated workflow executor within a mult
 - Do not reject the universe or require 50, 80, or 300 instruments. Cross-sectional calculations should use the available instruments (normally 15), and robustness should be obtained primarily across many historical dates and market regimes.
 - Fundamental columns may be empty. Prefer price, return, volatility, volume, cross-asset, and macro-regime factors supported by available data.
 - The simulator uses one synthetic account denomination and does not require manual FX conversion for order sizing.
-Initially, the account starts with a cash balance of 10,000,000 synthetic account units and no holdings.
+The 2020-01-01 through 2026-07-15 interval is research-only warm-up: capital is
+frozen and no live holdings are created. At the 2026-07-16 online start, the
+account has 100,000,000 USD-equivalent cash and no holdings; the persisted factor
+library, memory, screener ensemble, and strategy from warm-up are immediately usable.
 
 [Rules]
 1. T+1 Settlement:
@@ -27,8 +30,9 @@ Initially, the account starts with a cash balance of 10,000,000 synthetic accoun
 
 4. Timing:
    - Trading day starts at 09:30 and ends at 15:00 (lunch break from 11:30 to 13:00)
-   - Trading frequency is limited to once per trading day
-   - Trading executes daily at 14:30 (market close at 15:00)
+   - New portfolio decisions occur once every 10 trading days
+   - The simulator still marks positions and processes existing orders daily at 14:30
+   - At each decision, daily OHLCV is visible only through the previous completed trading day
 
 5. Constraints:
    - Quantity must be a multiple of 100 (board lot)

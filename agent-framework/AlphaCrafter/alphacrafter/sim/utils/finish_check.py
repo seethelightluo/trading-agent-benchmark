@@ -4,7 +4,7 @@ from typing import Dict, Any
 
 def finish_check() -> bool:
     """
-    Check if the simulation should finish based on current_date reaching the last trading day.
+    Check whether the last trading day has actually been processed.
         
     Returns:
         True if current_date is the last trading day, False otherwise
@@ -32,12 +32,24 @@ def finish_check() -> bool:
             print("Warning: trading_days not found in date file")
             return False
         
-        # Check if current_date is the last trading day
+        # ``current_date == last_day`` only means the final bar is ready to be
+        # executed.  It must not terminate the workflow before that bar runs.
+        # New sessions set ``simulation_complete`` explicitly; ``visible_through``
+        # provides a safe compatibility path for sessions created before the flag.
         last_trading_day = trading_days[-1]
-        is_last = (current_date == last_trading_day)
+        if 'simulation_complete' in date_data:
+            is_last = bool(date_data['simulation_complete'])
+        elif date_data.get('visible_through') is not None:
+            is_last = date_data.get('visible_through') == last_trading_day
+        else:
+            # A legacy cursor at the final date is not proof that the final bar
+            # ran: the old workflow moved onto that date and then terminated
+            # before executing it.  Prefer one safe final execution over silently
+            # preserving that off-by-one bug.
+            is_last = False
         
         if is_last:
-            print(f"✅ Finish condition met: current_date {current_date} is the last trading day")
+            print(f"✅ Finish condition met: final trading day {last_trading_day} was processed")
         else:
             print(f"⏳ Current date {current_date} is not the last trading day ({last_trading_day})")
         
