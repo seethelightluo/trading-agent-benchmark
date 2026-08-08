@@ -46,8 +46,8 @@ class AcEnvironmentTests(unittest.TestCase):
         ) ** 0.5
 
         self.assertAlmostEqual(admission["scaled_icir_threshold"], scaled, places=5)
-        self.assertEqual(admission["ic_threshold"], 0.04)
-        self.assertEqual(admission["icir_threshold"], 0.10)
+        self.assertEqual(admission["ic_threshold"], 0.007)
+        self.assertEqual(admission["icir_threshold"], 0.084)
         self.assertGreaterEqual(admission["icir_threshold"], scaled)
 
     def test_write_run_config_creates_nested_result_directory(self):
@@ -68,8 +68,8 @@ class AcEnvironmentTests(unittest.TestCase):
             env = ac_env(cadence=7)
 
         self.assertEqual(env["AC_CADENCE_DAYS"], "7")
-        self.assertEqual(env["AC_FACTOR_IC_THRESHOLD"], "0.04")
-        self.assertEqual(env["AC_FACTOR_ICIR_THRESHOLD"], "0.1")
+        self.assertEqual(env["AC_FACTOR_IC_THRESHOLD"], "0.007")
+        self.assertEqual(env["AC_FACTOR_ICIR_THRESHOLD"], "0.084")
         self.assertNotIn("AC_WARMUP_ONLY", env)
         self.assertEqual(
             env["PYTHONPATH"].split(os.pathsep),
@@ -110,8 +110,8 @@ class AcEnvironmentTests(unittest.TestCase):
 
             import yaml
             config = yaml.safe_load(out.read_text(encoding="utf-8"))
-            self.assertEqual(config["mining"]["ic_threshold"], 0.04)
-            self.assertEqual(config["mining"]["icir_threshold"], 0.10)
+            self.assertEqual(config["mining"]["ic_threshold"], 0.007)
+            self.assertEqual(config["mining"]["icir_threshold"], 0.084)
             self.assertEqual(config["mining"]["correlation_threshold"], 0.5)
 
     def test_subprocess_can_resolve_both_import_styles(self):

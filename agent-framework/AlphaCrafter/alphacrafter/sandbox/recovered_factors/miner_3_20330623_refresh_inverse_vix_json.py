@@ -1,0 +1,9 @@
+import json
+p='factors/miner_3_20301226_inverse_vix_persistent_trend_exposure_10v40v50obs.json'
+d=json.load(open(p)); v=d['validation'];v['period']='2020-01-01 through 2033-06-22';v['timestamp']='2033-06-23';v['status']='EFFECTIVE';v['metrics']={
+'primary_horizon_days':10,'daily_paper_ic':0.06618750217254721,'daily_paper_icir':0.23262830792190065,'ic_hit_ratio':0.5985267034990792,'ic_standard_error':0.00863373108056202,'ic_dates':1086,'universe_instruments':15,'mean_valid_instruments_per_ic_date':14.994475138121548,'signal_cell_coverage':0.3097347943465142,'mean_instruments_per_panel_date':4.646021915197713,'rank_stability_1d':0.9074594738896977,'implied_rank_turnover_1d':0.09254052611030228,'max_abs_library_correlation':0.30877343335043184,'most_correlated_library_factor':'miner_1_volnorm_reversal_5obs','max_abs_library_correlation_common_signal_cells':1824,'library_correlation_evidence_complete':True,'library_factors_compared':29,
+'decay_ic':{'1d':0.017117529007259172,'5d':0.03459953185872094,'10d':0.06618750217254721,'20d':0.04827388307154433},'decay_icir':{'1d':0.05848772470331446,'5d':0.12014410731833487,'10d':0.23262830792190065,'20d':0.16766311633692438},'decay_ic_dates':{'1d':1092,'5d':1089,'10d':1086,'20d':1081}}
+v['regime_notes']='Primary 10-observation horizon. 2024-2026: IC 0.06583, ICIR 0.24228 (46 dates); 2027-2030: IC 0.06017, ICIR 0.20853 (713); 2031-2032: IC 0.07906, ICIR 0.27163 (244); 2033 YTD through Jun 22: IC 0.08024, ICIR 0.34006 (83). Positive and stable across all reported regimes; the previously flagged early-2033 drift reversed favorably.'
+d['last_validated']='2033-06-23';d['benchmark_admission']['selected_metrics'].update({'ic':0.06618750217254721,'icir':0.23262830792190065,'max_abs_library_correlation':0.30877343335043184,'quality':0.01539851680790988})
+json.dump(d,open(p,'w'),indent=2);open(p,'a').write('\n')
+print('updated',p)

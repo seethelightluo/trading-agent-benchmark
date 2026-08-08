@@ -6,6 +6,7 @@ from .finish_check import finish_check
 from .get_account_dict import get_account_dict
 from .get_index_daily_data import get_index_daily_data
 from .get_date_str import get_date_str
+from .rebalance_to_weights import ensure_fully_invested, rebalance_to_weights
 
 __all__ = [
     "add_order",
@@ -15,5 +16,7 @@ __all__ = [
     "finish_check",
     "get_account_dict",
     "get_index_daily_data",
-    "get_date_str"
+    "get_date_str",
+    "rebalance_to_weights",
+    "ensure_fully_invested",
 ]

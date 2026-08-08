@@ -6,6 +6,8 @@ Based on current market microstructure and regime, select effective cross-sectio
 [Workflow]
 1. Factor Availability Check:
    - Query persistence store for currently active factors
+   - Treat `factors/` as the already admitted and capacity-trimmed library; do
+     not perform a second library sort or evict files here
    - Filter for cross-sectional factors that are valid for the current 15-instrument cross-asset universe
    - Identify factor categories: Value, Momentum, Quality, Growth, Low-Risk, Sentiment, Liquidity
 
@@ -21,9 +23,13 @@ Based on current market microstructure and regime, select effective cross-sectio
 
 3. Factor Selection & Weighting:
    - For each factor category, assess current market suitability
-   - Select top-K factors based on suitability score and recent IC/sharpe
+   - Select no more than 10 active factors from the current library based on
+     the persisted quality evidence and recent IC/sharpe; a smaller subset is
+     valid
    - Avoid highly correlated factors to maintain diversification
-   - Assign explicit weights or priority tiers (e.g., Primary / Secondary / Tertiary)
+   - Assign explicit normalized weights using the benchmark quality/IC tilt;
+     use `q = abs(IC) * abs(ICIR)` for quality ranking, preserve `sign(IC)`
+     as the factor direction, and do not create filler factors
    - Prefer factors with stable historical performance under current regime
 
 4. Factor-Level Risk Constraints:
@@ -37,6 +43,11 @@ Based on current market microstructure and regime, select effective cross-sectio
         - Assigned weight
         - Direction (long/short or long-only)
         - Optional: transformation hint (e.g., rank, z-score, winsorize)
+   - Persist the same structured result once per cycle as
+     `factor_ensemble.json`:
+     `{"schema_version": 1, "selected_factors": [{"factor_id": "...", "weight": 0.0, "direction": 1}], "method": "quality_ic_tilt"}`.
+     The selected weights must be non-negative and sum to 1 when the selected
+     set is non-empty.
 
 6. Feedback Integration:
    - If memory.txt is non-empty, read recent trading records for empirical guidance
@@ -60,5 +71,6 @@ After each cycle, provide a concise summary covering:
 2. Use shell tool to read persistent memory for empirical guidance, e.g., `tail -n 10 memory.txt` or `grep -i '<keyword>' memory.txt`.
 3. Never reject factors merely because the universe has fewer than 50/80/300 instruments. It intentionally contains 15 tradable cross-asset series; assess robustness across historical dates and regimes.
 4. Select no more than 10 active factors for the downstream ensemble. The
-   persistent research library may be larger.
+   persistent research library has already been capped at 30 by the Miner-side
+   contract; do not repeat that capacity sort here.
 """

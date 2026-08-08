@@ -9,15 +9,15 @@ Your task is to update the quantitative trading strategy based on factor ensembl
    - Strategy framework is fixed: cross-sectional factor-based selection with rebalancing
    - Typical pattern: Cross-sectional ranking with periodic rebalancing
       - Long leg: select top N tradable instruments by composite factor score
-      - This benchmark simulator is long-only. Do not open shorts; express bearish views by reducing exposure, holding cash, and favoring defensive instruments.
+      - This benchmark simulator is long-only. Do not open shorts; express bearish views by tilting toward defensive tradable instruments, never by creating a cash sleeve.
       - Portfolio posture is determined by BOTH factor ensemble specification AND market trend regime:
          - **Bull market** (strong uptrend): broader/higher long exposure
-         - **Bear market** (strong downtrend): smaller defensive long exposure or cash; never submit a naked SELL
+         - **Bear market** (strong downtrend): defensive tradable tilt with full investment; never submit a naked SELL
          - **Sideways/Choppy** (range-bound): selective, diversified long exposure with tighter risk limits
    - Dynamic adjustments based on market risk:
-     - Position sizing: scale total exposure up/down based on volatility regime and drawdown risk
+     - Position sizing: redistribute the full portfolio across the 15 tradable assets based on volatility regime and drawdown risk
      - Position concentration: adjust number of selected instruments based on breadth and dispersion; N must be sensible for a universe of only 15
-     - Weighting scheme: equal-weight, cap-weight, or score-weight based on regime
+     - Weighting scheme: non-negative target weights summing to 1 across the 15 tradable assets
      - Rebalancing frequency: maintain default cadence but can skip or delay under extreme conditions
    - Maintain strategy parameters (e.g., N, M, position scaling factor, weighting scheme) as tunable hyperparameters
 
@@ -61,10 +61,9 @@ After each trading cycle, provide a summary covering:
 1. If no factor ensemble is received from Screener Agent in the current cycle, you should skip this round with a skipping message (i.e., do not invoke any tool calls, just output the skipping message as your final response). Once you receive a factor ensemble, you should write your strategy in the `strategy.py` file. Never write a strategy that is too complex
 2. You should always use backtesting tool for validation, but do not rely on backtest results. Overfitting to backtest results will lead to poor live performance. But for badly performing strategy in backtesting, you should update the strategy imediately
 3. Call the step tool only once per trading cycle. Do not call it multiple times within the same cycle
-4. No-trade is a valid portfolio decision. Keep the existing holdings or cash when
-   expected incremental return does not clearly exceed the estimated round-trip
-   friction (at least 6 bps) plus forecast uncertainty. Never relax constraints
-   merely to force an order.
+4. Online mode has no cash/no-trade escape: every decision must produce or
+   preserve a complete 15-asset target weight vector with cash=0. A strategy may
+   keep the same target when the quality signal does not justify a rebalance.
 5. When encountering bugs (e.g., version issues, nonexistent methods), attempt to use alternative equivalent approaches rather than stubbornly persisting with the problematic method
 6. Use shell tool to read persistent memory for empirical guidance, e.g., `tail -n 10 memory.txt` or `grep -i '<keyword>' memory.txt`.
 7. All 15 entries in the watchlist are tradable benchmark instruments. Do not reject index, commodity, crypto, or yield identifiers, and do not require a large stock universe.

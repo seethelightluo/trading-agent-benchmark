@@ -23,6 +23,7 @@ Your task is to discover and validate new factor ideas that can be used for port
    - Do not treat the small cross-asset universe as invalid. Explicitly report the number of dates and instruments used, and interpret IC uncertainty conservatively.
    - Track validation date to monitor factor timeliness and performance drift
    - Use the benchmark-wide admission gates: absolute daily paper IC >= {ic_threshold:.4f} and absolute daily paper ICIR >= {icir_threshold:.4f}. These are shared with FactorMiner for the same 15-instrument universe; do not substitute stock-pool defaults intended for hundreds of names.
+   - Report `validation.metrics.max_abs_library_correlation` in every persisted factor. For the first factor admitted into an empty library, use 0.0 as in FactorMiner; for later candidates, compute/report the maximum absolute library correlation and do not invent a passing value.
 
 3. Factor Persistence:
    - Save validated factor definitions and results in files.

@@ -1,0 +1,10 @@
+import json
+p='factors/miner_1_20310403_inverse_residual_downside_range_expansion_exhaustion_60obs.json'
+d=json.load(open(p))
+old=d['validation']
+d.setdefault('validation_history',[]).append(old)
+metrics={'selected_horizon_days':20,'daily_paper_ic':0.038045,'daily_paper_icir':0.108196,'hit_ratio':0.56347,'ic_dates':1418,'mean_valid_instruments':9.587,'minimum_valid_instruments':8,'signal_cell_coverage':0.608521,'signal_cells':'13783/22650','daily_rank_turnover':0.046205,'concentration_median_cross_sectional_iqr':0.06093,'decay':{'1d':{'ic':0.004705,'icir':0.013359,'dates':1437},'5d':{'ic':0.005962,'icir':0.016547,'dates':1433},'10d':{'ic':0.013018,'icir':0.036144,'dates':1428},'20d':{'ic':0.038045,'icir':0.108196,'dates':1418}},'max_abs_library_correlation':0.348663,'closest_library_factor':'idiosyncratic_upside_tail_skewness_60obs','library_correlation_evidence_cells':8669,'library_factors_screened':30,'correlation_evidence_note':'Unchanged admitted-factor revalidation; prior complete library novelty audit retained.'}
+notes={'2026_2029':{'dates':831,'ic':0.068133,'icir':0.222829,'hit_ratio':0.607702},'2030_2032_04_28':{'dates':587,'ic':-0.004549,'icir':-0.011251,'hit_ratio':0.500852},'recent_12m':{'dates':242,'ic':-0.102381,'icir':-0.253714,'hit_ratio':0.417355},'assessment':'Aggregate 20-day validation remains above the binding shared gates (IC 0.038045; ICIR 0.108196), so retain EFFECTIVE under aggregate revalidation. Material drift is now confirmed: both post-2030 and recent-12-month slices are negative, with recent ICIR -0.253714. Do not use as fresh evidence; place under enhanced monitoring and revalidate at the next cycle.'}
+d['version']='2032-04-29';d['validation']={'period':'2026-07-16 through 2032-04-28 (completed-bar cutoff)','status':'EFFECTIVE','metrics':metrics,'regime_notes':notes};d['last_validated']='2032-04-29';d['next_revalidation_due']='2032-05-29'
+json.dump(d,open(p,'w'),indent=2);open(p,'a').write('\n')
+print('updated',p,'history_entries',len(d['validation_history']))

@@ -1,0 +1,33 @@
+"""One idea: peer-relative downside beta transition stability, 20d versus 60d."""
+import numpy as np,pandas as pd
+from scipy.stats import spearmanr
+from alphacrafter.sim.utils import get_account_dict,get_stock_daily_data
+assets=get_account_dict()['watch_list']; closes={}
+for a in assets:
+ d=get_stock_daily_data(a,5000).copy(); d['date']=pd.to_datetime(d['date'])
+ closes[a]=pd.to_numeric(d.sort_values('date').set_index('date')['close'],errors='coerce')
+p=pd.DataFrame(closes); r=p.pct_change(); m=r['SPX']
+# Asset beta is estimated only on prior SPX-down days. Small 20-vs-60 beta change means stable defensive behavior.
+def downbeta(w,minp):
+ x=r.where(m.lt(0)); y=m.where(m.lt(0)); return x.rolling(w,min_periods=minp).cov(y).div(y.rolling(w,min_periods=minp).var(),axis=0)
+b20=downbeta(20,8); b60=downbeta(60,25)
+sig=-(b20-b60).abs()
+sig=sig.sub(sig.median(axis=1),axis=0).shift(1)
+fwd={h:p.shift(-h).div(p).sub(1) for h in (1,5,10,20)}
+def stat(h,lo=None,hi=None):
+ x=sig.loc[lo:hi] if lo is not None else sig; vals=[]; bs=[]
+ for dt in x.index:
+  q=pd.concat([x.loc[dt],fwd[h].loc[dt]],axis=1).dropna()
+  if len(q)>=8:
+   vals.append(spearmanr(q.iloc[:,0],q.iloc[:,1]).statistic);bs.append(len(q))
+ vals=np.asarray(vals); return {'dates':len(vals),'ic':round(vals.mean(),6),'icir':round(vals.mean()/vals.std(ddof=1),6),'hit':round((vals>0).mean(),6),'breadth':round(np.mean(bs),3),'min_breadth':min(bs)}
+cut=p.dropna(how='all').index.max()
+print('FACTOR downside_beta_transition_stability_20_60 CUTOFF',cut.date(),'ASSETS',len(assets))
+print('CELLS',int(sig.notna().sum().sum()),'/',sig.size,'COVERAGE',round(sig.notna().stack().mean(),6),'TURNOVER',round(sig.rank(axis=1,pct=True).diff().abs().stack().mean(),6))
+for h in (1,5,10,20): print('H',h,stat(h))
+for n,lo,hi in [('2025_26','2025-01-01','2026-12-31'),('2027_now','2027-01-01',str(cut.date())),('recent180',str(cut-pd.Timedelta(days=180)),str(cut.date()))]:print('REGIME10',n,stat(10,lo,hi))
+# Diagnostics against nearest structural proxies, not admission evidence.
+vol=r.rolling(20,min_periods=15).std(); trend=p.pct_change(20).div(vol); dd=p.div(p.rolling(60,min_periods=45).max()).sub(1)
+rec=(dd-dd.shift(10)).div(.01-dd.shift(10)); rec=rec.sub(rec.median(axis=1),axis=0)
+for n,x in {'risk_adjusted_trend_20d':trend,'smooth_drawdown_recovery_60_10':rec,'inverse_idiosyncratic_volatility_20d':-vol}.items():
+ q=pd.concat([sig.stack(),x.stack()],axis=1).dropna(); print('PROXY',n,'cells',len(q),'rho',round(spearmanr(q.iloc[:,0],q.iloc[:,1]).statistic,6))

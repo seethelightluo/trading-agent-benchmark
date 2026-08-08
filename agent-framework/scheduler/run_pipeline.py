@@ -36,8 +36,34 @@ FM_REPO = HERE / "FactorMiner"
 RESULTS = HERE / "results"
 VENV_PY = Path("/home/lxx/trade-agent-benchmark/.venv/bin/python")
 
-ONLINE_DIR = HERE.parent / "data-prepare" / "online-worldline"
+# The recovered final bundle is the only authoritative AC/FM input.  Keep data
+# resolution in this scheduler so shared warm-up and per-WL seeding cannot
+# silently mix the old generated CSV directory with WL-data-final.
+DATA_ROOT = Path(os.environ.get("AC_DATA_ROOT", str(HERE.parent / "WL-data-final"))).resolve()
+PANELS_DIR = DATA_ROOT / "panels"
+NEWS_DIR = DATA_ROOT / "news"
 ASSETS_CONFIG = HERE / "ASSETS.yaml"
+AC_WARMUP_CYCLES = 40
+
+
+def worldline_panel(wl: int) -> Path:
+    path = PANELS_DIR / f"WL{int(wl)}_full.parquet"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"final WL panel is missing: {path}; set AC_DATA_ROOT only to a "
+            "bundle containing panels/WL<n>_full.parquet"
+        )
+    return path
+
+
+def worldline_news(wl: int) -> Path:
+    path = NEWS_DIR / f"WL{int(wl)}_stage_news.json"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"final WL stage news is missing: {path}; set AC_DATA_ROOT only to "
+            "a bundle containing news/WL<n>_stage_news.json"
+        )
+    return path
 
 
 def load_benchmark_config() -> dict:
@@ -166,7 +192,7 @@ def ac_env(cadence: int, *, warmup_only: bool = False) -> dict:
 
 
 def write_run_config(max_cycles: int, out: Path) -> Path:
-    """生成 AC run 配置：复制 config.yaml，抬高 max_cycles（cadence-10 下每 WL ≈247 cycle）。"""
+    """Generate an AC config with an explicit cycle bound."""
     src = AC_REPO / "config.yaml"
     text = src.read_text(encoding="utf-8")
     import re
@@ -276,7 +302,7 @@ def ensure_ac_worldline_session(wl: int, panel: Path) -> Path:
     if (session_dir / "persistent" / "date.json").exists():
         return session_dir
     return _build_ac_session(
-        f"wl{wl}", panel, ONLINE_DIR / f"WL{wl}_stage_news.json"
+        f"wl{wl}", panel, worldline_news(wl)
     )
 
 
@@ -346,7 +372,10 @@ def ensure_ac_shared_warmup(
         _build_ac_session(session, panel, None)
     save_state(contract_path, {"warmup_fingerprint": fingerprint})
 
-    warmup_cfg = write_run_config(1, result_dir / "run_config.yaml")
+    # One AC cycle is five agent steps: three concurrent miners, one screener,
+    # and one trader.  The shared research warm-up is 40 such cycles; it is not
+    # the one-cycle smoke that older scheduler code used here.
+    warmup_cfg = write_run_config(AC_WARMUP_CYCLES, result_dir / "run_config.yaml")
     ok = run_ac_wl(
         0,
         session,
@@ -1164,7 +1193,7 @@ def main():
     ac_warmup_manifest: dict = {}
     if args.mode in ("ac", "both"):
         ok_ac_warmup, ac_warmup_manifest = ensure_ac_shared_warmup(
-            ONLINE_DIR / "WL1_full.parquet",
+            worldline_panel(1),
             args.cadence,
             bk,
             args.max_attempts,
@@ -1189,7 +1218,7 @@ def main():
 
         ok_fm_warmup, _ = run_fm_wl(
             1,
-            ONLINE_DIR / "WL1_full.parquet",
+            worldline_panel(1),
             bk,
             args.fm_cadence,
             not args.fm_mock,
@@ -1220,7 +1249,7 @@ def main():
     for wl in wls:
         key = f"wl{wl}"
         session = f"wl{wl}"
-        panel = ONLINE_DIR / f"WL{wl}_full.parquet"
+        panel = worldline_panel(wl)
         st = state.get(key, {})
         if st.get("ac_done") and not ac_session_complete(session):
             print(

@@ -1,0 +1,12 @@
+"""Persist 2028-07-27 scheduled revalidation for residual upside serial reversal."""
+import json
+from pathlib import Path
+p=Path('factors/miner_2_20280601_residual_upside_serial_reversal_60d.json')
+d=json.loads(p.read_text())
+v=d['validation']; v['period']='2020-01-01 through 2028-07-26; eligible IC observations begin in 2025 because of aligned-calendar coverage and rolling requirements';v['timestamp']='2028-07-27T15:00:00';v['status']='EFFECTIVE'
+m=v['metrics'];m.update({'primary_horizon_days':20,'daily_paper_ic':-0.064741,'daily_paper_icir':-0.208265,'ic_std':0.310858,'ic_standard_error':0.014638,'ic_hit_ratio':0.410200,'ic_dates':451,'universe_instruments':15,'mean_valid_instruments_per_ic_date':10.623060,'signal_cell_coverage':0.222070,'mean_rank_turnover':0.040862,'turnover_dates':470,'concentration_note':'Continuous residual-autocorrelation signal; 451 IC dates meet the at-least-8-name rule, averaging 10.62 valid names; latest signal has 10 valid instruments.','max_abs_library_correlation':0.197260,'max_abs_library_correlation_factor':'miner_3_residual_lower_partial_moment_60d','library_signal_cells_compared':9720,'decay':{'1d':{'ic':-0.009431,'icir':-0.028200,'hit_ratio':0.485106,'dates':470,'mean_valid_instruments':10.597872},'5d':{'ic':-0.039710,'icir':-0.118668,'hit_ratio':0.450644,'dates':466,'mean_valid_instruments':10.603004},'10d':{'ic':-0.046877,'icir':-0.144174,'hit_ratio':0.431670,'dates':461,'mean_valid_instruments':10.609544},'20d':{'ic':-0.064741,'icir':-0.208265,'hit_ratio':0.410200,'dates':451,'mean_valid_instruments':10.623060}}})
+v['regime_notes']={'2025_2026':{'ic_20d':-0.113459,'icir_20d':-0.435818,'hit_ratio_20d':0.370968,'ic_dates':62},'2027_2028_07_26':{'ic_20d':-0.056976,'icir_20d':-0.179298,'hit_ratio_20d':0.416452,'ic_dates':389},'interpretation':'The negative 20-session orientation remains effective in both eligible periods and strengthened in aggregate versus June. Its 20-day absolute IC and ICIR clear the admission gates. Low library overlap supports continued low-weight diversifying use; revalidate within three months.'}
+d['last_validated']='2028-07-27T15:00:00'
+d['benchmark_admission']['selected_metrics']={'ic':-0.064741,'icir':-0.208265,'metric_path':'validation.metrics.decay.20d','max_abs_library_correlation':0.197260,'correlation_path':'validation.metrics.max_abs_library_correlation','quality':0.013482}
+p.write_text(json.dumps(d,indent=2)+'\n')
+print('updated',p,'status',v['status'])

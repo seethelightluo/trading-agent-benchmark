@@ -1,0 +1,10 @@
+"""Miner_2 single-candidate validation: inverse equity-stress amplified DXY-shock transmission residual."""
+from pathlib import Path
+# The fixed validation harness computes cross-sectional ICs/decay, coverage, turnover,
+# regime splits, and a point-in-time admitted-library signal screen.  Only driver changes.
+src=Path('scripts/miner_2_20330303_inverse_equity_stress_amplified_gold_oil_spread_transmission_residual_30.py').read_text()
+src=src.replace("E=pd.Timestamp('2033-03-02')", "E=pd.Timestamp('2033-03-16')")
+src=src.replace("inverse stress-amplified gold/oil spread transmission residual", "inverse stress-amplified DXY-shock transmission residual")
+src=src.replace("# Pre-specified candidate. gold-minus-oil return is a relative safe-haven-versus-energy\n# shock. Stress multiplies the lagged broad-equity downside magnitude. Higher scores are LOWER\n# sensitivity to this amplified shock, after removing generic risk and trend exposures.\nequity=R[['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX']].mean(axis=1)\nstress=(-equity.shift(1)/(equity.shift(1).rolling(60,min_periods=45).std()+1e-12)).clip(0,3)/3\nspread=R.XAU-R.WTI\nzspread=spread/(spread.rolling(60,min_periods=40).std()+1e-12)\ndriver=zspread*(1+stress)", "# Pre-specified candidate. DXY return is a global dollar-liquidity shock.  Lagged\n# equity stress amplifies the shock. Higher scores indicate lower stress-amplified\n# dollar-shock exposure, residualized from generic risk, crowding, asymmetry and trend.\nequity=R[['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX']].mean(axis=1)\nstress=(-equity.shift(1)/(equity.shift(1).rolling(60,min_periods=45).std()+1e-12)).clip(0,3)/3\ndxy=rd('DXY',root='../persistent/index_data/').pct_change(fill_method=None).reindex(P.index)\nzspread=dxy/(dxy.rolling(60,min_periods=40).std()+1e-12)\ndriver=zspread*(1+stress)")
+src=src.replace("inverse_equity_stress_amplified_gold_oil_spread_transmission_residual_30", "inverse_equity_stress_amplified_dxy_shock_transmission_residual_30")
+exec(compile(src, 'miner_2_dxy_stress_transmission_20330317', 'exec'))

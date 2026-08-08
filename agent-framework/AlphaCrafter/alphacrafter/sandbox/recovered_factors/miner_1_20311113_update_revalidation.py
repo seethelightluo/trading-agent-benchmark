@@ -1,0 +1,9 @@
+import json
+p='factors/miner_1_20310626_residual_downside_range_compression_persistence_20_60obs.json'
+with open(p) as x: d=json.load(x)
+old=d['validation']
+d['validation_history']=d.get('validation_history',[])+[old]
+d['validation']={'period':'2026-07-16 through 2031-11-12 completed daily bars; forward-return availability varies by horizon','status':'EFFECTIVE','metrics':{'selected_horizon_days':20,'daily_paper_ic':0.070026,'daily_paper_icir':0.211070,'hit_ratio':0.58994,'ic_dates':1312,'mean_valid_instruments_per_ic_date':9.61,'minimum_valid_instruments_per_ic_date':8,'coverage':0.309935,'valid_signal_cells':17564,'total_signal_cells':56670,'mean_rank_turnover':0.103522,'turnover_comparisons':1330,'concentration_median_iqr':0.069893,'max_abs_library_correlation':0.459838,'closest_library_factor':'relative_liquidity_stress_20_60obs','library_correlation_paired_cells':12950,'library_signals_screened':30,'library_correlation_note':'Most recent complete library novelty audit at admission; calculation is unchanged, so this is retained correlation evidence rather than a new candidate admission audit.','decay':{'1d':{'ic':-0.006732,'icir':-0.019644,'hit_ratio':0.50639,'ic_dates':1331},'5d':{'ic':0.011974,'icir':0.034564,'hit_ratio':0.51017,'ic_dates':1327},'10d':{'ic':0.055925,'icir':0.163279,'hit_ratio':0.55976,'ic_dates':1322},'20d':{'ic':0.070026,'icir':0.211070,'hit_ratio':0.58994,'ic_dates':1312}}},'regime_notes':'At the selected 20-day horizon the signal remains positive and improves in both partitions: 2026-2029 (849 IC dates, IC 0.059243, ICIR 0.179506, hit 57.833%) and 2030-2031-11-12 (463 dates, IC 0.089799, ICIR 0.268555, hit 61.123%). It passes shared IC/ICIR gates at 10 and 20 days. The factor definition is unchanged; the admission correlation evidence remains below 0.5000.'}
+d['last_validated']='2031-11-13';d['next_revalidation_due']='2032-02-13'
+with open(p,'w') as x: json.dump(d,x,indent=2);x.write('\n')
+print('updated',p)

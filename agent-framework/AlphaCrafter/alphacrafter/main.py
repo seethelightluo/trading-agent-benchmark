@@ -122,10 +122,14 @@ class Launcher:
 
 SHARED WARM-UP PHASE (binding): All nine worldlines share this single
 2020-01-01 through 2026-07-15 research run. Mine and persist factors, let the
-Screener choose a maximum of 10 active factors, backtest, and register a ready
-strategy.py. Do not create live holdings or advance the date; the step tool is
-intentionally disabled and the 100,000,000 USD-equivalent account must remain
-fully frozen in cash until 2026-07-16.
+Screener choose a maximum of 10 active factors from the rolling library. The
+research library may contain up to 30 admitted factors; trim only its quality
+tail after the Miner phase, and do not sort/trim the same library again in the
+Screener. Persist an explicit factor_ensemble.json with selected factor IDs,
+directions, and normalized quality/IC tilt weights when admitted factors exist.
+Do not create live holdings or advance the date; the step tool is intentionally
+disabled and the 1,000,000 USD-equivalent account must remain fully frozen in
+cash until 2026-07-16.
 """
         
     def _setup_signal_handler(self):
@@ -347,6 +351,8 @@ fully frozen in cash until 2026-07-16.
     def _create_screener_agent(self) -> Agent:
         """Create and configure screener agent for factor selection and ensemble construction."""
         toolkit = [
+            ReadFileTool(),
+            WriteFileTool(),
             ShellTool(),
             GetStockDataTool(),
             GetIndexDataTool(),
@@ -534,6 +540,37 @@ fully frozen in cash until 2026-07-16.
                     }
         
         return miner_outputs
+
+    def _enforce_factor_library_once(self, cycle: int) -> Dict[str, Any]:
+        """Apply the benchmark library contract exactly once after all Miners.
+
+        The scheduler does not rank factors and the Screener does not re-trim
+        the library.  This single post-Miner gate owns admission validation and
+        the rolling capacity-30 quality-tail eviction; the Screener only picks
+        the current active subset (<=10) for the ensemble.
+        """
+        from alphacrafter.factor_contract import FactorContract, enforce_library
+
+        factor_dir = os.path.join(self.workspace_path, "factors")
+        result = enforce_library(factor_dir, FactorContract.from_mapping())
+        audit_path = os.path.join(self.workspace_path, "factor_library_audit.jsonl")
+        with open(audit_path, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps({
+                "cycle": int(cycle),
+                "capacity": result.get("capacity"),
+                "kept": result.get("kept"),
+                "rejected": result.get("rejected", []),
+                "evicted": result.get("evicted", []),
+            }, ensure_ascii=False) + "\n")
+        print(
+            "📚 Factor library gate: "
+            f"kept={result.get('kept', 0)}/30 "
+            f"rejected={len(result.get('rejected', []))} "
+            f"evicted_tail={len(result.get('evicted', []))} "
+            f"first_corr_inferred={len(result.get('inferred_first_correlation', []))}",
+            flush=True,
+        )
+        return result
     
     def _should_terminate(self, result: Dict[str, Any]) -> bool:
         """Determine if workflow should terminate based on result."""
@@ -675,6 +712,11 @@ fully frozen in cash until 2026-07-16.
             print("⚠️ Some miners failed, but continuing with available results")
         
         record.miner_outputs = miner_outputs
+
+        # One and only one library admission/trim point per AC cycle.  It runs
+        # before the Screener sees the library, so active-factor selection does
+        # not duplicate the capacity sort.
+        self._enforce_factor_library_once(cycle)
         
         # Print all miner outputs
         print(f"\n--- 🔄 Cycle {cycle} All Miner Outputs ---")
