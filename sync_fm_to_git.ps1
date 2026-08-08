@@ -7,9 +7,10 @@ Write-Host "[$Stamp] sync start"
 
 # 1) 镜像三个 FM 目录（排除 .venv/缓存/临时 tar）
 $Jobs = @(
-    @{ Src = 'D:\FM acceleration';      Dst = Join-Path $Repo 'FM acceleration' },
-    @{ Src = 'D:\FM-WL4-9data';         Dst = Join-Path $Repo 'FM-WL4-9data' },
-    @{ Src = 'D:\WL-data-final';        Dst = Join-Path $Repo 'WL-data-final' }
+    @{ Src = 'D:\FM acceleration';          Dst = Join-Path $Repo 'FM acceleration' },
+    @{ Src = 'D:\FM acceleration-deepseek'; Dst = Join-Path $Repo 'FM acceleration-deepseek' },
+    @{ Src = 'D:\FM-WL4-9data';             Dst = Join-Path $Repo 'FM-WL4-9data' },
+    @{ Src = 'D:\WL-data-final';            Dst = Join-Path $Repo 'WL-data-final' }
 )
 foreach ($Job in $Jobs) {
     if (Test-Path -LiteralPath $Job.Src) {
