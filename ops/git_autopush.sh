@@ -28,7 +28,10 @@ fi
 remote_head="$(git rev-parse refs/remotes/origin/main)"
 local_head="$(git rev-parse HEAD)"
 if [ "$local_head" != "$remote_head" ]; then
-  if git merge-base --is-ancestor "$local_head" "$remote_head"; then
+  if git merge-base --is-ancestor "$remote_head" "$local_head"; then
+    # Local contains the remote tip; push without replaying over a live run.
+    :
+  elif git merge-base --is-ancestor "$local_head" "$remote_head"; then
     git merge --ff-only "$remote_head"
   else
     # Preserve remote commits and stop visibly if a real conflict needs review.
