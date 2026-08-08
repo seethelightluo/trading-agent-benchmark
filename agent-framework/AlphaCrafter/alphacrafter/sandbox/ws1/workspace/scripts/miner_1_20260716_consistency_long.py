@@ -21,7 +21,7 @@ for w in [40,60]:
     if len(fut)>=h: fw[h][s]=float(fut.iloc[h-1]/p.loc[t]-1)
   ns.append(len(fac)); ranks=pd.Series(fac).rank(pct=True)
   if prev is not None:
-   c=set(prev)&set(ranks)
+   c=set(prev.index)&set(ranks.index)
    if len(c)>=8: turns.append(np.mean([abs(ranks[x]-prev[x]) for x in c]))
   prev=ranks
   for h in out:
