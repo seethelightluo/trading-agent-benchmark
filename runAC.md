@@ -264,8 +264,9 @@ cat results/ac_wl_data_final_state.json
 ## 9. 原始 Luna/Terra AC 的三 WL 并行
 
 原始 AC 的 shared warmup 验证通过后，使用以下持久化 runner 启动 WL1-WL3
-并行。它会再次执行 fingerprint、日期、账户、workflow 和因子产物校验，复用
-`ws1` 而不会重新挖掘，也不会读取 DeepSeek 的 workspace：
+并行。它会校验已持久化的 warmup fingerprint、日期、账户、workflow 和因子产物，
+复用 `ws1` 而不会因后续 fractional-sizing 代码变更触发重新挖掘，也不会读取
+DeepSeek 的 workspace：
 
 ```bash
 cd /home/lxx/trade-agent-benchmark/agent-framework

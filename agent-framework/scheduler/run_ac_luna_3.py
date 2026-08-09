@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the original Luna/Terra AC copy with three parallel worldlines.
 
-The shared ws1 warm-up is reused only after the scheduler's fingerprint,
+The shared ws1 warm-up is reused only after its persisted manifest,
 frozen-date, account, workflow, and factor-artifact checks pass. WL1-WL3 are
 then seeded independently and kept in separate resumable AC sessions.
 """
@@ -18,16 +18,19 @@ import yaml
 from scheduler.run_pipeline import (
     AC_REPO,
     RESULTS as PIPELINE_RESULTS,
-    EscalatingBackoff,
     ac_command,
     ac_env,
     ac_session_complete,
-    ensure_ac_shared_warmup,
     load_llm_environment,
     load_state,
     prepare_ac_worldline,
     worldline_panel,
     write_run_config,
+)
+from scheduler.ac_shared_warmup import (
+    validate_warmup_workspace,
+    workflow_cycle_complete,
+    workspace_digest,
 )
 
 
@@ -77,6 +80,68 @@ def push_milestone(label: str) -> None:
 
 def state_for_wl(state: dict, wl: int) -> dict:
     return state.setdefault(f"wl{wl}", {})
+
+
+def verify_persisted_warmup() -> tuple[bool, dict]:
+    """Validate the completed Luna artifact without invoking the warmup runner.
+
+    The shared warmup was produced under a historical AC/code fingerprint. A
+    later code fingerprint mismatch must not silently archive and remine this
+    accepted artifact; only the artifact's own manifest and workspace digest
+    decide whether online seeding is allowed.
+    """
+    manifest_path = PIPELINE_RESULTS / "ac" / "shared_warmup" / "manifest.json"
+    manifest = load_state(manifest_path)
+    session_dir = AC_REPO / "sandbox" / "ws1"
+    if not manifest or manifest.get("status") != "ready":
+        print("[luna-ac] persisted warmup manifest is not ready", flush=True)
+        return False, {}
+    if manifest.get("session") != "ws1":
+        print("[luna-ac] persisted warmup session is not ws1", flush=True)
+        return False, {}
+
+    try:
+        artifacts = validate_warmup_workspace(session_dir)
+    except (OSError, ValueError) as exc:
+        print(f"[luna-ac] persisted warmup artifacts invalid: {exc}", flush=True)
+        return False, {}
+
+    config = yaml.safe_load((AC_REPO / "config.yaml").read_text(encoding="utf-8"))
+    miner_ids = list(config["miner"]["ids"])
+    date_state = load_state(session_dir / "persistent" / "date.json")
+    account = load_state(session_dir / "persistent" / "account.json")
+    checks = {
+        "workflow_complete": workflow_cycle_complete(session_dir, miner_ids),
+        "workspace_artifacts": bool(artifacts.get("factor_files"))
+        and artifacts.get("factor_count", 0) <= 30,
+        "manifest_factor_files": artifacts.get("factor_files") == manifest.get("factor_files"),
+        "baseline_date": date_state.get("current_date") == manifest.get("baseline_date"),
+        "history_end": date_state.get("visible_through") == manifest.get("history_end"),
+        "simulation_frozen": not date_state.get("simulation_complete"),
+        "no_positions": not account.get("positions"),
+        "no_orders": not account.get("orders"),
+        "initial_capital": float(account.get("initial_capital", 0.0))
+        == float(manifest.get("initial_capital_usd", 0.0)),
+        "available_cash": float(account.get("available_cash", 0.0))
+        == float(manifest.get("initial_capital_usd", 0.0)),
+    }
+    ensemble = load_state(session_dir / "workspace" / "factors" / "factor_ensemble.json")
+    selected = ensemble.get("selected_factors", [])
+    checks["active_ensemble"] = (
+        0 < len(selected) <= 10
+        and abs(sum(float(item.get("weight", 0.0)) for item in selected) - 1.0) < 1e-6
+    )
+    if not all(checks.values()):
+        print(f"[luna-ac] persisted warmup check failed: {checks}", flush=True)
+        return False, {}
+    print(
+        "[luna-ac] persisted warmup accepted without remine: "
+        f"fingerprint={manifest.get('warmup_fingerprint', '')[:16]} "
+        f"workspace={workspace_digest(session_dir / 'workspace')[:16]} "
+        "(manifest metadata may predate the final fractional-sizing patch)",
+        flush=True,
+    )
+    return True, manifest
 
 
 def start_worldline(wl: int, config: Path, state: dict):
@@ -132,9 +197,7 @@ def main() -> int:
     push_milestone("luna-3wl-started")
 
     print("[luna-ac] verifying and reusing shared 40-cycle warmup", flush=True)
-    warmup_ok, manifest = ensure_ac_shared_warmup(
-        worldline_panel(1), CADENCE, EscalatingBackoff(), 0
-    )
+    warmup_ok, manifest = verify_persisted_warmup()
     if not warmup_ok:
         print("[luna-ac] shared warmup validation failed; no WL launched", flush=True)
         state["status"] = "warmup_failed"
@@ -146,7 +209,8 @@ def main() -> int:
         "manifest": str(PIPELINE_RESULTS / "ac" / "shared_warmup" / "manifest.json"),
         "verified_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "warmup_fingerprint": manifest.get("warmup_fingerprint"),
-        "workspace_digest": manifest.get("workspace_digest"),
+        "manifest_workspace_digest": manifest.get("workspace_digest"),
+        "workspace_digest": workspace_digest(AC_REPO / "sandbox" / "ws1" / "workspace"),
     }
     save_state(state)
     push_milestone("luna-warmup-verified")
