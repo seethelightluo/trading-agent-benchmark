@@ -707,13 +707,16 @@ cash until 2026-07-16.
                 "kept": result.get("kept"),
                 "rejected": result.get("rejected", []),
                 "evicted": result.get("evicted", []),
+                "quarantined": result.get("quarantined", []),
+                "conflicts": result.get("conflicts", []),
+                "policy": result.get("policy"),
             }, ensure_ascii=False) + "\n")
         print(
             "📚 Factor library gate: "
             f"kept={result.get('kept', 0)}/30 "
             f"rejected={len(result.get('rejected', []))} "
             f"evicted_tail={len(result.get('evicted', []))} "
-            f"first_corr_inferred={len(result.get('inferred_first_correlation', []))}",
+            f"quarantined={len(result.get('quarantined', []))}",
             flush=True,
         )
         return result
@@ -933,6 +936,10 @@ cash until 2026-07-16.
     
     def run(self) -> Dict[str, Any]:
         """Run the full iterative workflow with concurrent miners."""
+        # Resume/runtime tests may construct Launcher with __new__ and bypass
+        # provider-specific __init__; keep the retry result flag total.
+        if not hasattr(self, "last_cycle_retryable_failure"):
+            self.last_cycle_retryable_failure = False
         # Setup signal handler for graceful interruption
         self._setup_signal_handler()
         

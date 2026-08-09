@@ -2,7 +2,7 @@
 
 > 重建日期：2026-08-09（Asia/Shanghai）  
 > 目的：从工作区 Markdown、Codex 记录和 Claude Code 会话中，恢复 2026-07-26 至 2026-08-06 期间 AC/FM 实验的规划演进、问题、决策、实现变化，以及它们和上游原生框架的差异。  
-> 本文先记录“为什么这样设计、做过什么修正、证据在哪里”；按照当前用户要求，**暂不把本文件当作当前代码全量一致性审计，也不在本轮统一比较所有现状**。待用户确认后，再按第 11 节执行统一 current-state comparison。
+> 本文先记录“为什么这样设计、做过什么修正、证据在哪里”；本轮已补充 AC 原版规则与当前两个 AC 的专项对照。全量数据/运行结果 current-state comparison 仍按第 11 节逐项执行。
 
 ## 0. 阅读规则与证据等级
 
@@ -212,7 +212,54 @@
 | provider | 原生配置直接调用 provider | 项目模型名保留 Terra，由外部 relay 映射 Luna/DeepSeek |
 | 并发 | 原生 README 不定义本实验 durable gate | AC scheduler 最大并发 2，完成标记才推进 |
 
-### 4.3 AC 中最容易重复出现的错误
+### 4.3 AC 原版规则审查（以仓库初始版本为准）
+
+这部分把“上游 AlphaCrafter 自带规则”和本实验后来增加的确定性合同分开，避免把
+提示词中的建议误写成已经存在的硬代码：
+
+| 领域 | AC 原版现状 | 证据/边界 |
+|---|---|---|
+| 因子冲突 | `factor_screening.md` 建议对选中因子计算 pairwise correlation；以 `correlation > 0.7` 识别 cluster，可选 cluster pruning（保留最高 ICIR）、orthogonalization 或相关组限权 | 这是 Screener skill 的方法建议，不是原版 `factor_contract.py` 硬门；初始仓库没有该确定性库门 |
+| 因子准入 | 原版 Miner/Screener 没有本 benchmark 的 `.007/.084` 统一文件门槛；因子 JSON、公式和指标由 Agent 自己保存，缺少可重算 signal 时不能证明真实 rho | `factor_contract.py` 是本 benchmark 后加的层，不应冒充 AC 原生功能 |
+| 因子容量/活跃数 | 原版没有本合同的滚动 library `30` 和 active `10` 硬限制；原生 screener 只按提示词产出 ensemble | `active_top_k=10`、质量排序、滚动淘汰均属于本世界线同步层 |
+| 资产组合 | 原生示例是通用股票策略：`TOP_N=50`、目标 gross exposure `0.6`，可按策略直接发订单 | `strategy_registration.md` 的 baseline；不适合 15 个跨资产 fully-invested 世界线 |
+| 下单路径 | 原生 strategy hook 可直接调用 `add_order`，产生 pending order；没有 proposal、预测 edge 或 no-trade 防火墙 | 原版允许订单绕过因子/交易决策统一层 |
+| 原生撮合费率 | `commission_rate=0.0001`（1bp），买卖滑点 `0.0002`（2bp），合计单边约 3bp；按成交金额收佣金，买高卖低；支持 T+0、做空、20% short margin、80% maintenance margin | `sim/exchange_us.py`；这是通用 Exchange 行为，不是本实验的“迁移额门控” |
+| 原生成交语义 | 订单价格须落在当日 low/high 内才成交，否则 pending；成交价使用 close 加/减滑点，订单按真实撮合更新现金/持仓 | benchmark 不允许 15 资产账户走这条可部分成交、可能留现金的路径 |
+
+结论：AC 原版确实“建议”做相关性去冗余，但没有实现“共同样本真实 rho 冲突时比较双方
+质量并淘汰较低者”的确定性规则；原版也没有本实验的 15 资产、零现金和迁移额成本门控。
+
+### 4.4 为贴合本资产世界线的 AC 改动计划与当前落地
+
+保留 Miner → Screener → Trader、工具调用、workflow/resume 和 LLM 研究流程；只在研究库
+边界与 online 执行边界加确定性适配层：
+
+1. 因子库：先执行 `abs(IC)>=.007`、`abs(ICIR)>=.084`；使用同一可见数据和共同有效样本的
+  真实 signal 计算 `abs(Spearman rho)`。`rho < .5` 双保留，`rho >= .5` 按
+   `quality=abs(IC)*abs(ICIR)` 保留高者；冲突处理后再滚动保留 best30。缺少 signal/formula/
+   provenance 的历史因子进入 quarantine，不把自报 `rho=0` 当真实证据。
+2. 活跃组合：每个 online 决策最多 10 个 active factor，可以少于 10 个；按质量/IC tilt
+   归一化，保留 `sign(IC)` 方向。10 是活跃上限，不是 warmup 研究上限。
+3. 资产与账户：只允许 15 个 tradable asset；5 个 signal 资产只作观察；long-only、允许
+   小数数量、目标权重非负且和为 1、cash=0。2026-07-16 首次把 1M 全部配置，空 ensemble
+   时使用 15 资产等权。
+4. 交易决策：Trader 只产生 proposal；执行层计算
+   `one_way_turnover=0.5*sum(abs(target-current))` 和
+   `gross_edge_bps=10000*sum((target-current)*forecast)`。后续严格要求
+   `gross_edge_bps > one_way_turnover*3` 才执行；这不是资产总额固定 3bp，也不是双边 6bp。
+   实际成本为 `NAV*one_way_turnover*3/10000`。合法 no-trade 仍保存 proposed/executed/forecast/
+   edge/skip_reason；`add_order` 不得绕过 gate。
+5. 运行保护：Luna/Terra 两份 AC 代码保持共享 contract、factor policy、StepTool 和测试
+   fixture；运行结果、旧 warmup 和旧因子不覆盖。合同改变后用新的 code/contract fingerprint；
+   只有通过 signal/provenance 迁移的旧因子可离线进入新库，不能重新消耗 LLM warmup。
+
+本次代码落地还修正了一个容易误伤候选的点：AC Miner 自报的
+`max_abs_library_correlation` 现在只作为审计字段，不再在候选阶段直接拒绝；真正的冲突由
+两因子真实 signal 的 pairwise rho 和双方 quality 决定，并写入 `factor_library_audit.jsonl`
+及淘汰原因文件。Terra 与 DeepSeek 版本保持同一实现。
+
+### 4.5 AC 中最容易重复出现的错误
 
 - 把 `active <=10` 写成 `warmup <=10`；
 - 使用固定 `FW` 代替动态 active ensemble；

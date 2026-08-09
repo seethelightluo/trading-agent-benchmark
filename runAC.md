@@ -102,6 +102,41 @@ AC 的因子生命周期按 FM 的三层结构解释：
 
 AC 原生 `template_a` 中的 `FW=(.17,.15,...,.05)` 是固定的 10 项策略模板，可作为资产打分/排名的结构参考，但它没有实现动态因子库、滚动末尾淘汰或质量 tilt。正式 AC 若继续使用该模板，必须由 Screener/Trader 产物把当前活跃因子及其方向、质量权重显式注入，不能把固定 `FW` 当作 FM 同步合同的替代品。
 
+### 3.2.1 原版 AC 全景与本世界线适配
+
+原版 AlphaCrafter 的 `factor_screening` skill 只提供方法建议：对选中因子计算 pairwise
+correlation，用 `correlation > 0.7` 识别 cluster，并可选择保留最高 ICIR、正交化或限制相关
+组权重。初始 AC 代码没有一个把共同样本 signal、因子质量和滚动 library 一起强制执行的
+`factor_contract`；也没有 benchmark 的 library=30、active<=10 硬容量。
+
+原版 strategy baseline 是通用股票示例：`TOP_N=50`、目标 gross exposure=0.6、整数整手
+计算，并由 Agent 直接调用 `add_order`。原版 Exchange 的通用费率是 1bp commission + 2bp
+slippage（买高卖低，单边约 3bp），订单需落在当日 low/high 才成交，支持 pending、T+0、做空
+和保证金。这些规则保留为原生模拟器参考，但不作为本 15 资产世界线的 online 合同；否则会
+出现部分成交、现金残留、做空和直接下单绕过预测成本决策。
+
+为了贴合当前资产世界线，两个 AC 版本统一采用以下适配计划（代码已落地的部分由同一份
+实现覆盖）：
+
+- 研究保留 Miner → Screener → Trader 流程，但在 post-Miner 处执行 `.007/.084` 准入、共同
+  signal 的 `abs(Spearman rho)` 冲突筛选和 `quality=abs(IC)*abs(ICIR)`；`rho < .5` 双保留，
+  `rho >= .5` 淘汰质量较低者，再滚动保留 best30。
+- active ensemble 最多 10 个、可少于 10 个，按质量/IC tilt 配权并保留方向；10 是活跃上限，
+  不是 warmup 最大研究数。缺少可重算 signal/provenance 的旧因子进入 quarantine。
+- online 仅使用 15 个 tradable asset，5 个 signal 不持仓；long-only、fractional quantity、
+  cash=0、权重和为 1。首次 `2026-07-16` 全额 `1M` 建仓；无 ensemble 时等权 `1/15`。
+- Trader 只提交完整 target + forecast proposal。后续执行门槛是
+  `gross_edge_bps > one_way_turnover * 3`，其中 `one_way_turnover=0.5*sum(abs(delta))`；
+  `edge <= migration*3bp` 跳过。实际成本是 `NAV*migration*3/10000`，不是总资产固定 3bp，
+  也不是双边固定 6bp。no-trade 研究与 proposed target 持久化，executed target/真实持仓不变。
+- 15 资产 benchmark 的 `add_order` 入口硬失败，`ensure_fully_invested` 只处理明确账户损坏；
+  它不能把合法 no-trade 强行变成交易。Terra 和 DeepSeek 的 factor gate、portfolio contract、
+  StepTool 和 audit 字段保持一致，provider 只影响 LLM 路由和重试。
+
+本次修正还把 AC Miner 自报的 `max_abs_library_correlation` 降级为 audit/provenance 字段，
+不再在候选阶段直接拒绝高自报 rho；是否冲突必须由两份真实 signal 在共同样本上重算，并按
+双方质量决定保留者。冲突记录写入 library audit 和 `evicted/*.reason.json`。
+
 ### 3.2 online 小数持仓的实现边界
 
 在线组合不是整数股/整手交易。两个 AC 版本都已把小数数量贯通到：

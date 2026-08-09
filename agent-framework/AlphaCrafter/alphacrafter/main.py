@@ -561,13 +561,16 @@ cash until 2026-07-16.
                 "kept": result.get("kept"),
                 "rejected": result.get("rejected", []),
                 "evicted": result.get("evicted", []),
+                "quarantined": result.get("quarantined", []),
+                "conflicts": result.get("conflicts", []),
+                "policy": result.get("policy"),
             }, ensure_ascii=False) + "\n")
         print(
             "📚 Factor library gate: "
             f"kept={result.get('kept', 0)}/30 "
             f"rejected={len(result.get('rejected', []))} "
             f"evicted_tail={len(result.get('evicted', []))} "
-            f"first_corr_inferred={len(result.get('inferred_first_correlation', []))}",
+            f"quarantined={len(result.get('quarantined', []))}",
             flush=True,
         )
         return result

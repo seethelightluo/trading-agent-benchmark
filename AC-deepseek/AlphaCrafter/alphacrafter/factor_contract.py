@@ -206,21 +206,17 @@ def evaluate_factor(payload: dict, contract: FactorContract) -> dict[str, Any]:
         )
     selected = max(passing, key=lambda pair: abs(pair[0]) * abs(pair[1]))
 
-    correlation, correlation_path = _find_correlation(payload)
-    if correlation is None:
-        raise ValueError(
-            "factor must report validation.metrics.max_abs_library_correlation "
-            "(use 0.0 for the first admitted factor)"
-        )
-    if correlation >= contract.correlation_threshold:
-        raise ValueError(
-            f"factor correlation {correlation:.4f} must be < {contract.correlation_threshold:.4f}"
-        )
+    # The AC Miner field is provenance/audit metadata, not the conflict gate.
+    # The native prompt asks the model to self-report a library correlation,
+    # but the benchmark contract must compare both real signal artifacts on a
+    # common sample.  Rejecting a candidate here would prevent the lower/higher
+    # quality comparison required by the worldline contract.
+    reported_correlation, correlation_path = _find_correlation(payload)
     return {
         "ic": selected[0],
         "icir": selected[1],
         "metric_path": selected[2],
-        "max_abs_library_correlation": correlation,
+        "reported_max_abs_library_correlation": reported_correlation,
         "correlation_path": correlation_path,
         "quality": abs(selected[0]) * abs(selected[1]),
     }
@@ -235,28 +231,6 @@ def stamp_admission(payload: dict, contract: FactorContract) -> tuple[dict, dict
         "admitted_at": datetime.now().isoformat(),
     }
     return stamped, result
-
-
-def _with_first_admission_correlation(payload: dict) -> dict:
-    """Materialize the FM convention for the first library member.
-
-    AlphaCrafter factors are persisted as definitions and summary metrics, not
-    as the signal matrices used by FactorMiner's in-memory correlation check.
-    The first admitted factor has no predecessor, so FM treats its maximum
-    library correlation as zero.  Make that convention explicit in the
-    persisted JSON instead of silently weakening the rule for later factors.
-    """
-    materialized = json.loads(json.dumps(payload))
-    validation = materialized.setdefault("validation", {})
-    if not isinstance(validation, dict):
-        validation = {}
-        materialized["validation"] = validation
-    metrics = validation.setdefault("metrics", {})
-    if not isinstance(metrics, dict):
-        metrics = {}
-        validation["metrics"] = metrics
-    metrics["max_abs_library_correlation"] = 0.0
-    return materialized
 
 
 def _archive(path: Path, bucket: str) -> Path:
@@ -279,6 +253,7 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
     rejected: list[str] = []
     quarantined: list[str] = []
     evicted: list[str] = []
+    conflicts_audit: list[dict[str, Any]] = []
 
     for path in sorted(root.glob("*.json")):
         # The Screener may persist the active ensemble beside factor files.
@@ -317,10 +292,22 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
                 conflicts.append((kept, rho))
         if conflicts:
             archived = _archive(candidate[2], "evicted")
+            conflict_record = {
+                "source": candidate[2].name,
+                "factor_id": candidate[1],
+                "reason": "pairwise correlation conflict; lower quality",
+                "quality": candidate[0],
+                "conflicts": [
+                    {"factor_id": item[1], "abs_spearman_rho": rho}
+                    for item, rho in conflicts
+                ],
+                "contract": contract.as_dict(),
+            }
             atomic_write_json(
                 archived.with_suffix(archived.suffix + ".reason.json"),
-                {"source": candidate[2].name, "reason": "pairwise correlation conflict; lower quality", "quality": candidate[0], "conflicts": [item[1] for item in conflicts], "contract": contract.as_dict()},
+                conflict_record,
             )
+            conflicts_audit.append(conflict_record)
             evicted.append(candidate[2].name)
         else:
             ordered.append(candidate)
@@ -343,6 +330,8 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
         "evicted": evicted,
         "kept_files": [path.name for _, _, path, _ in ordered],
         "quarantined": quarantined,
+        "conflicts": conflicts_audit,
+        "policy": "worldline_pairwise_signal_quality_v1",
     }
 
 
@@ -365,6 +354,10 @@ def validate_ensemble_payload(
             continue
         factor = json.loads(factor_path.read_text(encoding="utf-8"))
         evaluate_factor(factor, contract)
+        if _load_signal_artifact(factor, factor_path) is None:
+            raise ValueError(
+                f"factor has no recoverable signal artifact: {factor_path.name}"
+            )
         if factor.get("factor_id"):
             library_ids.add(str(factor["factor_id"]))
 

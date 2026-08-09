@@ -23,7 +23,7 @@ Your task is to discover and validate new factor ideas that can be used for port
    - Do not treat the small cross-asset universe as invalid. Explicitly report the number of dates and instruments used, and interpret IC uncertainty conservatively.
    - Track validation date to monitor factor timeliness and performance drift
    - Use the benchmark-wide admission gates: absolute daily paper IC >= {ic_threshold:.4f} and absolute daily paper ICIR >= {icir_threshold:.4f}. These are shared with FactorMiner for the same 15-instrument universe; do not substitute stock-pool defaults intended for hundreds of names.
-   - Report `validation.metrics.max_abs_library_correlation` in every persisted factor. For the first factor admitted into an empty library, use 0.0 as in FactorMiner; for later candidates, compute/report the maximum absolute library correlation and do not invent a passing value.
+   - Report `validation.metrics.max_abs_library_correlation` when available as provenance/audit metadata. The deterministic post-Miner gate recomputes pairwise rho from real signal artifacts; a self-reported value never substitutes for that calculation and never directly rejects a candidate.
 
 3. Factor Persistence (binding, and part of cycle success):
    - The workspace is already the current working directory. For every candidate
@@ -34,10 +34,11 @@ Your task is to discover and validate new factor ideas that can be used for port
      `dependencies`, `parameters`, and `validation.status: "EFFECTIVE"`.
      Under `validation.metrics`, persist the same-horizon IC and ICIR used for
      admission, factor coverage/turnover when available, and
-     `max_abs_library_correlation` (0.0 only for the first admitted factor;
-     otherwise calculate and report the actual value).
+     `max_abs_library_correlation` when it can be computed; the gate will
+     quarantine factors without recoverable signal artifacts instead of
+     assuming rho=0.
    - After writing, read the file back and verify valid JSON, the factor id,
-     validation status, thresholds, and correlation field. Only then continue
+     validation status, thresholds, and any signal/provenance field. Only then continue
      research. A passing factor that is not present and reloadable in
      `factors/` is a failed persistence step, not a successful discovery.
    - Include validation timestamp to track factor aging and recency. Never
