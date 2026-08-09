@@ -37,6 +37,8 @@ from scheduler.ac_shared_warmup import (
 HERE = Path(__file__).resolve().parent.parent
 ROOT = HERE.parent
 RESULTS = HERE / "results" / "ac_luna_3wl"
+if os.environ.get("AC_LUNA_RUN_DIR"):
+    RESULTS = Path(os.environ["AC_LUNA_RUN_DIR"]).resolve()
 LOGS = RESULTS / "logs"
 STATE_PATH = RESULTS / "run_state.json"
 MILESTONE_PUSH = ROOT / "ops" / "git_milestone_push.sh"
@@ -44,6 +46,11 @@ CADENCE = 10
 ONLINE_MAX_CYCLES = 300
 ONLINE_WORLDLINES = 3
 RETRY_SECONDS = 60
+SESSION_PREFIX = os.environ.get("AC_LUNA_SESSION_PREFIX", "wl")
+
+
+def session_name(wl: int) -> str:
+    return f"{SESSION_PREFIX}{wl}"
 
 
 def save_state(state: dict) -> None:
@@ -54,7 +61,16 @@ def save_state(state: dict) -> None:
 
 
 def push_milestone(label: str) -> None:
-    """Checkpoint without turning a transient Git/network error into AC loss."""
+    """Checkpoint only when explicitly enabled for this isolated run.
+
+    The repository currently contains unrelated warmup/DeepSeek/runtime
+    changes.  The legacy helper uses ``git add -A``; invoking it from this
+    scheduler would therefore commit other experiments.  Keep milestone
+    pushes opt-in until a path-scoped publisher is used.
+    """
+    if os.environ.get("AC_LUNA_ENABLE_MILESTONE_PUSH") != "1":
+        print(f"[luna-ac] milestone {label} deferred (path-scoped push disabled)", flush=True)
+        return
     try:
         result = subprocess.run(
             [str(MILESTONE_PUSH), label],
@@ -148,9 +164,12 @@ def start_worldline(wl: int, config: Path, state: dict):
     LOGS.mkdir(parents=True, exist_ok=True)
     log_path = LOGS / f"wl{wl}.log"
     log = log_path.open("a", encoding="utf-8", buffering=1)
-    log.write(f"\n=== launch Luna WL{wl} {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+    log.write(
+        f"\n=== launch Luna WL{wl} session={session_name(wl)} "
+        f"{time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+    )
     proc = subprocess.Popen(
-        ac_command(f"wl{wl}", config),
+        ac_command(session_name(wl), config),
         cwd=str(AC_REPO),
         env=ac_env(CADENCE),
         stdout=log,
@@ -220,7 +239,13 @@ def main() -> int:
         entry = state_for_wl(state, wl)
         if entry.get("seeded"):
             continue
-        seed_state = prepare_ac_worldline(wl, worldline_panel(wl), manifest, CADENCE)
+        seed_state = prepare_ac_worldline(
+            wl,
+            worldline_panel(wl),
+            manifest,
+            CADENCE,
+            session_name=session_name(wl),
+        )
         entry.update({"seeded": True, "seed_state": seed_state})
         save_state(state)
 
@@ -228,7 +253,7 @@ def main() -> int:
     active: dict[int, tuple[subprocess.Popen, object]] = {}
     retry_at: dict[int, float] = {}
     for wl in range(1, ONLINE_WORLDLINES + 1):
-        if ac_session_complete(f"wl{wl}"):
+        if ac_session_complete(session_name(wl)):
             state_for_wl(state, wl).update({"status": "complete", "ac_done": True})
         else:
             retry_at[wl] = 0.0
@@ -249,7 +274,7 @@ def main() -> int:
                 continue
             log.close()
             entry = state_for_wl(state, wl)
-            complete = ac_session_complete(f"wl{wl}")
+            complete = ac_session_complete(session_name(wl))
             entry.update(
                 {
                     "returncode": rc,

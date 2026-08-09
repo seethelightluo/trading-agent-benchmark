@@ -24,6 +24,54 @@ def _atomic_json(path: Path, payload: dict) -> None:
     tmp.replace(path)
 
 
+def _install_online_execution_adapter(strategy_path: Path) -> None:
+    """Adapt only the copied WL strategy to the benchmark execution gate."""
+    source = strategy_path.read_text(encoding="utf-8")
+    if "add_order" not in source:
+        return
+    if "rebalance_to_weights" in source and "forecast_returns=" in source:
+        return
+    import_line = "from alphacrafter.sim.utils import register_hook, get_account_dict, get_stock_daily_data, add_order"
+    if import_line not in source:
+        raise ValueError(f"unsupported legacy AC strategy import: {strategy_path}")
+    source = source.replace("import numpy as np\n", "import json\nfrom pathlib import Path\nimport numpy as np\n", 1)
+    source = source.replace(import_line, import_line.replace("add_order", "rebalance_to_weights"), 1)
+    start_marker = "    # Sell only reductions of existing longs; then buy all underweights."
+    end_marker = "    last_date = decision"
+    start = source.find(start_marker)
+    end = source.find(end_marker, start)
+    if start < 0 or end < 0:
+        raise ValueError(f"unsupported legacy AC strategy execution block: {strategy_path}")
+    replacement = (
+        "    # Online benchmark execution is one complete proposal through the\n"
+        "    # deterministic migration/cost gate; direct add_order is forbidden.\n"
+        "    score_values = [float(score[s]) for s in UNIVERSE]\n"
+        "    score_mean = float(np.mean(score_values))\n"
+        "    score_std = float(np.std(score_values))\n"
+        "    forecast_returns = {\n"
+        "        s: 0.01 * (float(score[s]) - score_mean) / max(score_std, 1e-12)\n"
+        "        for s in UNIVERSE\n"
+        "    }\n"
+        "    factor_ids = []\n"
+        "    try:\n"
+        "        ensemble = json.loads((Path(__file__).parent / \"factor_ensemble.json\").read_text())\n"
+        "        factor_ids = [\n"
+        "            str(item[\"factor_id\"])\n"
+        "            for item in ensemble.get(\"selected_factors\", [])\n"
+        "            if isinstance(item, dict) and item.get(\"factor_id\")\n"
+        "        ]\n"
+        "    except (OSError, ValueError, TypeError, KeyError):\n"
+        "        pass\n"
+        "    rebalance_to_weights(\n"
+        "        weights,\n"
+        "        forecast_returns=forecast_returns,\n"
+        "        factor_ids=factor_ids[:10],\n"
+        "        horizon_days=10,\n"
+        "    )\n"
+    )
+    strategy_path.write_text(source[:start] + replacement + source[end:], encoding="utf-8")
+
+
 def workspace_digest(workspace: Path) -> str:
     """Hash persisted research files while ignoring interpreter caches."""
     digest = hashlib.sha256()
@@ -164,6 +212,7 @@ def seed_worldline_workspace(
         raise
     else:
         shutil.rmtree(backup, ignore_errors=True)
+    _install_online_execution_adapter(target / "strategy.py")
     payload = {
         "schema_version": 1,
         "warmup_fingerprint": warmup_fingerprint,

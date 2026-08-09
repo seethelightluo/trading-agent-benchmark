@@ -151,6 +151,18 @@ class Exchange:
         """Save account to JSON file with proper decimal formatting"""
         # Convert to dict for JSON serialization
         account_dict = self.account.model_dump()
+        # Preserve benchmark contract metadata written by the deterministic
+        # rebalance helper.  AccountSchema intentionally models the native
+        # exchange fields only, so blindly serializing it would erase the
+        # proposal/execution audit on every post-tick.
+        try:
+            with open(self.account_file_path, 'r', encoding='utf-8') as f:
+                persisted = json.load(f)
+        except (OSError, ValueError, TypeError):
+            persisted = {}
+        for key, value in persisted.items():
+            if key not in account_dict:
+                account_dict[key] = value
         
         # Format decimal values
         for field in ['total_profit_loss_rate', 'gross_position_rate', 'net_position_rate']:

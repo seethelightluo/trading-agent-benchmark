@@ -297,12 +297,15 @@ def _build_ac_session(session: str, panel: Path, stage_news_path: Path | None) -
     )
 
 
-def ensure_ac_worldline_session(wl: int, panel: Path) -> Path:
-    session_dir = AC_REPO / "sandbox" / f"wl{wl}"
+def ensure_ac_worldline_session(
+    wl: int, panel: Path, session_name: str | None = None
+) -> Path:
+    session = session_name or f"wl{wl}"
+    session_dir = AC_REPO / "sandbox" / session
     if (session_dir / "persistent" / "date.json").exists():
         return session_dir
     return _build_ac_session(
-        f"wl{wl}", panel, worldline_news(wl)
+        session, panel, worldline_news(wl)
     )
 
 
@@ -429,6 +432,7 @@ def prepare_ac_worldline(
     panel: Path,
     warmup_manifest: dict,
     cadence: int,
+    session_name: str | None = None,
 ) -> dict:
     from scheduler.ac_shared_warmup import (
         execute_seeded_first_block,
@@ -436,7 +440,7 @@ def prepare_ac_worldline(
     )
 
     contract = load_benchmark_config()
-    target_session = ensure_ac_worldline_session(wl, panel)
+    target_session = ensure_ac_worldline_session(wl, panel, session_name=session_name)
     warmup_session = AC_REPO / "sandbox" / str(warmup_manifest["session"])
     seed_worldline_workspace(
         warmup_session,
