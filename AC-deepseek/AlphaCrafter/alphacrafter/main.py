@@ -194,10 +194,12 @@ cash until 2026-07-16.
         text = str(error).lower()
         if any(marker in text for marker in (
             "429",
+            "502",
             "rate_limited",
             "pool exhausted",
             "warp pool",
             "too many requests",
+            "bad gateway",
             "503",
             "overloaded",
             "no healthy node",

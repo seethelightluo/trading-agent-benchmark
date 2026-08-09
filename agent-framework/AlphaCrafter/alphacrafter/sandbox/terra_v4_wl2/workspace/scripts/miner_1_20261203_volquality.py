@@ -1,0 +1,14 @@
+import pandas as pd,numpy as np
+from scipy.stats import spearmanr
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; base='../persistent/stock_data'
+P=pd.DataFrame({s:pd.read_csv(f'{base}/{s}.csv',parse_dates=['date']).set_index('date')['close'] for s in U}).sort_index(); R=P.pct_change()
+# volatility quality: inverse trailing vol, optionally volatility trend (current vol / long vol)
+F={'invvol20':-R.rolling(20,min_periods=15).std(),'invvol60':-R.rolling(60,min_periods=45).std(),'voltrend':-(R.rolling(20,min_periods=15).std()/R.rolling(60,min_periods=45).std())}
+for n,f in F.items():
+ for h in [1,5,10]:
+  a=[]; ds=[]
+  for i in range(len(P)-h):
+   z=pd.concat([f.iloc[i],P.iloc[i+h]/P.iloc[i]-1],axis=1).dropna()
+   if len(z)>=8:a.append(spearmanr(z.iloc[:,0],z.iloc[:,1]).statistic);ds.append(P.index[i])
+  a=np.array(a); print(n,h,len(a),round(a.mean(),5),round(a.mean()/a.std(ddof=1),5),round((a>0).mean(),4))
+ print('coverage',round(f.notna().sum(axis=1).mean()/15,4),'turn',round(f.rank(pct=True,axis=1).diff().abs().mean(axis=1).mean(),4))

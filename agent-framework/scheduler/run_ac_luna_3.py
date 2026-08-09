@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import subprocess
 import time
 from pathlib import Path
@@ -49,7 +50,8 @@ ONLINE_MAX_CYCLES = 300
 ONLINE_WORLDLINES = int(os.environ.get("AC_LUNA_WORLDLINES", "3"))
 if not 1 <= ONLINE_WORLDLINES <= 9:
     raise SystemExit("AC_LUNA_WORLDLINES must be between 1 and 9")
-RETRY_SECONDS = 60
+RETRY_DELAYS = (60, 120, 300, 600, 900)
+RETRY_JITTER = 0.20
 SESSION_PREFIX = os.environ.get("AC_LUNA_SESSION_PREFIX", "wl")
 
 
@@ -265,6 +267,7 @@ def main() -> int:
     config = write_run_config(ONLINE_MAX_CYCLES, RESULTS / "run_config.yaml")
     active: dict[int, tuple[subprocess.Popen, object]] = {}
     retry_at: dict[int, float] = {}
+    retry_attempt: dict[int, int] = {}
     for wl in range(1, ONLINE_WORLDLINES + 1):
         if is_paused(wl):
             state_for_wl(state, wl).update({"status": "paused_429", "paused_marker": str(pause_marker(wl))})
@@ -305,6 +308,7 @@ def main() -> int:
             del active[wl]
             if complete:
                 entry["status"] = "complete"
+                retry_attempt.pop(wl, None)
                 print(f"[luna-ac] WL{wl} complete", flush=True)
                 save_state(state)
                 push_milestone(f"luna-wl{wl}-complete")
@@ -312,11 +316,21 @@ def main() -> int:
                 entry["status"] = "retry_wait"
                 if is_paused(wl):
                     entry.update({"status": "paused_429", "paused_marker": str(pause_marker(wl))})
+                    retry_message = "paused by 429 marker"
                 else:
-                    retry_at[wl] = time.monotonic() + RETRY_SECONDS
+                    attempt = retry_attempt.get(wl, 0)
+                    base_delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                    delay = base_delay * random.uniform(
+                        1.0 - RETRY_JITTER, 1.0 + RETRY_JITTER
+                    )
+                    retry_attempt[wl] = attempt + 1
+                    retry_at[wl] = time.monotonic() + delay
+                    entry["retry_attempt"] = attempt + 1
+                    entry["retry_delay_seconds"] = round(delay, 2)
+                    retry_message = f"retrying in {delay:g}s"
                 print(
                     f"[luna-ac] WL{wl} rc={rc}, "
-                    + ("paused by 429 marker" if is_paused(wl) else f"retrying in {RETRY_SECONDS}s"),
+                    + retry_message,
                     flush=True,
                 )
                 save_state(state)

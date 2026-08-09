@@ -55,11 +55,23 @@ class Agent:
         # Get producer from config
         self.producer = self.model_config.get("producer", "OpenAI")
         
-        # Initialize OpenAI client
+        # Initialize OpenAI client.  The SDK's built-in retry path is the
+        # final request-level guard for transient 429/5xx/network failures;
+        # experiment-specific Miner retries (DeepSeek) remain above this
+        # layer.  Keep both values explicit so a relay outage does not turn
+        # into an unbounded AC phase hang.
+        request_timeout = float(
+            os.getenv(
+                "AC_OPENAI_REQUEST_TIMEOUT",
+                os.getenv("AC_DEEPSEEK_REQUEST_TIMEOUT", "1800"),
+            )
+        )
+        max_retries = max(0, int(os.getenv("AC_OPENAI_MAX_RETRIES", "8")))
         self.client = OpenAI(
             api_key=os.getenv("OPENAI_API_KEY"),
             base_url=os.getenv("OPENAI_API_URL"),
-            timeout=1800
+            timeout=request_timeout,
+            max_retries=max_retries,
         )
         
         # Extract tool descriptions based on producer and implementations

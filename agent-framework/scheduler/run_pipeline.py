@@ -173,6 +173,11 @@ def ac_env(cadence: int, *, warmup_only: bool = False) -> dict:
     e = os.environ.copy()
     e["AC_CADENCE_DAYS"] = str(cadence)
     e["AC_REBALANCE_ONLY_ON_CYCLE_START"] = "1"
+    # Explicit request-level retry policy for the shared AC client.  The
+    # OpenAI SDK applies exponential backoff to 429/5xx/network errors; the
+    # DeepSeek copy adds its classified Miner retry budget on top.
+    e.setdefault("AC_OPENAI_MAX_RETRIES", "8")
+    e.setdefault("AC_OPENAI_REQUEST_TIMEOUT", "1800")
     admission = factor_admission_contract()
     e["AC_FACTOR_IC_THRESHOLD"] = str(admission["ic_threshold"])
     e["AC_FACTOR_ICIR_THRESHOLD"] = str(admission["icir_threshold"])

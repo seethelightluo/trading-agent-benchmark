@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import subprocess
 import time
 from pathlib import Path
@@ -32,7 +33,8 @@ STATE_PATH = RESULTS / "run_state.json"
 CADENCE = 10
 WARMUP_MAX_CYCLES = 40
 ONLINE_MAX_CYCLES = 300
-RETRY_SECONDS = 60
+RETRY_DELAYS = (60, 120, 300, 600, 900)
+RETRY_JITTER = 0.20
 ONLINE_WORLDLINES = 3
 MINER_RETRY_ATTEMPTS = 4
 MINER_RETRY_DELAYS = "15,30,60"
@@ -115,6 +117,10 @@ def main() -> int:
     # does main.py exit non-zero, allowing run_pipeline's --resume retry to
     # restart the same cycle without advancing Screener/Trader.
     os.environ.setdefault("AC_DEEPSEEK_RETRY", "1")
+    # The local Miner classifier owns 429/502/503/compatibility retries;
+    # leave only a small SDK retry budget underneath it to avoid multiplying
+    # long waits at both layers.
+    os.environ.setdefault("AC_OPENAI_MAX_RETRIES", "2")
     os.environ.setdefault(
         "AC_DEEPSEEK_MINER_RETRY_ATTEMPTS", str(MINER_RETRY_ATTEMPTS)
     )
@@ -200,6 +206,7 @@ def main() -> int:
     config = write_run_config(ONLINE_MAX_CYCLES, RESULTS / "run_config.yaml")
     active: dict[int, tuple[subprocess.Popen, object]] = {}
     retry_at: dict[int, float] = {}
+    retry_attempt: dict[int, int] = {}
     for wl in range(1, ONLINE_WORLDLINES + 1):
         if ac_session_complete(f"wl{wl}"):
             state_for_wl(state, wl).update({"status": "complete", "ac_done": True})
@@ -231,13 +238,25 @@ def main() -> int:
             del active[wl]
             if complete:
                 entry["status"] = "complete"
+                retry_attempt.pop(wl, None)
                 print(f"[deepseek-ac] WL{wl} complete", flush=True)
                 save_state(state)
                 push_milestone(f"deepseek-wl{wl}")
             else:
                 entry["status"] = "retry_wait"
-                retry_at[wl] = time.monotonic() + RETRY_SECONDS
-                print(f"[deepseek-ac] WL{wl} rc={rc}, retrying in {RETRY_SECONDS}s", flush=True)
+                attempt = retry_attempt.get(wl, 0)
+                base_delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                delay = base_delay * random.uniform(
+                    1.0 - RETRY_JITTER, 1.0 + RETRY_JITTER
+                )
+                retry_attempt[wl] = attempt + 1
+                retry_at[wl] = time.monotonic() + delay
+                entry["retry_attempt"] = attempt + 1
+                entry["retry_delay_seconds"] = round(delay, 2)
+                print(
+                    f"[deepseek-ac] WL{wl} rc={rc}, retrying in {delay:g}s",
+                    flush=True,
+                )
             save_state(state)
 
         time.sleep(10)

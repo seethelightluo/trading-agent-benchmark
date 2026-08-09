@@ -64,7 +64,13 @@ class Agent:
             # client timeout so a stuck upstream socket eventually returns to
             # the Miner retry budget instead of blocking a whole AC cycle for
             # 30 minutes.
-            timeout=float(os.getenv("AC_DEEPSEEK_REQUEST_TIMEOUT", "180"))
+            timeout=float(
+                os.getenv(
+                    "AC_OPENAI_REQUEST_TIMEOUT",
+                    os.getenv("AC_DEEPSEEK_REQUEST_TIMEOUT", "180"),
+                )
+            ),
+            max_retries=max(0, int(os.getenv("AC_OPENAI_MAX_RETRIES", "2"))),
         )
         # DeepSeek is reached through sub2api's native Responses ingress.  The
         # account is marked force_chat_completions inside sub2api, so its Go
