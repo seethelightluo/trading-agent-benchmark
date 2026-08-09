@@ -95,6 +95,7 @@ rebalance 和 proposal gate，避免部分成交、现金残留、做空以及�
 - AC Miner 自报 correlation 只作为 provenance/audit 字段，不再在候选阶段直接拒绝；真实 signal 才是冲突判定依据。
 - `add_order` 对 15 资产账户硬失败，不能绕过 proposal/gate。
 - `ensure_fully_invested()` 在清理 pending order 前先检查新 portfolio contract，旧 online 状态不会被改写。
+- warmup 中若仍保存原生直连 `add_order` 的历史 strategy，只在新 online workspace 播种时安装 proposal/gate adapter；warmup 原件不改写。两份 AC 的 A/US Exchange 保存器保留 rebalance 扩展审计字段，post-tick 不得抹掉 contract/version、proposal、执行成本或 no-trade 记录。
 - DeepSeek resume retry 状态在测试构造的 Launcher 场景下也有默认值，不会产生伪失败。
 
 ## 6. 启动前检查
@@ -120,6 +121,8 @@ rebalance 和 proposal gate，避免部分成交、现金残留、做空以及�
 - Terra shared warmup：40/40 cycle，workflow 完整；warmup 保留。
 - DeepSeek shared warmup：6 个完整 cycle，第 7 cycle 已开始但只完成 1 个 Miner 步骤；目标 40 cycle；warmup 保留并可从原位置恢复。
 - Terra 旧 3WL online：已暂停并放弃，不删除结果。
+- Terra 新 Luna online：`ac_luna_3wl_v4` 已启动，`terra_v4_wl1/2/3` 三 WL 并行；首个 10 日 seed block 完成，三账户均通过合同 smoke。
+- Terra v2/v3 启动尝试：保留为失败/修复证据，不与 v4 拼接或 resume。
 - DeepSeek 旧 online：已暂停/不再恢复，不删除结果。
 
 ## 9. 证据入口

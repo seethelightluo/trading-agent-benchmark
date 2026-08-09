@@ -323,6 +323,7 @@ actual_cost = NAV * one_way_turnover * 3 / 10000
 - `factor_contract.py` 现在在每个 Miner 阶段后由 AC 主循环单点接入，负责 IC/ICIR、真实 signal 上的 pairwise 相关性、库容量 30 和滚动末尾淘汰；缺少 signal artifact 的旧因子进入 quarantine，不再静默视为 rho=0；Screener 只负责 active ensemble <=10 和质量 tilt，不重复做库排序；
 - AC 原生固定 `FW` 模板不是动态质量 tilt；正式策略仍需消费当前 `factor_ensemble.json`，不能把固定 `FW` 当作 FM 同步合同的替代品；
 - 两个 AC 的 StepTool 已在非 warmup 的 15-资产 session 中执行 `ensure_fully_invested()`；旧式 Agent strategy 的订单会被清理并按最近有效目标权重修复，仍需在每个 online block 审计 15 个 positions、cash=0 和 `rebalance_history`；
+- 对 warmup 中仍调用原生 `add_order` 的历史 strategy，播种器只在新的 online workspace 安装 proposal/gate adapter，不修改 warmup 原件；两份 AC 的 A/US Exchange 保存器会保留 `portfolio_contract_version`、proposal、executed target、成本和 no-trade audit 等扩展字段，避免 post-tick 被原生 AccountSchema 抹掉；
 - Trader 指令和执行 helper 现在要求 proposal/gate/no-trade 持久化；旧 workspace 中固定 FW 策略仍是历史 artifact，不能作为新 fingerprint 的正式执行策略；
 - scheduler 的数据入口已切换到 `WL-data-final`，通过 `AC_DATA_ROOT`/`panels`/`news` 单一解析点读取；最终数据包自身的重建/OHLC 缺口仍按第 1 节记录，不能在运行时静默修补。
 
@@ -359,3 +360,8 @@ proposal、migration gate 和 fractional full-investment 合同已经改变，�
 新 online 只能在对应实验自己的 shared warmup 完成或确认可恢复后，复制出全新的 workspace、
 account、workflow 和 code/contract fingerprint，再做 1 block smoke；不得从旧 online account
 继续运行。
+
+2026-08-09 Terra/Luna 已按此流程启动新的 `ac_luna_3wl_v4`：使用 `terra_v4_wl1`、
+`terra_v4_wl2`、`terra_v4_wl3` 三个独立 session；旧 `ac_luna_3wl` 与失败的 v2/v3
+只保留为历史证据，不 resume。三条 WL 的首个 10 日 seed block 已完成，账户均为
+15 个 fractional positions、cash=0、`portfolio_contract_version=ac-worldline-v2-migration-gate`。
