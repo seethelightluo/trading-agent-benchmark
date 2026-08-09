@@ -1,0 +1,11 @@
+import json
+p='factors/miner_2_20341012_volume_shock_short_reversal_5v20x60obs.json'
+j=json.load(open(p))
+j['version']='2035-07-05 revalidation'
+v=j['validation']; v['period']='2020-01-01 to 2035-07-04 (visible source panel; valid realized IC evidence occurs only in 2026-2028)'; v['status']='EFFECTIVE'
+m=v['metrics'];m.update({'daily_paper_ic':0.06522988505747127,'daily_paper_icir':0.1859809731033574,'ic_hit_ratio':0.5517241379310345,'ic_standard_error':0.04605365473588679,'ic_dates':58,'mean_valid_instruments':9.0,'coverage':0.3630005640157925,'mean_active_names':5.4450084602368864,'mean_rank_stability_1d':0.596783625730994,'implied_rank_turnover':0.40321637426900603,'decay':{'1d':{'ic':0.06522988505747127,'icir':0.1859809731033574,'dates':58},'5d':{'ic':-0.010632183908045972,'icir':-0.029761061171233436,'dates':58},'10d':{'ic':-0.06982758620689655,'icir':-0.18860563618960902,'dates':58},'20d':{'ic':0.06580459770114945,'icir':0.17598402577124173,'dates':58}},'max_abs_library_correlation':0.3383121394556284,'most_correlated_library_factor':'miner_2_volume_confirmed_intermediate_continuation_20v5x60obs','library_correlation_complete':True,'library_factor_count_screened':30})
+v['regime_notes']='Revalidated 2035-07-05 with daily OHLCV visible through 2035-07-04. The 58 eligible one-day IC observations remain entirely in 2026-2028 (IC 0.06523; ICIR 0.18598; hit 55.17%). No >=8-name realized IC dates exist in 2020-25, 2029-34, or the currently visible 2035 sessions, so no new realized IC evidence was added. The factor formally remains EFFECTIVE on the one-day horizon and passes complete-library novelty (max |rho| 0.33831), but evidence is temporally concentrated and must be used cautiously.'
+j['last_validated']='2035-07-05'
+# Correct metadata to state the valid admission horizon rather than an unqualified 10-day decay field.
+b=j['benchmark_admission']['selected_metrics'];b.update({'ic':0.06522988505747127,'icir':0.1859809731033574,'metric_path':'validation.metrics.daily_paper_ic / validation.metrics.daily_paper_icir (1d selected horizon)','max_abs_library_correlation':0.3383121394556284,'correlation_path':'validation.metrics.max_abs_library_correlation','quality':0.012131853338946614})
+open(p,'w').write(json.dumps(j,indent=2)+'\n')

@@ -1,0 +1,10 @@
+import json
+P='factors/miner_3_20290503_residual_vix_dxy_stress_transition_60obs.json'
+with open(P) as f: x=json.load(f)
+x['version']='2029-06-28'; x['last_validated']='2029-06-28'; x['validation_data_cutoff']='2029-06-27'
+x['validation']['period']='2020-01-01 through 2029-06-27; point-in-time daily observations only'
+m=x['validation']['metrics']
+m.update({'selected_horizon_days':20,'daily_paper_ic':0.0361523034,'daily_paper_icir':0.1235257190,'hit_ratio':0.5252293578,'ic_dates':436,'mean_valid_instruments_per_ic_date':11.9908257,'coverage':0.1111251847,'valid_date_asset_cells':5264,'possible_date_asset_cells':47370,'turnover_10d_rank':0.6480024041,'max_abs_library_correlation':0.1606792484,'closest_library_factor':'orthogonal_trend_acceleration_20_60obs','closest_common_date_asset_cells':5200,'quality_score_abs_ic_times_abs_icir':0.0044657,'decay':{'1d':{'ic':0.0030516181,'icir':0.0105626895,'dates':439},'5d':{'ic':0.0041617404,'icir':0.0138935881,'dates':436},'10d':{'ic':0.0108595533,'icir':0.0370476805,'dates':436},'20d':{'ic':0.0361523034,'icir':0.1235257190,'dates':436}}})
+x['validation']['regime_notes']={'2026':{'ic':0.0547476333,'icir':0.1883229855,'dates':70},'2027':{'ic':0.1079191079,'icir':0.4523699531,'dates':37},'2028':{'ic':0.0269230769,'icir':0.0887406876,'dates':260},'2029':{'ic':0.0135806223,'icir':0.048791743,'dates':69},'latest_120_mature_dates':{'ic':0.0471445221,'icir':0.1618040063,'dates':120},'interpretation':'The full-sample 20-day IC and ICIR continue to clear binding gates; complete library correlation evidence remains well below 0.5. The 2029 annual segment is positive but below the ICIR gate, so retain as a modest conditional sleeve only. Latest-120 mature evidence is supportive. Coverage remains event-conditioned at 11.11%.'}
+x['benchmark_admission']['selected_metrics'].update({'ic':0.0361523034,'icir':0.1235257190,'metric_path':'validation.metrics (20-day full sample)','max_abs_library_correlation':0.1606792484,'correlation_path':'validation.metrics.max_abs_library_correlation','quality':0.0044657})
+with open(P,'w') as f: json.dump(x,f,indent=2);f.write('\n')

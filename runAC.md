@@ -102,6 +102,40 @@ AC 的因子生命周期按 FM 的三层结构解释：
 
 AC 原生 `template_a` 中的 `FW=(.17,.15,...,.05)` 是固定的 10 项策略模板，可作为资产打分/排名的结构参考，但它没有实现动态因子库、滚动末尾淘汰或质量 tilt。正式 AC 若继续使用该模板，必须由 Screener/Trader 产物把当前活跃因子及其方向、质量权重显式注入，不能把固定 `FW` 当作 FM 同步合同的替代品。
 
+### 3.2 online 小数持仓的实现边界
+
+在线组合不是整数股/整手交易。两个 AC 版本都已把小数数量贯通到：
+
+- `sim/schemas/account.py` 的 `PositionData.quantity`、`available_quantity`；
+- `sim/schemas/order.py` 的订单 `quantity` 和 `OrderResultSchema.executed_quantity`；
+- `sim/utils/add_order.py`、`agent/toolkit/add_order.py` 的参数与 OpenAI tool schema；
+- online 策略的数量计算，不再用 `int(...)` 截断；
+- `persistent/account.json` 的读写链路，保留 JSON 浮点值。
+
+因此 2026-07-16 的首次建仓可以把 1M 按 15 资产目标权重精确分配，产生小数单位；后续调仓同样按迁移名义金额计算一次 `3 bps`，不因整数舍入制造现金残留。小数只放宽 online 持仓/订单数量，不改变 15 个资产、long-only、cash=0、权重和为 1 的约束。旧的整手检查和“必须是 100 的倍数”已从两个版本的在线下单工具删除。
+
+### 3.3 DeepSeek 原生 Responses 路由与已有因子恢复
+
+DeepSeek AC 不再启用旧的 `AC_DEEPSEEK_CHAT_COMPAT` 本地 Python 请求/响应转换。AC 仍调用与 Luna 相同的 `client.responses.create(...)`、相同的 prompt、tool schema 和 Responses 历史；sub2api 负责协议适配：
+
+```text
+AC -> http://127.0.0.1:8080/v1/responses
+   -> sub2api group ac-deepseek-paid
+   -> account extra: openai_responses_mode=force_chat_completions
+   -> https://opencode.ai/zen/go/v1/chat/completions
+   -> sub2api Responses response/SSE bridge
+```
+
+两个 DeepSeek APIKey 账号、独立 group 和 AC 专用 client key 已在本机 sub2api 数据库配置；凭证不写入仓库，保存在 `/home/lxx/.config/alphacrafter/deepseek-sub2api.env`。`AC-deepseek/run_deepseek_ac9.sh` 默认读取该文件、使用 `deepseek-v4-flash`，不再读取 `opencode-api/keys.txt` 作为客户端入口。sub2api 的 `GET /v1/models` 已验证返回 200；加入直连规则后，Responses 请求已正确进入新 group 并由两个账号返回 200，不是本地格式转换路径。
+
+为修复该 egress，Clash Verge 的规则 profile 和当前生效配置都加入了最高优先级 `DOMAIN-SUFFIX,opencode.ai,DIRECT`；重新加载后核心 `/rules` 已确认命中 `DIRECT`。主机模型请求返回 200，sub2api Responses 返回 `completed`，带函数工具的 Responses 请求也成功返回 `function_call`。规则备份保存在 Clash Verge 数据目录的 `backups/` 下。
+
+DeepSeek 之前 40 cycle 的研究并非质量失败：日志中已经出现通过 `abs(IC)>=0.007`、`abs(ICIR)>=0.084` 的候选，但 Miner 没把 JSON 写入 `factors/`，导致审计记录误显示为 0 因子。由于 DeepSeek 因子不能继承 Luna，本次把 Luna 的完整 warmup 先保存到根目录 `Luna-warmup-archive-20260809/`，其中包括 6 个因子 JSON、公式/参数、全部研究脚本、ensemble、策略、审计与日志；它只作为 Luna 的可恢复证据，不作为 DeepSeek 的活动因子库。
+
+DeepSeek 的旧 `ws1` 已被强制失效并由调度器归档，新的 warmup workspace 的 `factors/` 初始为空；调度器会使用 `deepseek-v4-flash`，经 sub2api `/v1/responses` 和两个付费账号重新完成 40 cycle warmup。只有 DeepSeek 自己写入并读回、通过 IC/ICIR/相关性门槛的 JSON 才能进入其因子库，不再把 Luna 因子复制进去。
+
+后续 Miner 的保存补丁要求：通过门槛的候选必须立即写入并读回 `factors/<factor_id>.json`，包含 `validation.status=EFFECTIVE`、同周期 IC/ICIR 和 `max_abs_library_correlation`；只在文本中报告通过而没有可加载文件，视为保存失败，不得让 cycle 静默推进。
+
 ## 4. Terra API 与 AC 入口
 
 API 凭证只从 `agent-framework/AlphaCrafter/.env` 或环境变量读取，不能写入日志或提交。此前已确认的协议约定是：
@@ -203,13 +237,13 @@ cat results/ac_wl_data_final_state.json
 
 ## 7. 当前实现审计边界
 
-当前代码已经具备：冻结 warmup、共享 workspace 播种、位置式 AC CLI、10 日 cadence、session resume、状态文件和重试退避。`rebalance_to_weights()` 本身也实现了 15 资产权重校验、首次免费、后续迁移额 3bps 和 cash=0。
+当前代码已经具备：冻结 warmup、共享 workspace 播种、位置式 AC CLI、10 日 cadence、session resume、状态文件和重试退避；两个 AC 版本的 online 数量链路也已改成允许小数。`rebalance_to_weights()` 本身实现了 15 资产权重校验、首次免费、后续迁移额 3bps 和 cash=0。
 
 但在正式 AC 启动前仍必须修复/验证：
 
 - `factor_contract.py` 现在在每个 Miner 阶段后由 AC 主循环单点接入，负责 IC/ICIR、相关性、库容量 30 和滚动末尾淘汰；Screener 只负责 active ensemble <=10 和质量 tilt，不重复做库排序；
 - AC 原生固定 `FW` 模板不是动态质量 tilt；正式策略仍需消费当前 `factor_ensemble.json`，不能把固定 `FW` 当作 FM 同步合同的替代品；
-- StepTool 没有不可绕过地强制每个 online block 使用完整 15 资产权重向量，旧式 Agent strategy 仍可能下单、空仓或持有现金；
+- StepTool 没有不可绕过地强制每个 online block 使用完整 15 资产权重向量，旧式 Agent strategy 仍可能下单、空仓或持有现金；正式运行必须以 `rebalance_to_weights()` 的完整目标向量为准；
 - 现有 Trader 指令包含 cash/no-trade 语义，与本合同冲突；
 - scheduler 的数据入口已切换到 `WL-data-final`，通过 `AC_DATA_ROOT`/`panels`/`news` 单一解析点读取；最终数据包自身的重建/OHLC 缺口仍按第 1 节记录，不能在运行时静默修补。
 

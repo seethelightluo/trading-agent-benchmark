@@ -1,0 +1,4 @@
+# Patch runner retaining one candidate only; safe timestamp normalization for environment-specific index types.
+src=open('scripts/miner_3_20310403_residual_negative_us_cn_yield_spread_shock_loading_contraction.py',encoding='utf8').read()
+src=src.replace("for name,mask in [('2020_24',ics[10].index<pd.Timestamp('2025')),('2025_26',(ics[10].index>=pd.Timestamp('2025'))&(ics[10].index<pd.Timestamp('2027'))),('2027_onward',ics[10].index>=pd.Timestamp('2027'))]:", "print('DEBUG_FACTOR_INDEX',type(f.index).__name__,len(f), 'IC10',len(ics[10]), 'valid_cells',int(f.notna().sum().sum())); idx=pd.to_datetime(ics[10].index,errors='coerce');\nfor name,mask in [('2020_24',idx<pd.Timestamp('2025')),('2025_26',(idx>=pd.Timestamp('2025'))&(idx<pd.Timestamp('2027'))),('2027_onward',idx>=pd.Timestamp('2027'))]:")
+open('scripts/miner_3_20310403_residual_negative_us_cn_yield_spread_shock_loading_contraction.py','w',encoding='utf8').write(src)

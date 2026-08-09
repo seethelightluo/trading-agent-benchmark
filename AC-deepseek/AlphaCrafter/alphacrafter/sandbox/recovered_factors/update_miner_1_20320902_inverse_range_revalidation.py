@@ -1,0 +1,10 @@
+import json
+p='factors/miner_1_20310403_inverse_residual_downside_range_expansion_exhaustion_60obs.json'
+with open(p) as f: d=json.load(f)
+d.setdefault('validation_history',[]).append(d['validation'])
+m={'selected_horizon_days':20,'daily_paper_ic':0.032532,'daily_paper_icir':0.091641,'hit_ratio':0.557221,'ic_dates':1468,'mean_valid_instruments':9.533,'minimum_valid_instruments':8,'signal_cell_coverage':0.597083,'signal_cells':'14330/24000','daily_rank_turnover':0.046382,'concentration_median_cross_sectional_iqr':0.061589,'decay':{'1d':{'ic':0.002065,'icir':0.005813,'dates':1487},'5d':{'ic':0.000784,'icir':0.002156,'dates':1483},'10d':{'ic':0.010821,'icir':0.029519,'dates':1478},'20d':{'ic':0.032532,'icir':0.091641,'dates':1468}},'max_abs_library_correlation':0.348663,'closest_library_factor':'idiosyncratic_upside_tail_skewness_60obs','library_correlation_evidence_cells':8669,'library_factors_screened':30,'correlation_evidence_note':'Unchanged admitted-factor revalidation; complete library novelty audit from 2032-08-05 remains valid and below 0.5000. No new admission is sought.'}
+d['version']='2032-09-02'
+d['validation']={'period':'2026-07-16 through 2032-09-01 (completed-bar cutoff)','status':'EFFECTIVE','metrics':m,'regime_notes':{'2026_2029':{'dates':831,'ic':0.068133,'icir':0.222829,'hit_ratio':0.607702},'2030_2032_09_01':{'dates':637,'ic':-0.01391,'icir':-0.034258,'hit_ratio':0.491366},'recent_12m':{'dates':202,'ic':-0.095215,'icir':-0.24128,'hit_ratio':0.386139},'assessment':'Aggregate 20-day IC (0.032532) and ICIR (0.091641) pass binding gates. However, post-2030 and recent-12-month IC/ICIR remain negative, with a 38.61% recent hit ratio. Retained solely on aggregate evidence under enhanced monitoring; promptly deprecate if aggregate gates fail.'}}
+d['last_validated']='2032-09-02'; d['next_revalidation_due']='2032-10-02'
+with open(p,'w') as f: json.dump(d,f,indent=2);f.write('\n')
+print('updated',p,'status',d['validation']['status'],'history',len(d['validation_history']))

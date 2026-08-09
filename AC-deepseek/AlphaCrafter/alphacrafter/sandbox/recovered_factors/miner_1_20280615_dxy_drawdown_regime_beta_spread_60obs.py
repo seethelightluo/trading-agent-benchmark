@@ -1,0 +1,11 @@
+"""Single idea: DXY beta conditional on each asset's own 60-day drawdown state; no future data."""
+# This validation reuses the complete, contemporaneous library reconstruction from
+# the preceding research script, changing only the candidate state definition and
+# adding that preceding admitted signal to the independence screen.
+source='scripts/miner_1_20280601_dxy_relative_vol_regime_beta_spread_60obs.py'
+s=open(source,encoding='utf-8').read()
+s=s.replace('"""Single idea: DXY beta conditional on own relative volatility; validate without future data."""','"""Single idea: DXY beta conditional on own drawdown state; validate without future data."""')
+s=s.replace("# Candidate: own DXY beta in high own realized-volatility sessions versus its trailing calm state.\ndxy=ld('DXY',idx=True).pct_change(); vix=ld('VIX',idx=True).pct_change(); ownvol=r.rolling(20,min_periods=15).std(); high=pd.DataFrame({a:ownvol[a]>ownvol[a].rolling(60,min_periods=45).median() for a in A}); f=pd.DataFrame({a:beta(r[a],dxy,60,12,high[a])-beta(r[a],dxy,60,12,~high[a]) for a in A})", "# Candidate: DXY beta during own 60-day moving-average drawdown versus non-drawdown.\ndxy=ld('DXY',idx=True).pct_change(); vix=ld('VIX',idx=True).pct_change(); draw=pd.DataFrame({a:p[a] < p[a].rolling(60,min_periods=45).mean() for a in A}); f=pd.DataFrame({a:beta(r[a],dxy,60,12,draw[a])-beta(r[a],dxy,60,12,~draw[a]) for a in A})")
+s=s.replace("lib['dxy_median_trend_regime_beta_spread_60obs']=pd.DataFrame({a:beta(r[a],dxy,60,12,oldstate)-beta(r[a],dxy,60,12,~oldstate) for a in A})", "lib['dxy_median_trend_regime_beta_spread_60obs']=pd.DataFrame({a:beta(r[a],dxy,60,12,oldstate)-beta(r[a],dxy,60,12,~oldstate) for a in A})\n# Prior admitted relative-volatility state signal is part of the current library.\nownvol=r.rolling(20,min_periods=15).std(); rvstate=pd.DataFrame({a:ownvol[a]>ownvol[a].rolling(60,min_periods=45).median() for a in A}); lib['dxy_relative_vol_regime_beta_spread_60obs']=pd.DataFrame({a:beta(r[a],dxy,60,12,rvstate[a])-beta(r[a],dxy,60,12,~rvstate[a]) for a in A})")
+s=s.replace('CANDIDATE dxy_relative_vol_regime_beta_spread_60obs','CANDIDATE dxy_drawdown_regime_beta_spread_60obs')
+exec(compile(s,'generated_drawdown_validation','exec'))

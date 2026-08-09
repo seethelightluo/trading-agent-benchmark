@@ -1,0 +1,9 @@
+import json
+p='factors/miner_2_20330428_inverse_dispersion_amplified_us_cn_rate_spread_transmission_residual_30.json'
+with open(p) as f:d=json.load(f)
+v=d['validation'];v['period']='Point-in-time query cutoff 2034-08-16; locally available completed source history produced 861 eligible forward-IC dates; 15-instrument benchmark universe'
+v['status']='EFFECTIVE';v['metrics'].update({'ic':0.07602004745564667,'icir':0.2728981267963367,'ic_horizon_days':20,'ic_dates':861,'hit_ratio':0.5958188153310104,'mean_instruments':12.988385598141695,'turnover_mean_daily_rank':0.11601867758409816,'coverage':0.165747739736179,'valid_factor_cells':11183,'max_abs_library_correlation':0.131306,'closest_library_factor':'oil_shock_asymmetry','closest_common_valid_cells':10650})
+v['regime_notes']='Fixed specification revalidated point-in-time through 2034-08-16 using the 15-instrument universe. The locally available completed history still supplies 861 eligible IC dates, mean 12.99 instruments per date, and 11,183 valid factor cells; every IC date meets the eight-instrument minimum. Selected 20d IC/ICIR is +0.076020/+0.272898, hit 59.58%. Decay: 1d +0.014674/+0.049989, 5d +0.027752/+0.093927, 10d +0.046032/+0.152912, 20d +0.076020/+0.272898. The 20d evidence is positive in the 2025-2029 partition (849 dates, IC +0.076118, ICIR +0.273031) and the 2030-2034 partition (12 dates, IC +0.069090, ICIR +0.252241); no pre-2025 eligible dates arise from the staggered native source alignment. Existing full-library common-cell audit remains 0.131306 versus oil_shock_asymmetry over 10,650 cells, below the 0.5000 gate. No future data used.'
+d['version']='2034-08-17 revalidation';d['last_validated']='2034-08-17T00:00:00Z';d['revalidation_due']='2034-11-17'
+with open(p,'w') as f:json.dump(d,f,indent=2)
+print('updated',p)

@@ -1,0 +1,11 @@
+import json
+p='factors/miner_1_20310403_inverse_residual_downside_range_expansion_exhaustion_60obs.json'
+d=json.load(open(p))
+old={'period':d['validation']['period'],'status':d['validation']['status'],'metrics':d['validation']['metrics'],'regime_notes':d['validation']['regime_notes']}
+d.setdefault('validation_history',[]).append(old)
+metrics={'selected_horizon_days':20,'daily_paper_ic':0.034497,'daily_paper_icir':0.097534,'hit_ratio':0.559334,'ic_dates':1441,'mean_valid_instruments':9.562,'minimum_valid_instruments':8,'signal_cell_coverage':0.599398,'signal_cells':'13936/23250','daily_rank_turnover':0.046284,'concentration_median_cross_sectional_iqr':0.061438,'decay':{'1d':{'ic':0.004791,'icir':0.013604,'dates':1441},'5d':{'ic':0.005731,'icir':0.015907,'dates':1441},'10d':{'ic':0.011628,'icir':0.032143,'dates':1441},'20d':{'ic':0.034497,'icir':0.097534,'dates':1441}},'max_abs_library_correlation':0.348663,'closest_library_factor':'idiosyncratic_upside_tail_skewness_60obs','library_correlation_evidence_cells':8669,'library_factors_screened':30,'correlation_evidence_note':'Unchanged admitted-factor revalidation; prior complete library novelty audit retained. No new admission is sought.'}
+reg={'2026_2029':{'dates':831,'ic':0.068133,'icir':0.222829,'hit_ratio':0.607702},'2030_2032_06_23':{'dates':610,'ic':-0.011325,'icir':-0.027903,'hit_ratio':0.493443},'recent_12m':{'dates':225,'ic':-0.076434,'icir':-0.201591,'hit_ratio':0.422222},'assessment':'Aggregate 20-day evidence still passes the shared gates (IC 0.034497; ICIR 0.097534), so the factor remains EFFECTIVE under aggregate revalidation. Performance drift has broadened: post-2030 and recent-12-month partitions are negative, and recent ICIR is -0.201591. Retain only under enhanced monitoring; do not treat recent evidence as supportive and revalidate by the next review.'}
+d['version']='2032-06-24';d['validation']={'period':'2026-07-16 through 2032-06-23 (completed-bar cutoff)','status':'EFFECTIVE','metrics':metrics,'regime_notes':reg};d['last_validated']='2032-06-24';d['next_revalidation_due']='2032-09-24'
+# Keep admission event immutable; latest aggregate quality only.
+d['benchmark_admission']['selected_metrics'].update({'ic':0.034497,'icir':0.097534,'metric_path':'validation.metrics','quality':0.003364560198})
+open(p,'w').write(json.dumps(d,indent=2)+'\n')

@@ -1,0 +1,72 @@
+# ASSETS.yaml — 资产口径（agent-framework 侧，被 adapters/build_inputs.py 消费）
+# 单一事实源为 data-prepare/asset_spec.py；本文件与之保持一致。
+# 2026-07-22 关键修订（见 plan.md §7）：15 可交易 + 5 信号 = 20。
+
+# === 可交易持仓（15）：进持仓权重向量 w_t，参与 ∑wᵢ=1 与组合优化 ===
+tradable:
+  - {asset_id: "000300.SH", name: "沪深300",     class: "equity",   ccy: "cny", baseline: 4608}
+  - {asset_id: "SPX",       name: "标普500",     class: "equity",   ccy: "usd", baseline: 7534}
+  - {asset_id: "HSI",       name: "恒生指数",     class: "equity",   ccy: "hkd", baseline: 24586}
+  - {asset_id: "N225",      name: "日经225",     class: "equity",   ccy: "jpy", baseline: 68000}
+  - {asset_id: "SX5E",      name: "斯托克50",     class: "equity",   ccy: "eur", baseline: 5100}
+  - {asset_id: "000688.SH", name: "科创50",     class: "equity",   ccy: "cny", baseline: 1920}
+  - {asset_id: "SOX",       name: "费城半导体",   class: "equity",   ccy: "usd", baseline: 5800}
+  - {asset_id: "NDX",       name: "纳斯达克100", class: "equity",   ccy: "usd", baseline: 20500}
+  - {asset_id: "XAU",       name: "黄金",        class: "commodity", ccy: "usd", baseline: 4050}
+  - {asset_id: "COPPER",    name: "LME铜",       class: "commodity", ccy: "usd", baseline: 13600}
+  - {asset_id: "WTI",       name: "原油WTI",     class: "commodity", ccy: "usd", baseline: 79}
+  - {asset_id: "BTC",       name: "BTC",         class: "crypto",   ccy: "usd", baseline: 64800}
+  - {asset_id: "ETH",       name: "ETH",         class: "crypto",   ccy: "usd", baseline: 1920}
+  - {asset_id: "US10Y",     name: "美债10Y收益率", class: "bond",     ccy: "usd", baseline: 0.043}
+  - {asset_id: "CN10Y",     name: "中债10Y收益率", class: "bond",     ccy: "cny", baseline: 0.022}
+
+# === 宏观/状态信号（5）：仅作 Agent 输入特征，不持仓、不进 w_t ===
+# USDCNY/USDJPY/EURUSD 兼做对应外币资产的 USD 折算（见 to_usd）。
+signals:
+  - {asset_id: "DXY",    name: "美元指数",  class: "fx"}
+  - {asset_id: "USDCNY", name: "USD/CNY",  class: "fx"}
+  - {asset_id: "USDJPY", name: "USD/JPY",  class: "fx"}
+  - {asset_id: "EURUSD", name: "EUR/USD",  class: "fx"}
+  - {asset_id: "VIX",    name: "VIX",      class: "vol"}
+
+# === USD 折算（§7.2）：op div=P/rate, mul=P×rate；rate 为信号 asset_id 或常数 ===
+# 未列出者（ccy:usd）原生 USD，无需折算。HSI 用 HKD-USD 联系汇率常数 7.80。
+to_usd:
+  "000300.SH": {rate: "USDCNY", op: "div"}
+  "000688.SH": {rate: "USDCNY", op: "div"}
+  "CN10Y":     {rate: "USDCNY", op: "div"}
+  "HSI":       {rate: 7.80,     op: "div"}   # 联系汇率常数，无需抓取
+  "N225":      {rate: "USDJPY", op: "div"}
+  "SX5E":      {rate: "EURUSD", op: "mul"}
+
+# === 全局参数 ===
+baseline_date: "2026-07-16"      # warm-up 与在线滚动分界
+history_end:   "2026-07-15"      # Agent 首轮决策可见数据截止日；首笔成交从 baseline_date 开始
+warmup_start:  "2020-01-01"      # 历史数据起点
+# 前向终点：不硬编码 2030；取世界线末阶段真实结束日。9 条 WL 末阶段均结束于 2035-12-31。
+# gen_worldline_online.py 逐 WL 读 max(阶段 end_date)；此处置全局上限/默认。
+online_end:    "2035-12-31"
+friction_bps:  3                 # 统一单边摩擦（1bp 佣金 + 2bp 滑点）
+initial_capital_usd: 1000000      # 2026-07-16 前向起点；与 runFM.md 当前合同一致
+decision_cadence_trading_days: 10 # Agent 每 10 个交易日研究/决定一次
+max_active_factors: 10            # 两框架进入组合的统一活跃因子上限（采纳 refer.md Top-10；研究库仍可更大）
+min_round_trip_edge_bps: 6        # 至少覆盖双边 3bps×2；低于该门槛允许不交易
+
+# === 统一因子录取门槛（FM 数值门控 + AC Miner 研究提示）===
+# FactorMiner 论文在 CSI500（500 只股票）上使用股票筛选门槛
+# |IC|>=0.05、|ICIR|>=0.5，附录默认 A 股挖掘 IC 门槛为 0.04。
+# 本 benchmark 只有 15 个跨资产标的。横截面秩相关在独立噪声近似下
+# std(IC_t) 与 1/sqrt(M-1) 同阶，因此保持相同信噪要求时，ICIR 随
+# sqrt(M-1) 缩放：0.5*sqrt((15-1)/(500-1))=0.08375。向上取整到
+# 0.10 保留保守余量；原始 IC 仍保持论文默认 0.04，不为强行入库而放宽。
+factor_admission:
+  metric_version: "paper_ic_v2"
+  universe_size: 15
+  reference_universe: "CSI500"
+  reference_universe_size: 500
+  reference_ic_threshold: 0.04
+  reference_icir_threshold: 0.5
+  scaled_icir_threshold: 0.08375
+  ic_threshold: 0.007
+  icir_threshold: 0.084
+  correlation_threshold: 0.5

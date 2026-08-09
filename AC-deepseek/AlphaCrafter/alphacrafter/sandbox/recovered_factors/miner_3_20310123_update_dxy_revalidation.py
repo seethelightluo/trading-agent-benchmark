@@ -1,0 +1,10 @@
+"""Apply 2031-01-23 revalidation to existing conditional DXY factor."""
+import json
+p='factors/miner_3_20300530_conditional_dxy_impulse_exposure_5v40obs.json'
+x=json.load(open(p)); m=x['validation']['metrics']
+m.update({'primary_horizon_days':20,'daily_paper_ic':0.02581297168971788,'daily_paper_icir':0.08745374793262964,'ic_hit_ratio':0.5187772925764192,'ic_standard_error':0.008722818487010129,'ic_dates':1145,'universe_instruments':15,'mean_valid_instruments_per_ic_date':14.991266375545852,'signal_cell_coverage':0.4149663677130045,'mean_instruments_per_panel_date':6.224495515695067,'rank_stability_1d':0.5678627553579592,'turnover_proxy_rank_stability_1d':0.5678627553579592,'max_abs_library_correlation':0.413123079430149,'most_correlated_library_factor':'miner_3_conditional_usdjpy_impulse_exposure_10v50obs','max_abs_library_correlation_common_signal_cells':21585,'library_correlation_evidence_complete':True,'library_factors_compared':28,'decay_ic':{'1d':-0.0013799819228645903,'5d':-0.0045981096523255195,'10d':0.018409877644452788,'20d':0.02581297168971788},'decay_icir':{'1d':-0.004774355053004653,'5d':-0.0157497567697971,'10d':0.06386049835977116,'20d':0.08745374793262964},'decay_ic_dates':{'1d':1164,'5d':1160,'10d':1155,'20d':1145}})
+x['validation'].update({'period':'2020-01-01 through 2031-01-22','timestamp':'2031-01-23','status':'EFFECTIVE','regime_notes':'20-observation admission pair remains positive but is narrow: full sample IC 0.02581 / ICIR 0.08745. 2024-2026 was negative (IC -0.06224 / ICIR -0.24296; 106 dates), while 2027-2030 was positive (0.03480 / 0.11696; 1,039 dates). Thus retain as a low-weight, closely monitored macro sleeve and revalidate next quarter.'})
+x['last_validated']='2031-01-23'
+x['benchmark_admission']['selected_metrics'].update({'ic':0.02581297168971788,'icir':0.08745374793262964,'max_abs_library_correlation':0.413123079430149,'quality':0.002257426980789382})
+open(p,'w').write(json.dumps(x,indent=2)+'\n')
+print('UPDATED',p,x['validation']['status'],x['last_validated'])

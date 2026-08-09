@@ -1,0 +1,24 @@
+import pandas as pd,numpy as np
+from scipy.stats import spearmanr
+assets=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; d={}
+for a in assets:
+ q=pd.read_csv('../persistent/stock_data/'+a+'.csv');q.date=pd.to_datetime(q.date);d[a]=q.set_index('date').close
+p=pd.DataFrame(d).sort_index(); r=p.pct_change()
+# Breadth-conditioned short-term reversal: reverse 5d return when cross-asset breadth is weak/strong, with strength increasing near extremes.
+r5=p.pct_change(5); breadth=r5.gt(0).mean(axis=1); extreme=(breadth-.5).abs()*2
+# contrarian signal, amplified at broad cross-sectional extremes; lagged
+sig=(-r5*extreme).shift(1)
+print('range',p.index.min().date(),p.index.max().date(),'assets',len(p.columns),'valid_cells',int(sig.notna().sum().sum()))
+for h in [1,5,10,20]:
+ f=p.shift(-h)/p-1; a=[];ns=[]
+ for dt in p.index:
+  z=pd.concat([sig.loc[dt],f.loc[dt]],axis=1).dropna()
+  if len(z)>=8:a.append(spearmanr(z.iloc[:,0],z.iloc[:,1]).statistic);ns.append(len(z))
+ a=np.array(a);print('H',h,'dates',len(a),'meanN',round(np.mean(ns),2),'IC',round(a.mean(),6),'ICIR',round(a.mean()/a.std(ddof=1),6),'hit',round((a>0).mean(),4))
+print('coverage',round(sig.notna().mean().mean(),4),'turn10',round(sig.rank(axis=1,pct=True).diff(10).abs().mean().mean(),4),'mean_valid',round(sig.notna().sum(axis=1).mean(),2))
+for y in range(2020,2034):
+ a=[]
+ for dt in p.index[p.index.year==y]:
+  z=pd.concat([sig.loc[dt],(p.shift(-1)/p-1).loc[dt]],axis=1).dropna()
+  if len(z)>=8:a.append(spearmanr(z.iloc[:,0],z.iloc[:,1]).statistic)
+ if len(a)>20:print('YEAR',y,len(a),round(np.mean(a),6),round(np.mean(a)/np.std(a,ddof=1),4))
