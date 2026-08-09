@@ -1,23 +1,22 @@
-import pandas as pd,numpy as np
-from scipy.stats import spearmanr
+import numpy as np,pandas as pd
 U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
-B='../persistent/stock_data'; R=pd.DataFrame({s:pd.read_csv(f'{B}/{s}.csv',parse_dates=['date']).set_index('date').close.pct_change() for s in U})
-d=pd.read_csv('../persistent/index_data/DXY.csv',parse_dates=['date']).set_index('date').close.pct_change()
-b=R.rolling(60,min_periods=45).cov(d).div(d.rolling(60,min_periods=45).var(),axis=0)
-F=-b
-for w in [20,60,120]:
- X=R.rolling(w,min_periods=max(10,w//2)).corr(d) if False else None
-ics=[]; ns=0
-for i in range(len(F)-1):
- z=pd.concat([F.iloc[i],R.iloc[i+1]],axis=1).dropna()
- if len(z)>=8: ics.append(spearmanr(z.iloc[:,0],z.iloc[:,1]).statistic);ns+=1
-v=np.array(ics);print('dates',ns,'avg names',len(U),'coverage',ns/len(F),'IC',v.mean(),'ICIR',v.mean()/v.std(ddof=1),'hit',np.mean(v>0))
-for h in [5,10]:
- q=[]
- for i in range(len(F)-h):
-  z=pd.concat([F.iloc[i],R.iloc[i+1:i+1+h].sum()],axis=1).dropna()
-  if len(z)>=8:q.append(spearmanr(z.iloc[:,0],z.iloc[:,1]).statistic)
- q=np.array(q);print(h,q.mean(),q.mean()/q.std(ddof=1),len(q))
-for y in range(2020,2027):
- q=[ics[i] for i in range(len(ics)) if F.index[i].year==y]
- if q:print(y,len(q),np.mean(q),np.mean(q)/np.std(q,ddof=1))
+def load(path): return pd.read_csv(path,parse_dates=['date']).drop_duplicates('date').set_index('date').close
+p=pd.concat({s:load('../persistent/stock_data/'+s+'.csv') for s in U},axis=1,sort=True).loc[:'2026-07-15']
+x=load('../persistent/index_data/DXY.csv').reindex(p.index).ffill(); r=np.log(p).diff(); q=np.log(x).diff()
+f=pd.DataFrame(index=p.index,columns=U,dtype=float)
+for s in U:
+ a=pd.concat([r[s],q],axis=1).dropna(); a.columns=['a','q']
+ cov=a.a.rolling(60,min_periods=45).cov(a.q); var=a.q.rolling(60,min_periods=45).var()
+ f.loc[a.index,s]=-cov/var
+for h in [1,5,10]:
+ fw=p.pct_change(h).shift(-h); vals=[];ns=[];ds=[]
+ for dt in f.index:
+  a=pd.DataFrame({'f':f.loc[dt],'r':fw.loc[dt]}).dropna()
+  if len(a)>=8 and a.f.nunique()>1 and a.r.nunique()>1: vals.append(a.f.corr(a.r,method='spearman'));ns.append(len(a));ds.append(dt)
+ z=np.array(vals); d=pd.DatetimeIndex(ds)
+ print('h',h,'dates',len(z),'meanN',np.mean(ns),'IC',z.mean(),'ICIR',z.mean()/z.std(ddof=1),'hit',(z>0).mean())
+ if h==1:
+  print('coverage',f.notna().sum().sum()/f.size,'turnover',f.rank(axis=1,pct=True).diff().abs().mean(axis=1).mean())
+  for y,mask in [('20-22',d<='2022-12-31'),('23-24',(d>='2023-01-01')&(d<='2024-12-31')),('25-26',d>='2025-01-01')]:
+   zz=z[mask];print(y,len(zz),zz.mean(),zz.mean()/zz.std(ddof=1))
+f.to_csv('scripts/miner_2_20260730_dxy_beta_signal.csv');print('signal_artifact scripts/miner_2_20260730_dxy_beta_signal.csv')

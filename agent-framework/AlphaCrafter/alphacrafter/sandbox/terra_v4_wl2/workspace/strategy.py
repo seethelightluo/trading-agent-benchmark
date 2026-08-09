@@ -4,131 +4,101 @@ import numpy as np
 from alphacrafter.sim.utils import register_hook, get_account_dict, get_stock_daily_data, rebalance_to_weights
 
 UNIVERSE = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
-FACTOR_WEIGHTS = {"clv": 0.3395, "peer": 0.2612, "reversal": 0.2012, "momentum": 0.1981}
-MIN_W, MAX_W, REBALANCE_DAYS = 0.015, 0.16, 10
-last_date = None
+FACTOR_WEIGHTS = {"clv": 0.32, "peer": 0.25, "rev5": 0.20, "mom20": 0.15, "rev3": 0.08}
+MIN_W, MAX_W, CADENCE = 0.015, 0.16, 10
+last_decision = None
 
 
 def ranks(values):
-    result = {s: 0.5 for s in UNIVERSE}
-    good = sorted((s, float(v)) for s, v in values.items() if np.isfinite(v))
-    if len(good) < 2:
-        return result
-    for i, (s, _) in enumerate(good):
-        result[s] = (i + 1.0) / len(good)
-    return result
+    out = {s: 0.5 for s in UNIVERSE}
+    valid = sorted((s, v) for s, v in values.items() if np.isfinite(v))
+    n = len(valid)
+    if n > 1:
+        for i, (s, _) in enumerate(valid):
+            out[s] = (i + 1.0) / n
+    return out
 
 
-def bounded_weights(raw):
-    # Projection onto the complete long-only box/simplex, preserving full investment.
-    w = {s: max(0.0, float(raw.get(s, 0.0))) for s in UNIVERSE}
-    total = sum(w.values()) or 1.0
-    w = {s: x / total for s, x in w.items()}
-    fixed = set()
-    for _ in range(30):
-        low = [s for s in UNIVERSE if s not in fixed and w[s] < MIN_W]
-        high = [s for s in UNIVERSE if s not in fixed and w[s] > MAX_W]
-        if not low and not high:
+def box_weights(raw):
+    # Iterative capped/floored simplex projection for the complete portfolio.
+    w = {s: max(MIN_W, min(MAX_W, float(raw.get(s, MIN_W)))) for s in UNIVERSE}
+    for _ in range(100):
+        err = 1.0 - sum(w.values())
+        if abs(err) < 1e-10:
             break
-        for s in low:
-            w[s] = MIN_W
-            fixed.add(s)
-        for s in high:
-            w[s] = MAX_W
-            fixed.add(s)
-        rem = 1.0 - sum(w[s] for s in fixed)
-        free = [s for s in UNIVERSE if s not in fixed]
+        free = [s for s in UNIVERSE if MIN_W + 1e-9 < w[s] < MAX_W - 1e-9]
         if not free:
             break
-        base = sum(max(w[s], 1e-12) for s in free)
+        add = err / len(free)
         for s in free:
-            w[s] = rem * w[s] / base
-    # Tiny numerical correction keeps the contract exact without violating bounds materially.
+            w[s] = max(MIN_W, min(MAX_W, w[s] + add))
     z = sum(w.values())
     return {s: w[s] / z for s in UNIVERSE}
 
 
 @register_hook
 def cross_asset_strategy():
-    global last_date
+    global last_decision
     account = get_account_dict()
-    market = {}
+    data = {}
     for s in UNIVERSE:
-        df = get_stock_daily_data(symbol=s, days=85)
-        if df is None or len(df) < 25:
+        df = get_stock_daily_data(symbol=s, days=100)
+        if df is None or len(df) < 30:
             continue
         df = df.sort_values("date").reset_index(drop=True)
         c = np.asarray(df["close"], dtype=float)
         h = np.asarray(df["high"], dtype=float)
         l = np.asarray(df["low"], dtype=float)
         r = c[1:] / np.maximum(c[:-1], 1e-12) - 1.0
-        market[s] = (c, h, l, r, str(df.iloc[-1]["date"]))
-    if len(market) < 12:
+        data[s] = (c, h, l, r, str(df.iloc[-1]["date"]))
+    if len(data) < 12:
         return
-    decision = max(x[4] for x in market.values())
-    if last_date is not None:
+    date = max(v[4] for v in data.values())
+    if last_decision is not None:
         try:
-            days = (np.datetime64(decision, "D") - np.datetime64(last_date, "D")) / np.timedelta64(1, "D")
-            if days < REBALANCE_DAYS:
+            elapsed = (np.datetime64(date, "D") - np.datetime64(last_decision, "D")) / np.timedelta64(1, "D")
+            if elapsed < CADENCE:
                 return
         except Exception:
             return
 
-    clv, peer, reversal, momentum, invvol = {}, {}, {}, {}, {}
-    five = {}
-    for s, (c, h, l, r, _) in market.items():
-        if len(c) < 22:
+    clv, ret5, rev5, mom20, rev3, invvol = {}, {}, {}, {}, {}, {}
+    for s, (c, h, l, r, _) in data.items():
+        if len(r) < 22:
             continue
-        daily_clv = (2*c - h - l) / np.maximum(h-l, 1e-12)
-        clv[s] = float(np.mean(daily_clv[-3:]))
-        reversal[s] = float(-np.mean(r[-5:]))
+        rng = np.maximum(h[-1] - l[-1], 1e-12)
+        clv[s] = float((2.0 * c[-1] - h[-1] - l[-1]) / rng)
+        ret5[s] = float(c[-1] / max(c[-6], 1e-12) - 1.0)
+        rev5[s] = -float(np.mean(r[-5:]))
+        rev3[s] = -float(np.mean(r[-3:]))
         vol = max(float(np.std(r[-20:])), 0.008)
+        mom20[s] = float((c[-1] / max(c[-21], 1e-12) - 1.0) / vol)
         invvol[s] = 1.0 / vol
-        momentum[s] = float((c[-1] / max(c[-21], 1e-12) - 1.0) / (vol + 0.01))
-        five[s] = float(c[-1] / max(c[-6], 1e-12) - 1.0)
-    med = float(np.median(list(five.values())))
-    peer = {s: v-med for s, v in five.items()}
-    rr = {k: ranks(v) for k, v in (("clv",clv),("peer",peer),("reversal",reversal),("momentum",momentum))}
-    score = {s: sum(FACTOR_WEIGHTS[k] * rr[k][s] for k in rr) for s in UNIVERSE}
+    median5 = float(np.median(list(ret5.values())))
+    peer = {s: v - median5 for s, v in ret5.items()}
+    rr = {k: ranks(v) for k, v in (("clv", clv), ("peer", peer), ("rev5", rev5), ("mom20", mom20), ("rev3", rev3))}
+    score = {s: sum(FACTOR_WEIGHTS[k] * rr[k][s] for k in FACTOR_WEIGHTS) for s in UNIVERSE}
 
-    # Medium-risk, sideways/mildly bearish regime: defensive tradable tilt, never cash.
-    if "SPX" in market:
-        c = market["SPX"][0]
-        bearish = c[-1] < c[-21] and c[-1] < c[-6]
-        if bearish:
+    # Medium-high, sideways/bearish regime: retain full investment but favor defensives.
+    if "SPX" in data:
+        spx = data["SPX"][0]
+        if spx[-1] < spx[-6] or spx[-1] < spx[-21]:
             for s in ("XAU", "US10Y", "CN10Y"):
-                score[s] += 0.18
+                score[s] += 0.12
             for s in ("BTC", "ETH", "WTI"):
-                score[s] = max(0.05, score[s] - 0.10)
-    mean_iv = np.mean(list(invvol.values())) if invvol else 1.0
-    raw = {s: max(0.01, score[s]) * (0.78 + 0.22 * invvol.get(s, mean_iv) / mean_iv) for s in UNIVERSE}
-    weights = bounded_weights(raw)
+                score[s] = max(0.05, score[s] - 0.07)
+    avg_iv = float(np.mean(list(invvol.values())))
+    raw = {s: max(0.01, score[s]) * (0.78 + 0.22 * invvol.get(s, avg_iv) / avg_iv) for s in UNIVERSE}
+    weights = box_weights(raw)
+    a = np.array([score[s] for s in UNIVERSE])
+    sd = max(float(a.std()), 1e-9)
+    forecast = {s: 0.01 * (score[s] - float(a.mean())) / sd for s in UNIVERSE}
 
-    total = float(account.get("total_assets", account.get("net_assets", 0.0)) or 0.0)
-    held = {p.get("symbol"): p for p in account.get("positions", []) if float(p.get("quantity", 0) or 0) > 0}
-    # Online benchmark execution is one complete proposal through the
-    # deterministic migration/cost gate; direct add_order is forbidden.
-    score_values = [float(score[s]) for s in UNIVERSE]
-    score_mean = float(np.mean(score_values))
-    score_std = float(np.std(score_values))
-    forecast_returns = {
-        s: 0.01 * (float(score[s]) - score_mean) / max(score_std, 1e-12)
-        for s in UNIVERSE
-    }
     factor_ids = []
     try:
-        ensemble = json.loads((Path(__file__).parent / "factor_ensemble.json").read_text())
-        factor_ids = [
-            str(item["factor_id"])
-            for item in ensemble.get("selected_factors", [])
-            if isinstance(item, dict) and item.get("factor_id")
-        ]
-    except (OSError, ValueError, TypeError, KeyError):
+        obj = json.loads((Path(__file__).parent / "factors" / "factor_ensemble.json").read_text(encoding="utf-8"))
+        factor_ids = [x["factor_id"] for x in obj.get("selected_factors", []) if isinstance(x, dict) and x.get("factor_id")]
+    except Exception:
         pass
-    rebalance_to_weights(
-        weights,
-        forecast_returns=forecast_returns,
-        factor_ids=factor_ids[:10],
-        horizon_days=10,
-    )
-    last_date = decision
+    rebalance_to_weights(weights, forecast_returns=forecast, factor_ids=factor_ids[:10], horizon_days=10)
+    last_decision = date

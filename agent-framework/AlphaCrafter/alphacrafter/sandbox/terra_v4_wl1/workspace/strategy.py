@@ -4,131 +4,129 @@ import numpy as np
 from alphacrafter.sim.utils import register_hook, get_account_dict, get_stock_daily_data, rebalance_to_weights
 
 UNIVERSE = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
-FACTOR_WEIGHTS = {"clv": 0.3395, "peer": 0.2612, "reversal": 0.2012, "momentum": 0.1981}
-MIN_W, MAX_W, REBALANCE_DAYS = 0.015, 0.16, 10
+CADENCE = 10
+MIN_W, MAX_W = 0.02, 0.14
 last_date = None
+blocks = CADENCE
 
 
-def ranks(values):
-    result = {s: 0.5 for s in UNIVERSE}
+def percentile(values):
+    out = {s: 0.5 for s in UNIVERSE}
     good = sorted((s, float(v)) for s, v in values.items() if np.isfinite(v))
-    if len(good) < 2:
-        return result
-    for i, (s, _) in enumerate(good):
-        result[s] = (i + 1.0) / len(good)
-    return result
+    n = len(good)
+    if n > 1:
+        for i, (s, _) in enumerate(good):
+            out[s] = (i + 1.0) / n
+    return out
 
 
 def bounded_weights(raw):
-    # Projection onto the complete long-only box/simplex, preserving full investment.
+    # Iterative capped/floored proportional projection, then exact normalization.
     w = {s: max(0.0, float(raw.get(s, 0.0))) for s in UNIVERSE}
-    total = sum(w.values()) or 1.0
-    w = {s: x / total for s, x in w.items()}
-    fixed = set()
-    for _ in range(30):
-        low = [s for s in UNIVERSE if s not in fixed and w[s] < MIN_W]
-        high = [s for s in UNIVERSE if s not in fixed and w[s] > MAX_W]
-        if not low and not high:
-            break
-        for s in low:
-            w[s] = MIN_W
-            fixed.add(s)
-        for s in high:
-            w[s] = MAX_W
-            fixed.add(s)
+    for _ in range(50):
+        free = [s for s in UNIVERSE if MIN_W < w[s] < MAX_W]
+        fixed = [s for s in UNIVERSE if s not in free]
         rem = 1.0 - sum(w[s] for s in fixed)
-        free = [s for s in UNIVERSE if s not in fixed]
-        if not free:
+        denom = sum(w[s] for s in free)
+        if not free or denom <= 0:
             break
-        base = sum(max(w[s], 1e-12) for s in free)
+        nw = {s: w[s] for s in fixed}
         for s in free:
-            w[s] = rem * w[s] / base
-    # Tiny numerical correction keeps the contract exact without violating bounds materially.
-    z = sum(w.values())
+            nw[s] = rem * w[s] / denom
+        w = nw
+        clipped = False
+        for s in UNIVERSE:
+            if w[s] < MIN_W:
+                w[s] = MIN_W; clipped = True
+            elif w[s] > MAX_W:
+                w[s] = MAX_W; clipped = True
+        if not clipped:
+            break
+    z = sum(w.values()) or 1.0
     return {s: w[s] / z for s in UNIVERSE}
 
 
 @register_hook
 def cross_asset_strategy():
-    global last_date
+    global last_date, blocks
     account = get_account_dict()
     market = {}
-    for s in UNIVERSE:
-        df = get_stock_daily_data(symbol=s, days=85)
-        if df is None or len(df) < 25:
+    for symbol in UNIVERSE:
+        df = get_stock_daily_data(symbol=symbol, days=90)
+        if df is None or len(df) < 30:
             continue
         df = df.sort_values("date").reset_index(drop=True)
         c = np.asarray(df["close"], dtype=float)
         h = np.asarray(df["high"], dtype=float)
         l = np.asarray(df["low"], dtype=float)
         r = c[1:] / np.maximum(c[:-1], 1e-12) - 1.0
-        market[s] = (c, h, l, r, str(df.iloc[-1]["date"]))
+        market[symbol] = (c, h, l, r, str(df.iloc[-1]["date"]))
     if len(market) < 12:
         return
-    decision = max(x[4] for x in market.values())
-    if last_date is not None:
-        try:
-            days = (np.datetime64(decision, "D") - np.datetime64(last_date, "D")) / np.timedelta64(1, "D")
-            if days < REBALANCE_DAYS:
-                return
-        except Exception:
-            return
+    date = max(v[4] for v in market.values())
+    if date != last_date:
+        blocks += 1
+        last_date = date
+    if blocks < CADENCE:
+        return
 
-    clv, peer, reversal, momentum, invvol = {}, {}, {}, {}, {}
-    five = {}
-    for s, (c, h, l, r, _) in market.items():
-        if len(c) < 22:
-            continue
-        daily_clv = (2*c - h - l) / np.maximum(h-l, 1e-12)
-        clv[s] = float(np.mean(daily_clv[-3:]))
-        reversal[s] = float(-np.mean(r[-5:]))
-        vol = max(float(np.std(r[-20:])), 0.008)
-        invvol[s] = 1.0 / vol
-        momentum[s] = float((c[-1] / max(c[-21], 1e-12) - 1.0) / (vol + 0.01))
-        five[s] = float(c[-1] / max(c[-6], 1e-12) - 1.0)
-    med = float(np.median(list(five.values())))
-    peer = {s: v-med for s, v in five.items()}
-    rr = {k: ranks(v) for k, v in (("clv",clv),("peer",peer),("reversal",reversal),("momentum",momentum))}
-    score = {s: sum(FACTOR_WEIGHTS[k] * rr[k][s] for k in rr) for s in UNIVERSE}
-
-    # Medium-risk, sideways/mildly bearish regime: defensive tradable tilt, never cash.
-    if "SPX" in market:
-        c = market["SPX"][0]
-        bearish = c[-1] < c[-21] and c[-1] < c[-6]
-        if bearish:
-            for s in ("XAU", "US10Y", "CN10Y"):
-                score[s] += 0.18
-            for s in ("BTC", "ETH", "WTI"):
-                score[s] = max(0.05, score[s] - 0.10)
-    mean_iv = np.mean(list(invvol.values())) if invvol else 1.0
-    raw = {s: max(0.01, score[s]) * (0.78 + 0.22 * invvol.get(s, mean_iv) / mean_iv) for s in UNIVERSE}
-    weights = bounded_weights(raw)
-
-    total = float(account.get("total_assets", account.get("net_assets", 0.0)) or 0.0)
-    held = {p.get("symbol"): p for p in account.get("positions", []) if float(p.get("quantity", 0) or 0) > 0}
-    # Online benchmark execution is one complete proposal through the
-    # deterministic migration/cost gate; direct add_order is forbidden.
-    score_values = [float(score[s]) for s in UNIVERSE]
-    score_mean = float(np.mean(score_values))
-    score_std = float(np.std(score_values))
-    forecast_returns = {
-        s: 0.01 * (float(score[s]) - score_mean) / max(score_std, 1e-12)
-        for s in UNIVERSE
+    # The screener ensemble is authoritative; only four admitted factors are used.
+    fallback = {
+        "peer_median_leadlag_5d": ("peer", 0.30),
+        "miner_2_risk_adjusted_momentum_20d": ("momentum", 0.27),
+        "miner_3_clv_1d": ("clv", 0.28),
+        "short_term_reversal_5d": ("reversal", 0.15),
     }
-    factor_ids = []
     try:
-        ensemble = json.loads((Path(__file__).parent / "factor_ensemble.json").read_text())
-        factor_ids = [
-            str(item["factor_id"])
-            for item in ensemble.get("selected_factors", [])
-            if isinstance(item, dict) and item.get("factor_id")
-        ]
-    except (OSError, ValueError, TypeError, KeyError):
-        pass
-    rebalance_to_weights(
-        weights,
-        forecast_returns=forecast_returns,
-        factor_ids=factor_ids[:10],
-        horizon_days=10,
-    )
-    last_date = decision
+        ensemble = json.loads((Path(__file__).parent / "factors" / "factor_ensemble.json").read_text())
+        selected = ensemble.get("selected_factors", [])[:10]
+    except Exception:
+        selected = []
+    factor_weights = {name: 0.0 for name in ("peer", "momentum", "clv", "reversal")}
+    factor_ids = []
+    for item in selected:
+        fid = str(item.get("factor_id", ""))
+        if fid in fallback:
+            name, _ = fallback[fid]
+            factor_weights[name] += max(0.0, float(item.get("weight", 0.0))) * (1 if int(item.get("direction", 1)) >= 0 else -1)
+            factor_ids.append(fid)
+    if sum(abs(v) for v in factor_weights.values()) == 0:
+        factor_weights = {name: wt for name, wt in ((v[0], v[1]) for v in fallback.values())}
+        factor_ids = list(fallback)
+    z = sum(abs(v) for v in factor_weights.values()) or 1.0
+    factor_weights = {k: v / z for k, v in factor_weights.items()}
+
+    clv, reversal, momentum, lead = {}, {}, {}, {}
+    invvol = {}
+    for s, (c, h, l, r, _) in market.items():
+        vol = max(float(np.std(r[-20:])), 0.008)
+        # Winsorization is implicit through cross-sectional ranks; CLV uses recent completed bars.
+        clv[s] = float(np.mean((2*c[-3:] - h[-3:] - l[-3:]) / np.maximum(h[-3:] - l[-3:], 1e-12)))
+        reversal[s] = -float(np.mean(r[-5:]))
+        momentum[s] = float((c[-1] / max(c[-21], 1e-12) - 1.0) / (vol + 0.01))
+        lead[s] = float(c[-1] / max(c[-6], 1e-12) - 1.0)
+        invvol[s] = 1.0 / vol
+    median_lead = float(np.median(list(lead.values())))
+    lead = {s: v - median_lead for s, v in lead.items()}
+    ranked = {"clv": percentile(clv), "reversal": percentile(reversal),
+              "momentum": percentile(momentum), "peer": percentile(lead)}
+    score = {s: sum(factor_weights[k] * ranked[k].get(s, 0.5) for k in ranked) for s in UNIVERSE}
+
+    # Bullish-to-sideways: retain broad exposure. Confirmed two-horizon deterioration
+    # shifts risk to tradable defensive assets, never to cash.
+    spx = market.get("SPX")
+    defensive = ("XAU", "US10Y", "CN10Y")
+    if spx is not None and spx[0][-1] < spx[0][-21] and spx[0][-1] < spx[0][-6]:
+        for s in defensive:
+            score[s] += 0.20
+        for s in ("BTC", "ETH", "WTI"):
+            score[s] -= 0.12
+    # Elevated volatility gets a modest extra inverse-vol tilt, not a gross reduction.
+    avg_vol = np.mean([1.0 / invvol[s] for s in market]) or 1.0
+    raw = {s: max(0.05, score[s]) * (0.70 + 0.30 * invvol.get(s, 1.0 / avg_vol) * avg_vol) for s in UNIVERSE}
+    target = bounded_weights(raw)
+    vals = np.array(list(score.values()), dtype=float)
+    sd = max(float(vals.std()), 1e-8)
+    forecast = {s: float(0.008 * (score[s] - vals.mean()) / sd) for s in UNIVERSE}
+    rebalance_to_weights(target, forecast_returns=forecast, factor_ids=factor_ids, horizon_days=10)
+    blocks = 0
