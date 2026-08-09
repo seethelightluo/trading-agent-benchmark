@@ -260,3 +260,21 @@ cat results/ac_wl_data_final_state.json
 - `agent-framework/ASSETS.yaml`
 - `WL-data-final/docs/GENERATION_PROVENANCE.md`
 - `runFM.md`
+
+## 9. 原始 Luna/Terra AC 的三 WL 并行
+
+原始 AC 的 shared warmup 验证通过后，使用以下持久化 runner 启动 WL1-WL3
+并行。它会再次执行 fingerprint、日期、账户、workflow 和因子产物校验，复用
+`ws1` 而不会重新挖掘，也不会读取 DeepSeek 的 workspace：
+
+```bash
+cd /home/lxx/trade-agent-benchmark/agent-framework
+setsid --wait nohup /home/lxx/trade-agent-benchmark/.venv/bin/python \
+  -m scheduler.run_ac_luna_3 \
+  </dev/null > results/ac_luna_3wl.log 2>&1 &
+echo $! > results/ac_luna_3wl.pid
+```
+
+状态写入 `results/ac_luna_3wl/run_state.json`，每条 WL 的日志写入
+`results/ac_luna_3wl/logs/wl<n>.log`。三条 WL 使用独立 session，失败时从各自
+`--resume` 边界重试；只有 `date.json.simulation_complete=true` 才标记完成。

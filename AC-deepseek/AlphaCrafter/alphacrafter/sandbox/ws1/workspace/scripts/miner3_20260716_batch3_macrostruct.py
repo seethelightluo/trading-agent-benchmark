@@ -1,9 +1,6 @@
-"""miner_3 batch 3: macro-structure / trend-quality / composite factors.
+"""miner_3 batch 3 (fixed): macro-structure / trend-quality / composite factors.
 
-Explores signals orthogonal to plain momentum:
-- rolling betas to macro (VIX, US10Y, DXY, SPX)
-- monthly 12-1 momentum, trend R2, max drawdown, skew
-- composite z-score momentum (noise reduction)
+Fixes alignment: per-asset rolling beta loop + proper axis=0 z-scoring.
 """
 import sys
 sys.path.insert(0, "scripts")
@@ -12,29 +9,33 @@ import numpy as np
 from factor_harness import get_panels, evaluate, WATCH
 
 closes, rets, ohlc, macro = get_panels()
-mclose = macro  # macro panel already aligned to closes.index
+mclose = macro
+print("closes shape:", closes.shape, "macro cols:", list(mclose.columns))
 
 factors = {}
 
 # ---- rolling beta to macro changes (60d) ----
-def roll_beta(y, x, n=60):
-    """rolling beta of y on x using daily changes, aligned to closes.index."""
-    dy = y.diff()
+def roll_beta(panel, x, n=60):
+    """rolling beta of each panel column on series x using daily changes."""
+    out = pd.DataFrame(index=panel.index, columns=panel.columns, dtype=float)
     dx = x.diff()
-    cov = dy.rolling(n).cov(dx)
-    var = dx.rolling(n).var()
-    return cov / var
+    for a in panel.columns:
+        y = panel[a].diff()
+        cov = y.rolling(n).cov(dx)
+        var = dx.rolling(n).var()
+        out[a] = cov / var
+    return out
 
 vix = mclose["VIX"]
-us10y = mclose["US10Y"]
 dxy = mclose["DXY"]
 spx = closes["SPX"]
+us10y = closes["US10Y"]
 
-factors["vix_beta_60d"] = roll_beta(closes, vix)          # safe-haven: negative beta
-factors["us10y_beta_60d"] = roll_beta(closes, us10y)      # rate sensitivity
-factors["dxy_beta_60d"] = roll_beta(closes, dxy)          # USD sensitivity
-factors["spx_beta_60d"] = roll_beta(closes, spx)          # global equity beta
+factors["vix_beta_60d"] = roll_beta(closes, vix)
+factors["dxy_beta_60d"] = roll_beta(closes, dxy)
+factors["spx_beta_60d"] = roll_beta(closes, spx)
 factors["vix_beta_120d"] = roll_beta(closes, vix, 120)
+factors["us10y_beta_60d"] = roll_beta(closes, us10y)
 
 # ---- monthly 12-1 momentum (skip recent 21d) ----
 factors["mom_252_21"] = closes.pct_change(252) - closes.pct_change(21)
@@ -72,9 +73,11 @@ rv10 = rets.rolling(10).std()
 rv60 = rets.rolling(60).std()
 factors["vol_ratio_10_60"] = rv10 / rv60 - 1.0
 
-# ---- composite momentum z-scores ----
+# ---- composite momentum z-scores (axis=0 alignment fix) ----
 def zscore(px):
-    return (px - px.mean(axis=1)) / px.std(axis=1)
+    mu = px.mean(axis=1)
+    sd = px.std(axis=1)
+    return px.sub(mu, axis=0).div(sd, axis=0)
 mom20 = closes.pct_change(20)
 mom60 = closes.pct_change(60)
 mom120 = closes.pct_change(120)
@@ -93,6 +96,11 @@ print("\n=== BATCH 3 @ h=5 ===")
 for name, f in factors.items():
     f = f.reindex(closes.index)
     evaluate(f, rets, h=5, name=name, verbose=True)
+
+print("\n=== BATCH 3 @ h=20 ===")
+for name, f in factors.items():
+    f = f.reindex(closes.index)
+    evaluate(f, rets, h=20, name=name, verbose=True)
 
 print("\n=== PASS GATE (|IC|>=0.007 & |ICIR|>=0.084 @ h=10) ===")
 for r in results:
