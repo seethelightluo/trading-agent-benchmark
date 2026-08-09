@@ -10,9 +10,19 @@ import pandas as pd
 
 from alphacrafter.utils.atomic_io import atomic_write_json, load_json
 try:
-    from portfolio_contract import evaluate_trade, one_way_turnover
+    from portfolio_contract import (
+        PORTFOLIO_CONTRACT_VERSION,
+        assert_current_portfolio_contract,
+        evaluate_trade,
+        one_way_turnover,
+    )
 except ModuleNotFoundError:  # pragma: no cover - package execution fallback
-    from AlphaCrafter.portfolio_contract import evaluate_trade, one_way_turnover
+    from AlphaCrafter.portfolio_contract import (
+        PORTFOLIO_CONTRACT_VERSION,
+        assert_current_portfolio_contract,
+        evaluate_trade,
+        one_way_turnover,
+    )
 
 
 def _execution_price(dataset_dir: Path, symbol: str, current_date: str) -> float:
@@ -83,6 +93,7 @@ def rebalance_to_weights(
     """
     account_path = Path(account_file_path)
     account = load_json(account_path)
+    assert_current_portfolio_contract(account)
     date_state = load_json(date_file_path)
     current_date = str(date_state["current_date"])
     assets = [str(asset) for asset in account.get("watch_list", [])]
@@ -161,6 +172,7 @@ def rebalance_to_weights(
             "gross_edge_bps": 0.0 if decision is None else decision.gross_edge_bps,
             "decision_edge_threshold_bps": applied_cost_bps * one_way_turnover(current_weights, weights) if decision is None else decision.decision_edge_threshold_bps,
             "actual_cost": 0.0,
+            "portfolio_contract_version": PORTFOLIO_CONTRACT_VERSION,
             "executed": False,
             "skip_reason": "missing_forecast_proposal" if decision is None else decision.skip_reason,
         }
@@ -207,6 +219,7 @@ def rebalance_to_weights(
         "positions": positions,
         "orders": [],
         "portfolio_initialized": True,
+        "portfolio_contract_version": PORTFOLIO_CONTRACT_VERSION,
         "last_rebalance_date": current_date,
         "last_target_weights": weights,
         "last_proposed_target_weights": weights,
@@ -233,6 +246,7 @@ def rebalance_to_weights(
         "gross_edge_bps": decision.gross_edge_bps,
         "decision_edge_threshold_bps": decision.decision_edge_threshold_bps,
         "actual_cost": cost,
+        "portfolio_contract_version": PORTFOLIO_CONTRACT_VERSION,
         "executed": True,
         "skip_reason": "",
     }
@@ -249,6 +263,9 @@ def ensure_fully_invested(
     """Self-heal the benchmark invariant after a strategy hook."""
     account_path = Path(account_file_path)
     account = load_json(account_path)
+    # Check before clearing pending orders: an abandoned online account must
+    # remain untouched and can only be replaced by a fresh contract run.
+    assert_current_portfolio_contract(account)
     assets = [str(asset) for asset in account.get("watch_list", [])]
     if len(assets) != 15:
         raise ValueError("benchmark rebalance requires exactly 15 tradable assets")

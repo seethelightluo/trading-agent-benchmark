@@ -61,8 +61,13 @@ WL-data-final/
 
 ## 3. AC 运行结构
 
+这里的 shared warmup 按实验分开，不是 Terra 与 DeepSeek 共用：Terra 的 `ws1` 只供 Terra
+实验内世界线共享，DeepSeek 的 `ws1` 只供 DeepSeek 实验内世界线共享。两者不共享因子、
+checkpoint、signals、ensemble 或 workflow。两份 warmup 都必须保留；在线合同变化不得修改
+或重跑其中任何一份。
+
 ```text
-共享 warmup（一次，9 条 WL 复用）
+Terra shared warmup（Terra 实验内部 9 条 WL 复用）
   2020-01-01 ~ 2026-07-15 可见历史
   40 个 AC cycle；每 cycle = Miner1/2/3 + Screener + Trader（5 步）
   Miner 研究、准入并持久化滚动因子库（上限 30）
@@ -73,15 +78,31 @@ WL-data-final/
   账户保持 1M 全现金、无持仓、无订单
         |
         v
-逐 WL 前向（wl1 ... wl9 独立持久化）
-  从共享 warmup workspace 播种
+Terra 逐 WL 前向（wl1 ... wl9 独立持久化）
+  从 Terra shared warmup workspace 播种
+```
+
+DeepSeek 实验使用同样的生命周期，但从 DeepSeek 自己的 shared warmup workspace 播种，
+绝不读取 Terra 的 `ws1`。
+
+```text
+DeepSeek shared warmup（DeepSeek 实验内部 9 条 WL 复用）
+  2020-01-01 ~ 2026-07-15 可见历史
+  独立的 40-cycle 研究进度、因子库、ensemble、workflow 和 checkpoint
+        |
+        v
+DeepSeek 逐 WL 前向（独立持久化）
+  从 DeepSeek shared warmup workspace 播种
   2026-07-16 执行首个 10 日 block，首次满仓
   每 10 个交易日运行一次 Miner/Screener/Trader
   block 内逐日只做本地行情推进和 mark-to-market
   每次目标组合仅允许 15 资产、cash=0、迁移额 3bps
 ```
 
-共享 warmup 使用 AC session `ws1`；每条世界线使用 `wl1` 至 `wl9`。warmup 指纹命中且 session、workspace、日期边界和冻结账户都有效时，只复用一次，不重复消耗 LLM。每条 WL 的 workspace、workflow log、account 和 date cursor 独立保存。
+Terra 和 DeepSeek 各自使用自己的 AC session `ws1`；每个实验内部的世界线使用 `wl1` 至
+`wl9`，两个实验之间绝不复用 `ws1`。warmup 指纹命中且 session、workspace、日期边界和
+冻结账户都有效时，只在对应实验内复用一次，不重复消耗该实验的 LLM。每条 WL 的 workspace、
+workflow log、account 和 date cursor 独立保存。
 
 ### 3.1 与 FM 的同步口径
 
@@ -319,21 +340,22 @@ actual_cost = NAV * one_way_turnover * 3 / 10000
 - `WL-data-final/docs/GENERATION_PROVENANCE.md`
 - `runFM.md`
 
-## 9. 原始 Luna/Terra AC 的三 WL 并行
+## 9. 已放弃的旧 online 阶段
 
-原始 AC 的 shared warmup 验证通过后，使用以下持久化 runner 启动 WL1-WL3
-并行。它会校验已持久化的 warmup fingerprint、日期、账户、workflow 和因子产物，
-复用 `ws1` 而不会因后续 fractional-sizing 代码变更触发重新挖掘，也不会读取
-DeepSeek 的 workspace：
+此前的 Luna/Terra 三 WL online 和 DeepSeek online 使用了旧调仓语义。由于现在
+proposal、migration gate 和 fractional full-investment 合同已经改变，旧 online 只保留
+为历史结果，不再使用 runner 恢复或续跑：
 
-```bash
-cd /home/lxx/trade-agent-benchmark/agent-framework
-setsid --wait nohup /home/lxx/trade-agent-benchmark/.venv/bin/python \
-  -m scheduler.run_ac_luna_3 \
-  </dev/null > results/ac_luna_3wl.log 2>&1 &
-echo $! > results/ac_luna_3wl.pid
+```text
+旧 runner：scheduler.run_ac_luna_3
+旧状态：agent-framework/results/ac_luna_3wl/
+处理：保留，不 resume，不删除
 ```
 
-状态写入 `results/ac_luna_3wl/run_state.json`，每条 WL 的日志写入
-`results/ac_luna_3wl/logs/wl<n>.log`。三条 WL 使用独立 session，失败时从各自
-`--resume` 边界重试；只有 `date.json.simulation_complete=true` 才标记完成。
+旧状态中的 initialized account 若缺少
+`portfolio_contract_version=ac-worldline-v2-migration-gate`，新的 AC 执行层会 fail-closed，
+不会清理订单、重写账户或静默迁移持仓。
+
+新 online 只能在对应实验自己的 shared warmup 完成或确认可恢复后，复制出全新的 workspace、
+account、workflow 和 code/contract fingerprint，再做 1 block smoke；不得从旧 online account
+继续运行。

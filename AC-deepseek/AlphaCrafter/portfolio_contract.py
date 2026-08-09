@@ -12,6 +12,23 @@ from typing import Mapping
 
 DEFAULT_DECISION_EDGE_BPS = 3.0
 DEFAULT_COST_BPS = 3.0
+# A new online run must not resume an account produced under the abandoned
+# pre-proposal rebalance semantics.  Warmup accounts are uninitialized and do
+# not carry this marker, so the guard does not touch either shared warmup.
+PORTFOLIO_CONTRACT_VERSION = "ac-worldline-v2-migration-gate"
+
+
+def assert_current_portfolio_contract(account: Mapping[str, object]) -> None:
+    """Fail closed for initialized accounts from an abandoned online run."""
+    if not bool(account.get("portfolio_initialized", False)):
+        return
+    actual = account.get("portfolio_contract_version")
+    if actual != PORTFOLIO_CONTRACT_VERSION:
+        raise RuntimeError(
+            "stale AC online account contract: "
+            f"expected {PORTFOLIO_CONTRACT_VERSION}, got {actual!r}; "
+            "do not resume the abandoned online stage"
+        )
 
 
 def normalize_weights(weights: Mapping[str, float], assets: list[str]) -> dict[str, float]:
@@ -85,6 +102,7 @@ class TradeDecision:
             "required_edge_bps": self.decision_edge_threshold_bps,
             "actual_cost": self.actual_cost,
             "cost": self.actual_cost,
+            "portfolio_contract_version": PORTFOLIO_CONTRACT_VERSION,
             "executed": self.executed,
             "skip_reason": self.skip_reason,
         }
