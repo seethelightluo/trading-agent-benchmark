@@ -1,15 +1,23 @@
 import pandas as pd,numpy as np
-from pathlib import Path
 from scipy.stats import spearmanr
-U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; cut=pd.Timestamp('2026-12-17'); D={}
-for s in U:
- x=pd.read_csv(Path('../persistent/stock_data')/(s+'.csv')); x.date=pd.to_datetime(x.date); x=x[x.date<=cut].sort_values('date').set_index('date'); D[s]=x.close.astype(float).pct_change()
-R=pd.concat(D,axis=1).sort_index();
-for w in [5,10,20,40]:
- raw=R.rolling(w,min_periods=w//2).sum(); F=raw.sub(raw.median(axis=1),axis=0)
- for h in [1,5,10]:
-  Y=R.shift(-1).rolling(h).sum().shift(-(h-1)); vals=[]; ns=[]
-  for dt in R.index:
-   z=pd.concat([F.loc[dt].rename('f'),Y.loc[dt].rename('y')],axis=1).dropna()
-   if len(z)>=8: vals.append(spearmanr(z.f,z.y).statistic); ns.append(len(z))
-  q=pd.Series(vals); print('w,h',w,h,'IC %.5f ICIR %.5f hit %.3f dates %d avgN %.2f'%(q.mean(),q.mean()/q.std(ddof=1),(q>0).mean(),len(q),np.mean(ns)))
+from pathlib import Path
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; cut=pd.Timestamp('2026-12-17')
+P=pd.DataFrame({s:pd.read_csv('../persistent/stock_data/'+s+'.csv',parse_dates=['date']).set_index('date')['close'] for s in U}).sort_index().ffill(); P=P[P.index<=cut]
+R=P.pct_change(); r5=R.rolling(5,min_periods=5).sum(); med=r5.median(axis=1); F=r5.sub(med,axis=0)
+# damp extreme observations cross-sectionally, preserving interpretable relative strength
+scale=F.abs().median(axis=1).replace(0,np.nan); F=F.div(scale,axis=0).clip(-5,5); F=F.sub(F.median(axis=1),axis=0)
+F.to_csv('scripts/miner_3_20261217_relative_strength_signal.csv',index_label='date')
+for h in [1,5,10]:
+ Y=P.pct_change(h).shift(-h); vals=[];ns=[]
+ for d in F.index:
+  z=pd.concat([F.loc[d].rename('f'),Y.loc[d].rename('y')],axis=1).dropna()
+  if len(z)>=8 and z.f.nunique()>1 and z.y.nunique()>1: vals.append(spearmanr(z.f,z.y).statistic);ns.append(len(z))
+ a=pd.Series(vals); print('H',h,'dates',len(a),'avg_names',round(np.mean(ns),2),'IC',round(a.mean(),8),'ICIR',round(a.mean()/a.std(ddof=1),8),'hit',round((a>0).mean(),4))
+print('coverage',round(F.notna().sum().sum()/F.size,6),'turnover',round(F.rank(axis=1,pct=True).diff().abs().mean().mean(),6),'period',F.index.min().date(),F.index.max().date())
+cs=[]
+for p in Path('scripts').glob('*signal.csv'):
+ try:
+  x=pd.read_csv(p,index_col=0,parse_dates=True).reindex(F.index).reindex(columns=U);c=F.stack().corr(x.stack())
+  if pd.notna(c):cs.append((abs(c),p.name,c))
+ except:pass
+print('max_abs_library_correlation',max(cs)[0] if cs else None,sorted(cs,reverse=True)[:5])

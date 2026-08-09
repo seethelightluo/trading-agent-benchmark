@@ -1,19 +1,30 @@
-import pandas as pd,numpy as np
-from pathlib import Path
+import pandas as pd, numpy as np, glob, os
 from scipy.stats import spearmanr
-U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
-def load(p): return pd.read_csv(p,parse_dates=['date']).drop_duplicates('date').set_index('date').sort_index()
-D={s:load(Path('../persistent/stock_data')/(s+'.csv')) for s in U}
-px=pd.concat([D[s]['close'].rename(s) for s in U],axis=1).sort_index().loc[:'2027-03-24']
-op=pd.concat([D[s]['open'].rename(s) for s in U],axis=1).reindex(px.index)
-v=load(Path('../persistent/index_data/VIX.csv'))['close'].reindex(px.index).ffill()
-shock=v.pct_change(5).clip(-.5,.5).fillna(0)
-f=-(px/op-1)*(1+2*shock.values[:,None]); f=f.replace([np.inf,-np.inf],np.nan)
+base='../persistent/stock_data'; syms=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+px={}
+for s in syms:
+ f=f'{base}/{s}.csv'
+ d=pd.read_csv(f,parse_dates=['date']).set_index('date')
+ px[s]=d['close'].pct_change()
+r=pd.DataFrame(px).sort_index()
+vix=pd.read_csv('../persistent/index_data/VIX.csv',parse_dates=['date']).set_index('date')['close']
+# shock reversal: contrarian 3d return, normalized by 20d vol, activated by positive VIX 5d change
+rv=r.rolling(20).std()
+raw=-(r.rolling(3).sum())/(rv*np.sqrt(3)+1e-8)
+vixshock=(vix.pct_change(5)>0).astype(float)
+sig=raw.mul(vixshock.reindex(r.index).fillna(0),axis=0)
+# forward returns; cross-sectional IC at each date
+outs=[]
 for h in [1,5,10]:
- y=px.pct_change(h).shift(-h); s=[]; ns=[]
- for dt in f.index:
-  z=pd.concat([f.loc[dt],y.loc[dt]],axis=1).dropna()
-  if len(z)>=8 and z.iloc[:,0].nunique()>1: s.append(spearmanr(z.iloc[:,0],z.iloc[:,1]).statistic); ns.append(len(z))
- s=pd.Series(s); print('H',h,'dates',len(s),'avgN',round(np.mean(ns),2),'IC',round(s.mean(),6),'ICIR',round(s.mean()/s.std(ddof=1),6),'hit',round((s>0).mean(),4))
-f.rename_axis('date').to_csv('scripts/miner_1_20270325_vix_shock_reversal_signal.csv')
-print('coverage',round(f.notna().sum().sum()/f.size,4),'turnover',round(f.rank(axis=1,pct=True).diff().abs().mean().mean(),4),'assets',len(U))
+ fwd=r.shift(-h).rolling(h).sum().shift(-(h-1))
+ vals=[]
+ for dt in sig.index:
+  a=pd.concat([sig.loc[dt],fwd.loc[dt]],axis=1).dropna()
+  if len(a)>=8: vals.append(spearmanr(a.iloc[:,0],a.iloc[:,1]).statistic)
+ x=pd.Series(vals).dropna(); print('h',h,'dates',len(x),'Nmean',np.nanmean([len(pd.concat([sig.loc[d],fwd.loc[d]],axis=1).dropna()) for d in sig.index if len(pd.concat([sig.loc[d],fwd.loc[d]],axis=1).dropna())>=8]),'IC',x.mean(),'ICIR',x.mean()/x.std(ddof=1),'hit',(x>0).mean())
+ if h==1:
+  print('regimes',[(p, x.loc[[d for d in x.index if str(d)[:4] in ys]].mean(),len(x.loc[[d for d in x.index if str(d)[:4] in ys]])) for p,ys in [('20-22',['2020','2021','2022']),('23-24',['2023','2024']),('25-27',['2025','2026','2027'])]])
+# artifact
+sig.reset_index().melt(id_vars='date',var_name='symbol',value_name='signal').to_csv('scripts/miner_1_20270325_vix_shock_reversal_signal.csv',index=False)
+print('coverage',sig.notna().mean().mean(),'active', (sig!=0).mean().mean())
+print('turnover',sig.rank(axis=1,pct=True).diff().abs().mean().mean())

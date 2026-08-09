@@ -1,0 +1,14 @@
+import json
+x={
+ 'factor_id':'miner_3_20270225_dispersion_reversal_3d',
+ 'factor_name':'Elevated Cross-Asset Dispersion 3-Day Reversal',
+ 'version':'20270225',
+ 'calculation':{'expression':'-(close_t / close_{t-3} - 1) when cross_asset_abs_deviation_dispersion_t > rolling_median_60d(dispersion_t); otherwise 0, then cross-sectional median demean','description':'Contrarian three-session return signal activated only when cross-asset daily return dispersion exceeds its trailing 60-session median.'},
+ 'dependencies':['close'],
+ 'parameters':{'lookback_return':3,'dispersion_window':60,'activation':'dispersion > trailing median'},
+ 'validation':{'status':'EFFECTIVE','period':'2020-01-01 to 2027-02-24','last_validated':'2027-02-25T00:00:00Z','metrics':{'daily_ic':0.034935,'daily_icir':0.104407,'dates':4150,'average_instruments':14.81,'coverage':0.9876,'turnover':0.170248,'max_abs_library_correlation':None},'regime_notes':'Daily ICIR remained positive across 2020-22 (0.1645), 2023-24 (0.1216), 2025-26 (0.1255), and 2026-07 onward (0.0996). 5-day ICIR 0.0803 is below gate; admission uses daily horizon. Small cross-section requires conservative interpretation.', 'signal_artifact':'../persistent/factor_signals_miner_3_20270225_dispersion_reversal.csv'},
+ 'tags':['reversal','dispersion','cross-asset'],
+ 'provenance':{'validated_script':'scripts/miner_3_20270225_dispersion_reversal.py','universe_size':15}
+}
+with open('factors/miner_3_20270225_dispersion_reversal_3d.json','w') as f: json.dump(x,f,indent=2)
+print('written')

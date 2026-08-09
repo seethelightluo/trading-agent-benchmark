@@ -16,6 +16,8 @@ for h in [1,5,10]:
  if h==1:
   for yr,g in ic.groupby(ic.index.year): print(yr,len(g),g.mean(),g.mean()/g.std(ddof=1))
 print('coverage',f.notna().sum().sum()/f.size,'turnover',f.rank(axis=1,pct=True).diff().abs().mean().mean())
+f.to_csv('scripts/miner_3_20261217_vix_conditioned_reversal_signal.csv', index_label='date')
+print('ARTIFACT scripts/miner_3_20261217_vix_conditioned_reversal_signal.csv')
 print('high',int((sh>0).sum()),'total',int(sh.notna().sum()))
 # pooled correlations with plain reversal and residual reversal
 plain=-r5

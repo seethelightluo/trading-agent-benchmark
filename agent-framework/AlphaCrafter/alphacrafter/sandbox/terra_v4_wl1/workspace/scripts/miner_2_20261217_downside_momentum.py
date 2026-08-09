@@ -1,23 +1,24 @@
-import numpy as np, pandas as pd
-U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
-cut=pd.Timestamp('2026-12-16'); P={}
-for s in U:
- d=pd.read_csv('../persistent/stock_data/'+s+'.csv',parse_dates=['date']).drop_duplicates('date').set_index('date').sort_index()['close'].astype(float)
- P[s]=d[d.index<=cut]
-P=pd.DataFrame(P).sort_index(); r=P.pct_change()
-# Downside-risk adjusted medium momentum, all inputs known at t
-neg=r.where(r<0); down=neg.rolling(40,min_periods=20).std()*np.sqrt(252)
-F=P.pct_change(20).div(down.replace(0,np.nan))
-print('period',P.index.min().date(),P.index.max().date(),'rows',len(P),'assets',len(U))
+import pandas as pd,numpy as np
+from scipy.stats import spearmanr
+from pathlib import Path
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; cut=pd.Timestamp('2026-12-17')
+P=pd.DataFrame({s:pd.read_csv('../persistent/stock_data/'+s+'.csv',parse_dates=['date']).set_index('date')['close'] for s in U}).sort_index().ffill(); P=P[P.index<=cut]; R=P.pct_change()
+# downside-risk adjusted intermediate momentum; all inputs lagged by construction at decision date
+mom=P.pct_change(20); down=R.where(R<0).rolling(20,min_periods=12).std(); F=(mom/down.replace(0,np.nan)).clip(-10,10)
+# robust cross-sectional demeaning keeps only relative signal
+F=F.sub(F.median(axis=1),axis=0); F.to_csv('scripts/miner_2_20261217_downside_momentum_signal.csv',index_label='date')
 for h in [1,5,10]:
- Y=P.shift(-h).div(P)-1; rows=[]
- for dt in P.index:
-  z=pd.concat([F.loc[dt].rename('f'),Y.loc[dt].rename('y')],axis=1).dropna()
-  if len(z)>=8: rows.append((dt,z.f.corr(z.y,method='spearman'),len(z)))
- a=pd.DataFrame(rows,columns=['date','ic','n']).set_index('date'); ic=a.ic
- print('H',h,'dates',len(ic),'avgN',round(a.n.mean(),2),'IC',round(ic.mean(),6),'ICIR',round(ic.mean()/ic.std(ddof=1),6),'hit',round((ic>0).mean(),4))
- if h==1:
-  print('regimes',[(int(y),round(g.mean(),6),round(g.mean()/g.std(ddof=1),6),len(g)) for y,g in ic.groupby(ic.index.year)])
-print('coverage',round(F.notna().sum().sum()/F.size,4),'turnover',round(F.rank(axis=1,pct=True).diff().abs().mean().mean(),5))
-print('artifact_path scripts/miner_2_20261217_downside_momentum_signal.csv')
-out=F.stack().rename('signal').reset_index(); out.columns=['date','symbol','signal']; out.to_csv('scripts/miner_2_20261217_downside_momentum_signal.csv',index=False)
+ Y=P.pct_change(h).shift(-h); vals=[]; ns=[]
+ for d in F.index:
+  z=pd.concat([F.loc[d].rename('f'),Y.loc[d].rename('y')],axis=1).dropna()
+  if len(z)>=8 and z.f.nunique()>1 and z.y.nunique()>1: vals.append(spearmanr(z.f,z.y).statistic); ns.append(len(z))
+ a=pd.Series(vals); print('H',h,'dates',len(a),'avg_names',round(np.mean(ns),2),'IC',round(a.mean(),8),'ICIR',round(a.mean()/a.std(ddof=1),8),'hit',round((a>0).mean(),4))
+print('coverage',round(F.notna().sum().sum()/F.size,6),'turnover',round(F.rank(axis=1,pct=True).diff().abs().mean().mean(),6))
+cs=[]
+for p in Path('scripts').glob('*signal.csv'):
+ try:
+  x=pd.read_csv(p,index_col=0,parse_dates=True).reindex(F.index).reindex(columns=U); c=F.stack().corr(x.stack())
+  if pd.notna(c): cs.append((abs(c),p.name,c))
+ except Exception: pass
+print('max_abs_library_correlation',max(cs)[0] if cs else None)
+print('period',F.index.min().date(),F.index.max().date())

@@ -1,0 +1,31 @@
+import pandas as pd,numpy as np
+from scipy.stats import spearmanr
+from pathlib import Path
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; cut=pd.Timestamp('2026-12-17')
+P=pd.DataFrame({s:pd.read_csv('../persistent/stock_data/'+s+'.csv',parse_dates=['date']).set_index('date')['close'] for s in U}).sort_index().ffill(); P=P[P.index<=cut]
+R=P.pct_change(); bench=R.mean(axis=1)
+# Leave-one-out beta estimated only from trailing data; residual of latest return vs its own lagged beta to common cross-asset move.
+beta=R.rolling(60,min_periods=30).cov(bench).div(bench.rolling(60,min_periods=30).var(),axis=0)
+res=R-beta.mul(bench,axis=0)
+vol=R.rolling(20,min_periods=15).std()
+F=-(res/vol).replace([np.inf,-np.inf],np.nan)
+F.to_csv('scripts/miner_2_20261217_beta_residual_reversal_signal.csv',index_label='date')
+for h in [1,5,10]:
+ Y=P.pct_change(h).shift(-h); vals=[]; ns=[]
+ for dt in F.index:
+  z=pd.concat([F.loc[dt].rename('f'),Y.loc[dt].rename('y')],axis=1).dropna()
+  if len(z)>=8:
+   c=spearmanr(z.f,z.y).statistic
+   if np.isfinite(c): vals.append((dt,c)); ns.append(len(z))
+ a=pd.Series(dict(vals)).sort_index(); print('H',h,'dates',len(a),'avg_names',round(np.mean(ns),2),'IC',round(a.mean(),8),'ICIR',round(a.mean()/a.std(ddof=1),8),'hit',round((a>0).mean(),4))
+ if h==1: print('regimes',a.groupby(a.index.year).mean().round(6).to_dict())
+print('coverage',round(F.notna().sum().sum()/F.size,6),'turnover',round(F.rank(axis=1,pct=True).diff().abs().mean().mean(),6))
+# artifact correlations
+corr=[]
+for p in Path('scripts').glob('*signal.csv'):
+ try:
+  x=pd.read_csv(p,index_col=0,parse_dates=True).reindex(F.index).reindex(columns=U); c=F.stack().corr(x.stack())
+  if pd.notna(c): corr.append((abs(c),p.name,c))
+ except: pass
+print('max_abs_library_correlation',max(corr)[0] if corr else None, sorted(corr,reverse=True)[:5])
+print('period',F.index.min().date(),F.index.max().date(),'assets',len(U))

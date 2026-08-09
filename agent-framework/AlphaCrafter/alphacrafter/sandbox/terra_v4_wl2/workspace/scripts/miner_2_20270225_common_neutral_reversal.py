@@ -1,0 +1,28 @@
+import pandas as pd, numpy as np
+from scipy.stats import spearmanr
+A=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+p={a:pd.read_csv('../persistent/stock_data/'+a+'.csv',parse_dates=['date']).sort_values('date').set_index('date').close for a in A}
+# Common-shock-neutralized short reversal: reverse each asset's 3d return after removing
+# the contemporaneous cross-asset median 3d move. This isolates relative overshoot.
+r3=pd.DataFrame({a:p[a].pct_change(3) for a in A}); common=r3.median(axis=1)
+factor=-(r3.sub(common,axis=0))
+rows=[]; sig=[]
+for dt in sorted(set().union(*[set(x.index) for x in p.values()])):
+ vals={a: factor.at[dt,a] if dt in factor.index else np.nan for a in A}
+ good=[v for v in vals.values() if np.isfinite(v)]
+ med=np.nanmedian(good) if len(good)>=8 else np.nan
+ for a in A: sig.append((dt,a,vals[a]-med if np.isfinite(vals[a]) and np.isfinite(med) else np.nan))
+ for h in [1,5,10]:
+  f=[]; y=[]
+  for a in A:
+   if dt not in p[a].index: continue
+   i=p[a].index.get_loc(dt); z=vals[a]-med if np.isfinite(vals[a]) and np.isfinite(med) else np.nan
+   if np.isfinite(z) and i+h<len(p[a]): f.append(z); y.append(p[a].iloc[i+h]/p[a].iloc[i]-1)
+  if len(f)>=8: rows.append((dt,h,spearmanr(f,y).statistic,len(f)))
+d=pd.DataFrame(rows,columns=['date','h','ic','n'])
+for h in [1,5,10]:
+ z=d[d.h==h]; print('H',h,'dates',len(z),'avg_n',round(z.n.mean(),2),'coverage',round(z.n.mean()/15,4),'IC',round(z.ic.mean(),6),'ICIR',round(z.ic.mean()/z.ic.std(),6),'hit',round((z.ic>0).mean(),4))
+ for lo,hi in [('2020','2022'),('2023','2024'),('2025','2026'),('2026-07','2027')]:
+  q=z.set_index('date').loc[lo:hi].ic; print(lo,len(q),round(q.mean(),6),round(q.mean()/q.std(),6) if len(q)>1 else None)
+out=pd.DataFrame(sig,columns=['date','asset','signal']); out.to_csv('../persistent/factor_signals_miner_2_20270225_common_neutral_reversal.csv',index=False)
+wide=out.pivot(index='date',columns='asset',values='signal'); print('rank_turnover',round(wide.rank(axis=1,pct=True).diff().abs().mean(axis=1).mean(),6)); print('artifact',len(out)); print('max_abs_library_correlation',None)

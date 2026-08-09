@@ -1,0 +1,23 @@
+import pandas as pd,numpy as np
+from scipy.stats import spearmanr
+A=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+d={a:pd.read_csv('../persistent/stock_data/'+a+'.csv',parse_dates=['date']).sort_values('date').set_index('date') for a in A}
+# Intraday body reversal: fade standardized close-open body; range normalization reduces cross-asset scale effects.
+raw={a:-(d[a].close-d[a].open)/(d[a].high-d[a].low).replace(0,np.nan) for a in A}
+rows=[]; sig=[]
+for dt in sorted(set().union(*[set(x.index) for x in d.values()])):
+ vals={a:(raw[a].get(dt,np.nan)) for a in A}; good=[v for v in vals.values() if np.isfinite(v)]; med=np.nanmedian(good) if len(good)>=8 else np.nan
+ for a in A:sig.append((dt,a,vals[a]-med if np.isfinite(vals[a]) and np.isfinite(med) else np.nan))
+ for h in [1,3,5]:
+  f=[];y=[]
+  for a in A:
+   if dt not in d[a].index: continue
+   i=d[a].index.get_loc(dt);z=vals[a]-med if np.isfinite(vals[a]) and np.isfinite(med) else np.nan
+   if np.isfinite(z) and i+h<len(d[a]):f.append(z);y.append(d[a].close.iloc[i+h]/d[a].close.iloc[i]-1)
+  if len(f)>=8:rows.append((dt,h,spearmanr(f,y).statistic,len(f)))
+x=pd.DataFrame(rows,columns=['date','h','ic','n'])
+for h in [1,3,5]:
+ z=x[x.h==h];print('H',h,'dates',len(z),'avg_n',round(z.n.mean(),2),'coverage',round(z.n.mean()/15,4),'IC',round(z.ic.mean(),6),'ICIR',round(z.ic.mean()/z.ic.std(),6),'hit',round((z.ic>0).mean(),4))
+ for lo,hi in [('2020','2022'),('2023','2024'),('2025','2026'),('2026-07','2027')]:
+  q=z.set_index('date').loc[lo:hi].ic;print(lo,len(q),round(q.mean(),6),round(q.mean()/q.std(),6))
+out=pd.DataFrame(sig,columns=['date','asset','signal']);out.to_csv('../persistent/factor_signals_miner_3_20270225_intraday_body_reversal.csv',index=False);print('turnover',round(out.pivot(index='date',columns='asset',values='signal').rank(axis=1,pct=True).diff().abs().mean(axis=1).mean(),6))

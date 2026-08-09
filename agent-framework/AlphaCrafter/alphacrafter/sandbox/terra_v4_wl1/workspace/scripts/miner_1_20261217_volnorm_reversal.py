@@ -1,24 +1,22 @@
-import pandas as pd, numpy as np
-from pathlib import Path
+import pandas as pd,numpy as np
 from scipy.stats import spearmanr
-U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; END=pd.Timestamp('2026-12-17')
-D={}
-for s in U:
- x=pd.read_csv(Path('../persistent/stock_data')/(s+'.csv')); x.date=pd.to_datetime(x.date); x=x[x.date<=END].sort_values('date').set_index('date'); D[s]=x.close.astype(float).pct_change()
-R=pd.concat(D,axis=1).sort_index();
-# Volatility-adjusted 20-day reversal: negative recent return scaled by realized risk.
-ret=R.rolling(20,min_periods=15).sum(); vol=R.rolling(20,min_periods=15).std()*np.sqrt(20); F=-ret/vol
-rows=[]
-for dt in R.index:
- z=pd.concat([F.loc[dt].rename('f'),R.shift(-1).loc[dt].rename('y')],axis=1).dropna()
- if len(z)>=8: rows.append((dt,spearmanr(z.f,z.y).statistic,len(z)))
-a=pd.DataFrame(rows,columns=['date','ic','n']).set_index('date'); q=a.ic
-print('dates',len(q),'range',a.index.min().date(),a.index.max().date(),'avg_n',a.n.mean(),'coverage',a.n.mean()/15)
-print('IC',q.mean(),'ICIR',q.mean()/q.std(ddof=1),'hit',(q>0).mean(),'year',a.groupby(a.index.year).ic.mean().round(4).to_dict())
-print('turnover',F.rank(axis=1,pct=True).diff().abs().mean(axis=1).mean())
-for k in [5,10]:
- y=R.shift(-k).rolling(k).sum().shift(-(k-1)); zq=[]
- for dt in R.index:
-  z=pd.concat([F.loc[dt].rename('f'),y.loc[dt].rename('y')],axis=1).dropna()
-  if len(z)>=8:zq.append(spearmanr(z.f,z.y).statistic)
- zq=pd.Series(zq);print(k,zq.mean(),zq.mean()/zq.std(ddof=1),len(zq))
+from pathlib import Path
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; cut=pd.Timestamp('2026-12-17')
+P=pd.DataFrame({s:pd.read_csv('../persistent/stock_data/'+s+'.csv',parse_dates=['date']).set_index('date')['close'] for s in U}).sort_index().ffill(); P=P[P.index<=cut]; R=P.pct_change()
+# Volatility-normalized 3d reversal: fade recent move after scaling by lagged 20d realized volatility.
+r3=R.rolling(3,min_periods=3).sum(); vol=R.rolling(20,min_periods=15).std(); F=(-r3/vol.replace(0,np.nan)).clip(-5,5); F=F.sub(F.median(axis=1),axis=0)
+F.to_csv('scripts/miner_1_20261217_volnorm_reversal_signal.csv',index_label='date')
+for h in [1,5,10]:
+ Y=P.pct_change(h).shift(-h); vals=[];ns=[]
+ for d in F.index:
+  z=pd.concat([F.loc[d].rename('f'),Y.loc[d].rename('y')],axis=1).dropna()
+  if len(z)>=8 and z.f.nunique()>1 and z.y.nunique()>1: vals.append(spearmanr(z.f,z.y).statistic);ns.append(len(z))
+ a=pd.Series(vals); print('H',h,'dates',len(a),'avg_names',round(np.mean(ns),2),'IC',round(a.mean(),8),'ICIR',round(a.mean()/a.std(ddof=1),8),'hit',round((a>0).mean(),4))
+print('coverage',round(F.notna().sum().sum()/F.size,6),'turnover',round(F.rank(axis=1,pct=True).diff().abs().mean().mean(),6))
+cs=[]
+for p in Path('scripts').glob('*signal.csv'):
+ try:
+  x=pd.read_csv(p,index_col=0,parse_dates=True).reindex(F.index).reindex(columns=U);c=F.stack().corr(x.stack())
+  if pd.notna(c):cs.append((abs(c),p.name,c))
+ except:pass
+print('max_abs_library_correlation',max(cs)[0] if cs else None,sorted(cs,reverse=True)[:5]);print('period',F.index.min().date(),F.index.max().date())
