@@ -202789,3 +202789,608 @@ row 2026-07-15 00:00:00 mom120 at row notna: 15
 ⏳ Current date 2026-07-16 is not the last trading day (2035-12-31)
 ⚙️ Executing 1 tool call(s)...
   ▶️ write_file({'content': '"""Trader design sweep v2: offline cross-sectional ensemble simulation (warm-up data only).\n\nSweeps weighting schemes / risk overlays on the 15-asset long-only fully-invested\nportfolio with 3bps rebalance costs. All decisions use data visible through the\nprevious completed trading day (no lookahead).\n"""\nimport json, os, itertools\nimport numpy as np\nimport pandas as pd\n\nASSETS = ["000300.SH","SPX","HSI","N225","SX5E","000688.SH","SOX","NDX","XAU",\n          "COPPER","WTI","BTC","ETH","US10Y","CN10Y"]\nDATA = "../persistent/stock_data"\nIDX = "../persistent/index_data"\nCAL = pd.DatetimeIndex([pd.Timestamp(d) for d in json.load(open("../persistent/date.json"))["trading_days"]])\nREF_IDX = int(np.where(CAL == pd.Timestamp("2026-07-16"))[0][0])\n\ndef load(sym, folder=DATA):\n    df = pd.read_csv(os.path.join(folder, sym + ".csv"), parse_dates=[0])\n    df.columns = [c.strip() for c in df.columns]\n    dcol = [c for c in df.columns if c.lower() in ("date", "datetime")][0]\n    df = df.set_index(pd.to_datetime(df[dcol])).sort_index()\n    ccol = [c for c in df.columns if c.lower() == "close"][0]\n    return df[ccol]\n\nclose = pd.DataFrame({s: load(s).reindex(CAL) for s in ASSETS}).loc[: "2026-07-15"]\nvix = load("VIX", IDX).reindex(CAL).loc[: "2026-07-15"]\nrets = close.pct_change()\n\nf_mom10  = close.shift(5) / close.shift(15) - 1.0\nf_mom120 = close.shift(5) / close.shift(125) - 1.0\nf_vov    = rets.rolling(20).std().rolling(60).std()\nvix_ret  = vix.pct_change()\nbeta60   = rets.rolling(60).cov(vix_ret) / vix_ret.rolling(60).var()\nvix_move = vix / vix.shift(20) - 1.0\nf_vixb   = -beta60.multiply(vix_move, axis=0)\n\nFACTORS = {\n    "mom_120d_skip5":      (f_mom120, 1, 0.486158),\n    "mom_10d_skip5":       (f_mom10,  1, 0.276633),\n    "vix_beta_cond_60x20": (f_vixb,  -1, 0.184054),\n    "vol_of_vol20x60":     (f_vov,    1, 0.053155),\n}\nDIRS = {"mom_120d_skip5": 1, "mom_10d_skip5": 1, "vix_beta_cond_60x20": -1, "vol_of_vol20x60": 1}\nWGT = {"mom_120d_skip5": 0.486158, "mom_10d_skip5": 0.276633, "vix_beta_cond_60x20": 0.184054, "vol_of_vol20x60": 0.053155}\n\ndecision_idx = [i for i in range(140, len(CAL))\n                if (i - REF_IDX) % 10 == 0 and CAL[i] <= pd.Timestamp("2026-07-15") and i + 10 <= len(close) - 1]\nprint(f"decisions: {len(decision_idx)}  from {CAL[decision_idx[0]].date()} to {CAL[decision_idx[-1]].date()}")\n\ndef percentile_rank(s):\n    out = pd.Series(0.5, index=s.index)\n    v = s.dropna()\n    if len(v) >= 8 and v.nunique() > 1:\n        out.loc[v.index] = v.rank(pct=True)\n    return out\n\ndef scores_at(i):\n    row = CAL[i - 1]\n    sc = pd.Series(0.0, index=ASSETS)\n    contrib = {}\n    for name, (panel, d, w) in FACTORS.items():\n        x = panel.loc[row].reindex(ASSETS)\n        if x.notna().sum() < 8:\n            continue\n        c = w * d * percentile_rank(x)\n        sc = sc + c\n        contrib[name] = c\n    return sc, contrib\n\ndef ew_trend(i):\n    row = CAL[i - 1]\n    m = close[ASSETS].mean(axis=1)\n    return (m.loc[row] / m.shift(20).loc[row] - 1, m.loc[row] / m.shift(60).loc[row] - 1)\n\ndef weights_from_scores(sc, temp, floor, cap):\n    s = sc - sc.mean()\n    e = np.exp(np.clip(s / temp, -10, 10))\n    w = e / e.sum()\n    if floor > 0:\n        w = (1 - floor) * w + floor / len(ASSETS)\n    if cap is not None:\n        for _ in range(80):\n            over = float((w[w > cap] - cap).sum())\n            if over <= 1e-12:\n                break\n            w[w > cap] = cap\n            room = w[w < cap - 1e-12]\n            if len(room) == 0:\n                break\n            w.loc[room.index] += over * room / room.sum()\n    return w / w.sum()\n\ndef simulate(temp, floor, cap, overlay, minmv):\n    nav, prev_w = 1.0, None\n    navs, dates, stats = [], [], []\n    for i in decision_idx:\n        sc, contrib = scores_at(i)\n        if len(contrib) < 2:\n            continue\n        w = weights_from_scores(sc, temp, floor, cap)\n        if overlay == "def12" or overlay == "def30":\n            r20, _ = ew_trend(i)\n            if r20 < 0:\n                k = 0.12 if overlay == "def12" else 0.30\n                vb = f_vixb.loc[CAL[i - 1]].reindex(ASSETS)\n                if vb.notna().sum() >= 8:\n                    sc2 = sc - k * (vb - vb.mean()) / (vb.std() + 1e-12)\n                    w = weights_from_scores(sc2, temp, floor, cap)\n        rets10 = close.loc[CAL[i + 10]].reindex(ASSETS) / close.loc[CAL[i]].reindex(ASSETS) - 1.0\n        if prev_w is not None and minmv > 0 and float((w - prev_w).abs().sum()) < minmv:\n            r = float((prev_w * rets10).sum())\n            nav *= (1 + r)\n            navs.append(nav); dates.append(CAL[i]); stats.append((CAL[i], r, 0.0, 0.0))\n            continue\n        r = float((w * rets10).sum())\n        cost = 0.0 if prev_w is None else 0.0003 * float((w - prev_w).abs().sum())\n        nav = nav * (1 + r) - cost * nav\n        navs.append(nav); dates.append(CAL[i]); stats.append((CAL[i], r, cost, float((w - prev_w).abs().sum()) if prev_w is not None else float(w.abs().sum())))\n        prev_w = w\n    return pd.Series(navs, index=pd.DatetimeIndex(dates)), stats\n\ndef metrics(navs, stats):\n    if len(navs) < 5:\n        return dict(ret=0, cagr=0, sharpe=0, mdd=0, to=0, cost=0, n=0)\n    daily = navs.pct_change().dropna()\n    yrs = max((navs.index[-1] - navs.index[0]).days / 365.25, 0.5)\n    ret = navs.iloc[-1] / navs.iloc[0] - 1\n    cagr = (navs.iloc[-1] / navs.iloc[0]) ** (1 / yrs) - 1\n    sharpe = daily.mean() / daily.std() * np.sqrt(252) if daily.std() > 0 else 0\n    mdd = float((navs / navs.cummax() - 1).min())\n    to = float(np.mean([s[3] for s in stats]))\n    cost = float(sum(s[2] for s in stats))\n    return dict(ret=ret, cagr=cagr, sharpe=sharpe, mdd=mdd, to=to, cost=cost, n=len(navs))\n\nrows = []\nfor temp, floor, cap, overlay, minmv in itertools.product(\n        [0.5, 0.75, 1.0, 1.5], [0.0, 0.05, 0.10], [0.25, 0.35, None],\n        ["none", "def12", "def30"], [0.0, 0.03]):\n    navs, stats = simulate(temp, floor, cap, overlay, minmv)\n    m = metrics(navs, stats)\n    rows.append((temp, floor, cap, overlay, minmv, m["ret"], m["cagr"], m["sharpe"], m["mdd"], m["to"], m["cost"], m["n"]))\n\nres = pd.DataFrame(rows, columns=["temp","floor","cap","overlay","minmv","ret","cagr","sharpe","mdd","turnover","cost","n"])\nres = res[res.n >= 40].sort_values("sharpe", ascending=False)\npd.set_option("display.width", 220)\nprint("\\n=== SWEEP top25 (full 2020-2026, sorted by Sharpe) ===")\nprint(res.head(25).to_string(index=False))\nprint("\\n=== SWEEP bottom5 ===")\nprint(res.tail(5).to_string(index=False))\n', 'file_path': 'scripts/trader1_20260716_design.py'})
+  ✅ write_file output: 
+
+ Successfully wrote to file: scripts/trader1_20260716_design.py
+
+────────────────────────────────────────
+🔄 Iteration 12/25
+────────────────────────────────────────
+📤 API Request - 35 messages
+📥 API Response - 55 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-16 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python scripts/trader1_20260716_design.py'})
+  ✅ shell output: 
+
+ ✅ Output:
+decisions: 223  from 2020-05-28 to 2026-06-26
+
+=== SWEEP top25 (full 2020-2026, sorted by Sharpe) ===
+ temp  floor  cap overlay  minmv      ret     cagr   sharpe       mdd  turnover     cost  n
+  0.5   0.00 0.25    none   0.00 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00 0.25    none   0.03 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00 0.25   def12   0.00 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00 0.25   def12   0.03 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00 0.25   def30   0.00 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00 0.25   def30   0.03 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00 0.35    none   0.00 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00 0.35    none   0.03 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00 0.35   def12   0.00 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00 0.35   def12   0.03 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00 0.35   def30   0.00 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00 0.35   def30   0.03 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00  NaN    none   0.00 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00  NaN    none   0.03 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00  NaN   def12   0.00 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00  NaN   def12   0.03 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00  NaN   def30   0.00 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.00  NaN   def30   0.03 0.042308 0.006935 0.647433 -0.146743  0.286002 0.004934 61
+  0.5   0.05 0.25    none   0.00 0.040223 0.006599 0.629564 -0.144919  0.272521 0.004687 61
+  0.5   0.05 0.25    none   0.03 0.040223 0.006599 0.629564 -0.144919  0.272521 0.004687 61
+  0.5   0.05 0.25   def12   0.00 0.040223 0.006599 0.629564 -0.144919  0.272521 0.004687 61
+  0.5   0.05 0.25   def12   0.03 0.040223 0.006599 0.629564 -0.144919  0.272521 0.004687 61
+  0.5   0.05 0.25   def30   0.00 0.040223 0.006599 0.629564 -0.144919  0.272521 0.004687 61
+  0.5   0.05 0.25   def30   0.03 0.040223 0.006599 0.629564 -0.144919  0.272521 0.004687 61
+  0.5   0.05 0.35    none   0.00 0.040223 0.006599 0.629564 -0.144919  0.272521 0.004687 61
+
+=== SWEEP bottom5 ===
+ temp  floor  cap overlay  minmv    ret     cagr   sharpe       mdd  turnover   cost  n
+  1.5    0.1  NaN    none   0.03 0.0118 0.001958 0.311388 -0.127837  0.098356 0.0015 61
+  1.5    0.1  NaN   def12   0.00 0.0118 0.001958 0.311388 -0.127837  0.098356 0.0015 61
+  1.5    0.1  NaN   def12   0.03 0.0118 0.001958 0.311388 -0.127837  0.098356 0.0015 61
+  1.5    0.1  NaN   def30   0.00 0.0118 0.001958 0.311388 -0.127837  0.098356 0.0015 61
+  1.5    0.1  NaN   def30   0.03 0.0118 0.001958 0.311388 -0.127837  0.098356 0.0015 61
+
+────────────────────────────────────────
+🔄 Iteration 13/25
+────────────────────────────────────────
+📤 API Request - 37 messages
+📥 API Response - 2089 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-16 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python -c "\nimport json, os\nimport numpy as np\nimport pandas as pd\nASSETS = [\'000300.SH\',\'SPX\',\'HSI\',\'N225\',\'SX5E\',\'000688.SH\',\'SOX\',\'NDX\',\'XAU\',\'COPPER\',\'WTI\',\'BTC\',\'ETH\',\'US10Y\',\'CN10Y\']\nDATA = \'../persistent/stock_data\'; IDX = \'../persistent/index_data\'\nCAL = pd.DatetimeIndex([pd.Timestamp(d) for d in json.load(open(\'../persistent/date.json\'))[\'trading_days\']])\nREF_IDX = int(np.where(CAL == pd.Timestamp(\'2026-07-16\'))[0][0])\ndef load(sym, folder=DATA):\n    df = pd.read_csv(os.path.join(folder, sym + \'.csv\'), parse_dates=[0])\n    df.columns = [c.strip() for c in df.columns]\n    dcol = [c for c in df.columns if c.lower() in (\'date\',\'datetime\')][0]\n    df = df.set_index(pd.to_datetime(df[dcol])).sort_index()\n    ccol = [c for c in df.columns if c.lower() == \'close\'][0]\n    return df[ccol]\nclose = pd.DataFrame({s: load(s).reindex(CAL) for s in ASSETS}).loc[:\'2026-07-15\']\nvix = load(\'VIX\', IDX).reindex(CAL).loc[:\'2026-07-15\']\nrets = close.pct_change()\nf_mom10 = close.shift(5)/close.shift(15)-1.0\nf_mom120 = close.shift(5)/close.shift(125)-1.0\nf_vov = rets.rolling(20).std().rolling(60).std()\nvix_ret = vix.pct_change()\nbeta60 = rets.rolling(60).cov(vix_ret)/vix_ret.rolling(60).var()\nvix_move = vix/vix.shift(20)-1.0\nf_vixb = -beta60.multiply(vix_move, axis=0)\nprint(\'vix nan count\', int(vix.isna().sum()), \'vix_ret nan\', int(vix_ret.isna().sum()))\nprint(\'beta60 notna per row (last 5):\', beta60.notna().sum().iloc[-5:].to_list())\nprint(\'f_vixb notna per row (last 5):\', f_vixb.notna().sum().iloc[-5:].to_list())\nprint(\'f_vov notna per row (last 5):\', f_vov.notna().sum().iloc[-5:].to_list())\nprint(\'f_mom120 notna (last 5):\', f_mom120.notna().sum().iloc[-5:].to_list())\nprint(\'f_mom10 notna (last 5):\', f_mom10.notna().sum().iloc[-5:].to_list())\n# check scores_at contrib count across decisions\ndecision_idx = [i for i in range(140, len(CAL)) if (i-REF_IDX)%10==0 and CAL[i] <= pd.Timestamp(\'2026-07-15\') and i+10 <= len(close)-1]\nfrom collections import Counter\ncnt = Counter()\nfor i in decision_idx:\n    row = CAL[i-1]\n    n = 0\n    for panel in (f_mom120, f_mom10, f_vixb, f_vov):\n        x = panel.loc[row].reindex(ASSETS)\n        if x.notna().sum() >= 8:\n            n += 1\n    cnt[n] += 1\nprint(\'contrib-count histogram over decisions:\', dict(sorted(cnt.items())))\n"'})
+  ✅ shell output: 
+
+ ✅ Output:
+vix nan count 746 vix_ret nan 1103
+beta60 notna per row (last 5): [0, 0, 0, 0, 0]
+f_vixb notna per row (last 5): [0, 0, 0, 0, 0]
+f_vov notna per row (last 5): [0, 2309, 2309, 0, 0]
+f_mom120 notna (last 5): [1272, 2263, 2263, 1207, 1177]
+f_mom10 notna (last 5): [987, 2373, 2373, 897, 934]
+contrib-count histogram over decisions: {0: 67, 1: 95, 2: 61}
+
+────────────────────────────────────────
+🔄 Iteration 14/25
+────────────────────────────────────────
+📤 API Request - 39 messages
+📥 API Response - 1897 tokens, $0.000000
+🔧 Tool calls: ['shell', 'shell']
+⏳ Current date 2026-07-16 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ shell({'command': 'sed -n \'90,160p\' scripts/miner1_20260716_batch2_macro_vol.py 2>/dev/null || python -c "\ns = open(\'scripts/miner1_20260716_batch2_macro_vol.py\').read()\nprint(s[3000:6500])\n"'})
+  ✅ shell output: 
+
+ ❌ Command 'sed' is not in the whitelist. Allowed commands: ls, python, echo, tail, grep
+  ▶️ shell({'command': 'python -c "\ns = open(\'scripts/miner1_20260716_persist.py\').read()\ni = s.find(\'def vix_beta_cond\')\nprint(s[i:i+1200])\n"'})
+  ✅ shell output: 
+
+ ✅ Output:
+def vix_beta_cond(sym, close, volume, panel):
+    macro = panel['macro'].get('VIX')
+    if macro is None:
+        return None
+    grid = panel['grid']
+    r_a = close.pct_change().reindex(grid)
+    r_m = macro.pct_change().reindex(grid)
+    beta = r_a.rolling(60, min_periods=30).cov(r_m) / r_m.rolling(60, min_periods=30).var()
+    mm = (macro.reindex(grid) / macro.shift(20).reindex(grid) - 1.0)
+    return (-1.0 * beta * mm).replace([np.inf, -np.inf], np.nan)
+
+
+frames = {}
+for label, spec in CANDIDATES.items():
+    if spec['fn'] is None:
+        frames[label] = factor_values(closes, volumes, grid,
+                                      lambda s, c, v, p=panel: vix_beta_cond(s, c, v, p))
+    else:
+        frames[label] = factor_values(closes, volumes, grid, spec['fn'])
+
+# decay across horizons
+decays = {}
+for h in (1, 2, 3, 5, 10, 20):
+    ret = forward_returns(closes, grid, h)
+    for label, fac in frames.items():
+        ics = daily_ic(fac, ret, min_valid=MIN_VALID)
+        if len(ics) == 0:
+            decays.setdefault(label, {})[h] = np.nan
+            continue
+        m = float(ics['ic'].mean())
+        s = float(ics['ic'].std(ddof=1))
+        decays.setdefault(label, {})[h] = r
+
+────────────────────────────────────────
+🔄 Iteration 15/25
+────────────────────────────────────────
+📤 API Request - 43 messages
+📥 API Response - 4249 tokens, $0.000000
+🔧 Tool calls: ['write_file']
+⏳ Current date 2026-07-16 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ write_file({'content': '"""Trader design sweep v3: per-asset factor computation (matches live API semantics).\n\nEach asset\'s factors are computed on its OWN calendar; cross-sectional ranking at\na decision date uses each asset\'s last value visible through the previous\ncompleted trading day. VIX beta pairs asset returns with VIX on common dates.\n"""\nimport json, os, itertools\nimport numpy as np\nimport pandas as pd\n\nASSETS = ["000300.SH","SPX","HSI","N225","SX5E","000688.SH","SOX","NDX","XAU",\n          "COPPER","WTI","BTC","ETH","US10Y","CN10Y"]\nDATA = "../persistent/stock_data"\nIDX = "../persistent/index_data"\nCAL = pd.DatetimeIndex([pd.Timestamp(d) for d in json.load(open("../persistent/date.json"))["trading_days"]])\nREF_IDX = int(np.where(CAL == pd.Timestamp("2026-07-16"))[0][0])\nEND = pd.Timestamp("2026-07-15")\n\ndef load(sym, folder=DATA):\n    df = pd.read_csv(os.path.join(folder, sym + ".csv"), parse_dates=[0])\n    df.columns = [c.strip() for c in df.columns]\n    dcol = [c for c in df.columns if c.lower() in ("date", "datetime")][0]\n    df = df.set_index(pd.to_datetime(df[dcol])).sort_index()\n    ccol = [c for c in df.columns if c.lower() == "close"][0]\n    return df[ccol]\n\nSER = {s: load(s).loc[: END] for s in ASSETS}          # per-asset close, own calendar\nVIX = load("VIX", IDX).loc[: END]                       # VIX close, own calendar\nCLOSE_PANEL = pd.DataFrame({s: SER[s].reindex(CAL).ffill() for s in ASSETS})  # eval panel\nCLOSE_PANEL = CLOSE_PANEL.loc[: END]\n\ndef factor_row(sym, s, vix):\n    """Return dict of raw factor values for one asset as of its last visible row."""\n    out = {}\n    if len(s) >= 126:\n        out["mom_120d_skip5"] = float(s.iloc[-6] / s.iloc[-126] - 1.0)\n    if len(s) >= 16:\n        out["mom_10d_skip5"] = float(s.iloc[-6] / s.iloc[-16] - 1.0)\n    if len(s) >= 90:\n        vol20 = s.pct_change().rolling(20).std()\n        v = vol20.rolling(60).std()\n        if len(v.dropna()) > 0:\n            out["vol_of_vol20x60"] = float(v.iloc[-1])\n    if len(s) >= 30 and len(vix) >= 30:\n        r_a = s.pct_change()\n        r_v = vix.pct_change()\n        m = pd.concat([r_a.rename("a"), r_v.rename("v")], axis=1, join="inner").dropna()\n        if len(m) >= 30:\n            m60 = m.tail(60)\n            var_v = float(m60["v"].var())\n            if var_v > 1e-14:\n                beta = float(m60["a"].cov(m60["v"]) / var_v)\n                vix_move = float(vix.iloc[-1] / vix.iloc[-21] - 1.0)\n                out["vix_beta_cond_60x20"] = -beta * vix_move\n    return out\n\nFACTOR_LIST = ["mom_120d_skip5", "mom_10d_skip5", "vix_beta_cond_60x20", "vol_of_vol20x60"]\nDIRS = {"mom_120d_skip5": 1, "mom_10d_skip5": 1, "vix_beta_cond_60x20": -1, "vol_of_vol20x60": 1}\nWGT = {"mom_120d_skip5": 0.486158, "mom_10d_skip5": 0.276633, "vix_beta_cond_60x20": 0.184054, "vol_of_vol20x60": 0.053155}\n\ndecision_idx = [i for i in range(140, len(CAL))\n                if (i - REF_IDX) % 10 == 0 and CAL[i] <= END and i + 10 <= len(CLOSE_PANEL) - 1]\n\ndef factor_cross_section(i):\n    """dict[factor] -> Series(asset -> raw value) using per-asset last value <= CAL[i-1]."""\n    cutoff = CAL[i - 1]\n    out = {}\n    for a in ASSETS:\n        s = SER[a]\n        s = s[s.index <= cutoff]\n        if len(s) < 16:\n            continue\n        fr = factor_row(a, s, VIX[VIX.index <= cutoff])\n        for f, v in fr.items():\n            out.setdefault(f, {})[a] = v\n    return out\n\ndef percentile_rank(vals, assets):\n    out = pd.Series(0.5, index=assets)\n    v = pd.Series(vals)\n    if len(v) >= 8 and v.nunique() > 1:\n        out.loc[v.index] = v.rank(pct=True)\n    return out\n\ndef scores_at(i, overlay):\n    cs = factor_cross_section(i)\n    sc = pd.Series(0.0, index=ASSETS)\n    for f in FACTOR_LIST:\n        if f not in cs:\n            continue\n        sc = sc + WGT[f] * DIRS[f] * percentile_rank(cs[f], ASSETS)\n    if overlay == "def12" or overlay == "def30":\n        # defensive tilt when equal-weight 20d market return < 0\n        row = CAL[i - 1]\n        m = CLOSE_PANEL[ASSETS].mean(axis=1)\n        r20 = m.loc[row] / m.shift(20).loc[row] - 1\n        if r20 < 0 and "vix_beta_cond_60x20" in cs:\n            k = 0.12 if overlay == "def12" else 0.30\n            vb = pd.Series(cs["vix_beta_cond_60x20"])\n            sc = sc - k * (vb - vb.mean()) / (vb.std() + 1e-12)\n    return sc\n\ndef weights_from_scores(sc, temp, floor, cap):\n    s = sc - sc.mean()\n    e = np.exp(np.clip(s / temp, -10, 10))\n    w = e / e.sum()\n    if floor > 0:\n        w = (1 - floor) * w + floor / len(ASSETS)\n    if cap is not None:\n        for _ in range(80):\n            over = float((w[w > cap] - cap).sum())\n            if over <= 1e-12:\n                break\n            w[w > cap] = cap\n            room = w[w < cap - 1e-12]\n            if len(room) == 0:\n                break\n            w.loc[room.index] += over * room / room.sum()\n    return w / w.sum()\n\ndef simulate(temp, floor, cap, overlay, minmv):\n    nav, prev_w = 1.0, None\n    navs, dates, stats = [], [], []\n    for i in decision_idx:\n        sc = scores_at(i, overlay)\n        if sc.abs().sum() < 1e-12:\n            continue\n        w = weights_from_scores(sc, temp, floor, cap)\n        rets10 = CLOSE_PANEL.loc[CAL[i + 10]].reindex(ASSETS) / CLOSE_PANEL.loc[CAL[i]].reindex(ASSETS) - 1.0\n        if prev_w is not None and minmv > 0 and float((w - prev_w).abs().sum()) < minmv:\n            r = float((prev_w * rets10).sum())\n            nav *= (1 + r)\n            navs.append(nav); dates.append(CAL[i]); stats.append((CAL[i], r, 0.0, 0.0))\n            continue\n        r = float((w * rets10).sum())\n        turnover = float((w - prev_w).abs().sum()) if prev_w is not None else float(w.abs().sum())\n        cost = 0.0 if prev_w is None else 0.0003 * turnover\n        nav = nav * (1 + r) - cost * nav\n        navs.append(nav); dates.append(CAL[i]); stats.append((CAL[i], r, cost, turnover))\n        prev_w = w\n    return pd.Series(navs, index=pd.DatetimeIndex(dates)), stats\n\ndef metrics(navs, stats):\n    if len(navs) < 5:\n        return dict(ret=0, cagr=0, sharpe=0, mdd=0, to=0, cost=0, n=0)\n    daily = navs.pct_change().dropna()\n    yrs = max((navs.index[-1] - navs.index[0]).days / 365.25, 0.5)\n    ret = navs.iloc[-1] / navs.iloc[0] - 1\n    cagr = (navs.iloc[-1] / navs.iloc[0]) ** (1 / yrs) - 1\n    sharpe = daily.mean() / daily.std() * np.sqrt(252) if daily.std() > 0 else 0\n    mdd = float((navs / navs.cummax() - 1).min())\n    to = float(np.mean([s[3] for s in stats]))\n    cost = float(sum(s[2] for s in stats))\n    return dict(ret=ret, cagr=cagr, sharpe=sharpe, mdd=mdd, to=to, cost=cost, n=len(navs))\n\nrows = []\nfor temp, floor, cap, overlay, minmv in itertools.product(\n        [0.5, 0.75, 1.0, 1.5], [0.0, 0.05, 0.10], [0.25, 0.35, None],\n        ["none", "def12", "def30"], [0.0, 0.03]):\n    navs, stats = simulate(temp, floor, cap, overlay, minmv)\n    m = metrics(navs, stats)\n    rows.append((temp, floor, cap, overlay, minmv, m["ret"], m["cagr"], m["sharpe"], m["mdd"], m["to"], m["cost"], m["n"]))\n\nres = pd.DataFrame(rows, columns=["temp","floor","cap","overlay","minmv","ret","cagr","sharpe","mdd","turnover","cost","n"])\nres = res[res.n >= 40].sort_values("sharpe", ascending=False)\npd.set_option("display.width", 220)\nprint("\\n=== SWEEP top25 (2020-2026, sorted by Sharpe) ===")\nprint(res.head(25).to_string(index=False))\nprint("\\n=== SWEEP bottom5 ===")\nprint(res.tail(5).to_string(index=False))\n', 'file_path': 'scripts/trader1_20260716_design.py'})
+  ✅ write_file output: 
+
+ Successfully wrote to file: scripts/trader1_20260716_design.py
+📝 Reached 15 iterations, generating summary...
+📝 Memory summary generated - 362 tokens, $0.000000
+🧹 Clearing input and adding interval summary...
+📋 Interval summary: <｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="shell">
+<｜｜DSML｜｜parameter name="command" string="true">python -c "
+s = open('scripts/miner1_20260716_lib.py').read()
+i = s.find('def factor_values')
+print(s[i:i+1800])
+print('====')
+i2 = s.find('def with_panel')
+print(s[i2:i2+1200] if i2>=0 else 'no with_panel')
+"</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>
+
+────────────────────────────────────────
+🔄 Iteration 16/25
+────────────────────────────────────────
+📤 API Request - 1 messages
+📥 API Response - 234 tokens, $0.000000
+🔧 Tool calls: ['shell', 'shell']
+⏳ Current date 2026-07-16 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ shell({'command': "ls -la && echo '---FACTORS---' && ls factors/ 2>/dev/null | head -40 && echo '---SCRIPTS---' && ls scripts/ | tail -20"})
+  ✅ shell output: 
+
+ ✅ Output:
+total 36
+drwxrwxr-x 5 lxx lxx 4096 Aug  9 17:19 .
+drwxrwxr-x 6 lxx lxx 4096 Aug  9 16:01 ..
+drwxrwxr-x 2 lxx lxx 4096 Aug  9 16:01 __pycache__
+-rw-rw-r-- 1 lxx lxx  422 Aug  9 17:19 factor_ensemble.json
+-rw-rw-r-- 1 lxx lxx  342 Aug  9 17:15 factor_library_audit.jsonl
+drwxrwxr-x 3 lxx lxx 4096 Aug  9 17:15 factors
+-rw-rw-r-- 1 lxx lxx    0 Aug  8 00:47 memory.txt
+drwxrwxr-x 3 lxx lxx 4096 Aug  9 17:23 scripts
+-rw-rw-r-- 1 lxx lxx 5450 Aug  8 01:23 strategy.py
+---FACTORS---
+mom_10d_skip5.json
+mom_10d_skip5.json.bak
+mom_120d_skip5.json
+mom_120d_skip5.json.bak
+rejected
+vix_beta_cond_60x20.json
+vix_beta_cond_60x20.json.bak
+vol_of_vol20x60.json
+vol_of_vol20x60.json.bak
+---SCRIPTS---
+miner1_20260716_factor_momentum.py
+miner1_20260716_factor_trend_vol.py
+miner1_20260716_lib.py
+miner1_20260716_library_corr.py
+miner1_20260716_persist.py
+miner2_20260716_checkdata.py
+miner2_20260716_common.py
+miner2_20260716_refine_candidates.py
+miner2_20260716_screen_batch1.py
+miner2_20260716_screen_batch2.py
+miner3_20260716_batch1_basic.py
+miner3_20260716_batch2_trend.py
+miner3_20260716_batch3_macrostruct.py
+miner3_20260716_batch4_newideas.py
+miner3_20260716_corr_batch3.py
+miner3_20260716_debug_beta.py
+miner3_20260716_explore_data.py
+screener_regime_check.py
+screener_validate.py
+trader1_20260716_design.py
+  ▶️ shell({'command': "tail -n 15 memory.txt 2>/dev/null; echo '---ENSEMBLE---'; cat factors/factor_ensemble.json 2>/dev/null | head -60"})
+  ✅ shell output: 
+
+ ✅ Output:
+---ENSEMBLE---
+
+────────────────────────────────────────
+🔄 Iteration 17/25
+────────────────────────────────────────
+📤 API Request - 5 messages
+📥 API Response - 155 tokens, $0.000000
+🔧 Tool calls: ['shell', 'read_file']
+⏳ Current date 2026-07-16 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ shell({'command': "cat factor_ensemble.json; echo '---AUDIT---'; cat factor_library_audit.jsonl 2>/dev/null; echo '---FACTORS LIST---'; ls factors/ | grep -v bak"})
+  ✅ shell output: 
+
+ ❌ Command 'cat' is not in the whitelist. Allowed commands: ls, python, echo, tail, grep
+  ▶️ read_file({'file_path': 'strategy.py'})
+  ✅ read_file output: 
+
+ """Defensive cross-asset ensemble, Screener 2035-12-20.
+Completed daily bars only; one atomic fully-invested rebalance per decision."""
+from math import isfinite
+import pandas as pd
+from alphacrafter.sim.utils import (get_account_dict, get_stock_daily_data,
+    get_index_daily_data, rebalance_to_weights, register_hook)
+
+# Exact admitted M=10 weights: defensive/tail 56%, recovery/persistence/trend 29%, macro 15%.
+FW = (.17, .15, .13, .11, .10, .08, .08, .07, .06, .05)
+DEF = {"XAU", "US10Y", "CN10Y"}
+DEF_W, CAP, TOP = .12, .15, 15
+
+def stock(a, n=145):
+    try: return get_stock_daily_data(a, days=n)
+    except Exception: return None
+
+def index(a, n=100):
+    try: return get_index_daily_data(a, days=n)
+    except Exception: return None
+
+def ranks(values, assets):
+    valid = sorted((float(v), a) for a, v in values.items() if v is not None and isfinite(float(v)))
+    out = {a: .5 for a in assets}
+    for i, (_, a) in enumerate(valid): out[a] = i / max(1, len(valid)-1)
+    return out
+
+def loading_contraction(y, x):
+    z = pd.concat([y.rename("y"), x.rename("x")], axis=1).dropna().tail(60)
+    def beta(n):
+        q=z.tail(n); var=float(q.x.var())
+        return float(q.y.cov(q.x)/var) if len(q)>=12 and var>1e-14 else None
+    new, old = beta(20), beta(60)
+    return old-new if new is not None and old is not None else None
+
+def capped_normalize(w, pref):
+    for _ in range(40):
+        excess=sum(max(0., x-CAP) for x in w.values())
+        w={a:min(CAP, max(0., x)) for a, x in w.items()}
+        room=[a for a,x in w.items() if x<CAP-1e-12]
+        if excess < 1e-12 or not room: break
+        den=sum(max(0.,pref.get(a,0.)) for a in room)
+        for a in room: w[a] += excess*(max(0.,pref.get(a,0.))/den if den else 1/len(room))
+    total=sum(w.values())
+    return {a:x/total for a,x in w.items()}
+
+@register_hook
+def strategy_hook():
+    assets=list(get_account_dict()["watch_list"])
+    frames={a:stock(a) for a in assets}
+    closes={a:(f.close.astype(float) if f is not None and "close" in f and len(f)>=62 else None) for a,f in frames.items()}
+    usable=[c.pct_change().rename(a) for a,c in closes.items() if c is not None]
+    panel=pd.concat(usable,axis=1,join="inner").dropna().tail(100) if len(usable)>=8 else pd.DataFrame()
+    if len(panel)<61:
+        rebalance_to_weights({a:1/len(assets) for a in assets}); return
+    market=panel.mean(axis=1); mv=float(market.var())
+    residual={a:panel[a]-(float(panel[a].cov(market)/mv)*market if mv>1e-14 else 0.) for a in panel}
+    vf=index("VIX"); vix=vf.close.astype(float).pct_change() if vf is not None and "close" in vf else None
+    oil,copper=closes.get("WTI"),closes.get("COPPER")
+    infl=(oil.pct_change()+copper.pct_change())*.5 if oil is not None and copper is not None else None
+    stress=vix.reindex(infl.index).clip(lower=0)*infl if vix is not None and infl is not None else None
+    commodity_rel=oil.pct_change()-copper.pct_change() if oil is not None and copper is not None else None
+    wealth=(1+market).cumprod(); mdd=wealth/wealth.rolling(60).max()-1
+    basket=panel[[a for a in DEF if a in panel]].mean(axis=1); dispersion=panel.std(axis=1)
+    high_disp=float(dispersion.tail(20).mean()) >= float(dispersion.tail(60).median())
+    beta={}; resilience={}; recovery={}; lpm={}; draw={}; macro={}; acorr={}; conditional={}; commodity={}; trend={}; vol={}
+    for a,e in residual.items():
+        ret=panel[a]; vol[a]=float(ret.tail(20).std())
+        z=pd.concat([e.rename("e"),basket.rename("b"),market.rename("m")],axis=1).dropna()
+        def downbeta(n):
+            q=z.tail(n); q=q[q.m<0]; var=float(q.b.var())
+            return float(q.e.cov(q.b)/var) if len(q)>=5 and var>1e-14 else None
+        new,old=downbeta(20),downbeta(60); beta[a]=old-new if new is not None and old is not None else None
+        recovery[a]=float(ret.tail(20).clip(upper=0).mean())-float(ret.iloc[:-20].tail(40).clip(upper=0).mean())
+        resilience[a]=loading_contraction(e,vix.clip(lower=0)**2) if vix is not None else None
+        macro[a]=loading_contraction(e,stress) if stress is not None else None
+        oc=float(ret.iloc[:-20].tail(40).corr(mdd.iloc[:-20].tail(40))); nc=float(ret.tail(20).corr(mdd.tail(20)))
+        draw[a]=oc-nc if isfinite(oc) and isfinite(nc) else None
+        neg=ret.tail(60).clip(upper=0); lpm[a]=-float((neg*neg).mean()**.5)
+        conditional[a]=recovery[a] if (high_disp and float(market.tail(20).mean())<0) else None
+        na,oa=float(e.tail(20).autocorr(1)),float(e.iloc[:-20].tail(40).autocorr(1))
+        acorr[a]=na-oa if isfinite(na) and isfinite(oa) else None
+        commodity[a]=loading_contraction(e,commodity_rel) if commodity_rel is not None else None
+        trend[a]=float(ret.tail(20).mean())/max(vol[a],.003)
+    factors=(beta,resilience,draw,lpm,recovery,acorr,macro,commodity,trend,conditional)
+    score={a:sum(x*ranks(f,assets)[a] for x,f in zip(FW,factors)) for a in assets}
+    selected=sorted(assets,key=lambda a:(score[a],a),reverse=True)[:TOP]
+    pref={a:.4*(2-i/max(1,TOP-1))/max(vol.get(a,.03) or .03,.003)+.6 for i,a in enumerate(selected) if a not in DEF}
+    nondef=[a for a in assets if a not in DEF]; den=sum(pref.get(a,0.) for a in nondef)
+    raw={a:(DEF_W if a in DEF else .64*pref.get(a,0.)/den) for a in assets} if den else {a:1/len(assets) for a in assets}
+    weights=capped_normalize(raw,pref)
+    weights[assets[-1]] += 1-sum(weights.values())
+    rebalance_to_weights(weights)
+
+
+────────────────────────────────────────
+🔄 Iteration 18/25
+────────────────────────────────────────
+📤 API Request - 9 messages
+📥 API Response - 336 tokens, $0.000000
+🔧 Tool calls: ['shell', 'shell']
+⏳ Current date 2026-07-16 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ shell({'command': 'python -c "\nimport json\nd=json.load(open(\'factor_ensemble.json\'))\nprint(json.dumps(d,indent=1)[:3000])\nprint(\'KEYS:\',list(d.keys()))\n"'})
+  ✅ shell output: 
+
+ ✅ Output:
+{
+ "schema_version": 1,
+ "selected_factors": [
+  {
+   "factor_id": "mom_120d_skip5",
+   "weight": 0.486158,
+   "direction": 1
+  },
+  {
+   "factor_id": "mom_10d_skip5",
+   "weight": 0.276633,
+   "direction": 1
+  },
+  {
+   "factor_id": "vix_beta_cond_60x20",
+   "weight": 0.184054,
+   "direction": -1
+  },
+  {
+   "factor_id": "vol_of_vol20x60",
+   "weight": 0.053155,
+   "direction": 1
+  }
+ ],
+ "method": "quality_ic_tilt"
+}
+KEYS: ['schema_version', 'selected_factors', 'method']
+  ▶️ shell({'command': 'tail -n 30 factor_library_audit.jsonl; echo \'---\'; python -c "\nimport json\nfor line in open(\'factor_library_audit.jsonl\'):\n    line=line.strip()\n    if line:\n        try:\n            d=json.loads(line); print(d.get(\'factor_id\'), d.get(\'ic\'), d.get(\'status\',\'\'))\n        except Exception as e: print(\'ERR\',e)\n" | tail -30'})
+  ✅ shell output: 
+
+ ✅ Output:
+{"cycle": 1, "capacity": 30, "kept": 0, "rejected": [], "evicted": []}
+{"cycle": 2, "capacity": 30, "kept": 4, "rejected": ["inv_vol_60d.json", "mom_20d_skip5.json", "risk_adj_trend20.json", "trend_sma120.json", "trend_sma60.json", "zscore_rev_20d.json"], "evicted": []}
+{"cycle": 3, "capacity": 30, "kept": 4, "rejected": [], "evicted": []}
+---
+None None 
+None None 
+None None
+
+────────────────────────────────────────
+🔄 Iteration 19/25
+────────────────────────────────────────
+📤 API Request - 13 messages
+📥 API Response - 526 tokens, $0.000000
+🔧 Tool calls: ['shell', 'shell']
+⏳ Current date 2026-07-16 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ shell({'command': "ls -lt scripts/ | head -25; echo '---'; ls -la factors/rejected/ 2>/dev/null | head"})
+  ✅ shell output: 
+
+ ✅ Output:
+total 168
+-rw-rw-r-- 1 lxx lxx  7370 Aug  9 17:31 trader1_20260716_design.py
+-rw-rw-r-- 1 lxx lxx  4126 Aug  9 17:17 screener_validate.py
+-rw-rw-r-- 1 lxx lxx  4175 Aug  9 17:16 screener_regime_check.py
+-rw-rw-r-- 1 lxx lxx  5216 Aug  9 17:10 miner3_20260716_batch4_newideas.py
+-rw-rw-r-- 1 lxx lxx  3995 Aug  9 17:09 miner1_20260716_batch3_macro_spill_fix.py
+-rw-rw-r-- 1 lxx lxx  3348 Aug  9 17:08 miner3_20260716_corr_batch3.py
+-rw-rw-r-- 1 lxx lxx  6334 Aug  9 17:02 miner1_20260716_batch3_price_vol.py
+-rw-rw-r-- 1 lxx lxx  5063 Aug  9 17:01 miner1_20260716_batch3_macro_spill.py
+-rw-rw-r-- 1 lxx lxx 10395 Aug  9 16:44 miner1_20260716_persist.py
+-rw-rw-r-- 1 lxx lxx  2904 Aug  9 16:41 miner1_20260716_corr_check.py
+-rw-rw-r-- 1 lxx lxx  4650 Aug  9 16:40 miner1_20260716_consolidate.py
+-rw-rw-r-- 1 lxx lxx  3736 Aug  9 16:40 miner3_20260716_batch3_macrostruct.py
+-rw-rw-r-- 1 lxx lxx   824 Aug  9 16:39 miner3_20260716_debug_beta.py
+-rw-rw-r-- 1 lxx lxx  3698 Aug  9 16:38 miner2_20260716_refine_candidates.py
+-rw-rw-r-- 1 lxx lxx  7248 Aug  9 16:34 miner1_20260716_batch2_macro_vol.py
+-rw-rw-r-- 1 lxx lxx   491 Aug  9 16:33 miner2_20260716_checkdata.py
+-rw-rw-r-- 1 lxx lxx  3241 Aug  9 16:17 miner1_20260716_library_corr.py
+-rw-rw-r-- 1 lxx lxx  3839 Aug  9 16:12 miner2_20260716_screen_batch2.py
+drwxrwxr-x 2 lxx lxx  4096 Aug  9 16:09 __pycache__
+-rw-rw-r-- 1 lxx lxx  5694 Aug  9 16:09 factor_harness.py
+-rw-rw-r-- 1 lxx lxx  2164 Aug  9 16:09 miner2_20260716_screen_batch1.py
+-rw-rw-r-- 1 lxx lxx  4759 Aug  9 16:08 miner2_20260716_common.py
+-rw-rw-r-- 1 lxx lxx  2032 Aug  9 16:06 miner1_20260716_factor_trend_vol.py
+-rw-rw-r-- 1 lxx lxx  1770 Aug  9 16:05 miner3_20260716_batch2_trend.py
+---
+total 56
+drwxrwxr-x 2 lxx lxx 4096 Aug  9 16:47 .
+drwxrwxr-x 3 lxx lxx 4096 Aug  9 17:15 ..
+-rw-rw-r-- 1 lxx lxx 1360 Aug  9 16:47 inv_vol_60d.json
+-rw------- 1 lxx lxx  254 Aug  9 16:47 inv_vol_60d.json.reason.json
+-rw-rw-r-- 1 lxx lxx 1310 Aug  9 16:47 mom_20d_skip5.json
+-rw------- 1 lxx lxx  256 Aug  9 16:47 mom_20d_skip5.json.reason.json
+-rw-rw-r-- 1 lxx lxx 1295 Aug  9 16:47 risk_adj_trend20.json
+-rw------- 1 lxx lxx  259 Aug  9 16:47 risk_adj_trend20.json.reason.json
+-rw-rw-r-- 1 lxx lxx 1295 Aug  9 16:47 trend_sma120.json
+  ▶️ shell({'command': 'python -c "\nfrom alphacrafter.sim.utils import get_account_dict, get_stock_daily_data\nimport json\na=get_account_dict()\nprint(json.dumps(a,default=str)[:800])\n"'})
+  ✅ shell output: 
+
+ ✅ Output:
+{"initial_capital": 1000000.0, "total_assets": 1000000.0, "net_assets": 1000000.0, "available_cash": 1000000.0, "market_value": 0, "total_profit_loss": 0, "total_profit_loss_rate": 0.0, "gross_position_rate": 0.0, "net_position_rate": 0.0, "positions": [], "orders": [], "watch_list": ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]}
+
+────────────────────────────────────────
+🔄 Iteration 20/25
+────────────────────────────────────────
+📤 API Request - 17 messages
+📥 API Response - 260 tokens, $0.000000
+🔧 Tool calls: ['read_file', 'shell']
+⏳ Current date 2026-07-16 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ read_file({'file_path': 'scripts/trader1_20260716_design.py'})
+  ✅ read_file output: 
+
+ """Trader design sweep v3: per-asset factor computation (matches live API semantics).
+
+Each asset's factors are computed on its OWN calendar; cross-sectional ranking at
+a decision date uses each asset's last value visible through the previous
+completed trading day. VIX beta pairs asset returns with VIX on common dates.
+"""
+import json, os, itertools
+import numpy as np
+import pandas as pd
+
+ASSETS = ["000300.SH","SPX","HSI","N225","SX5E","000688.SH","SOX","NDX","XAU",
+          "COPPER","WTI","BTC","ETH","US10Y","CN10Y"]
+DATA = "../persistent/stock_data"
+IDX = "../persistent/index_data"
+CAL = pd.DatetimeIndex([pd.Timestamp(d) for d in json.load(open("../persistent/date.json"))["trading_days"]])
+REF_IDX = int(np.where(CAL == pd.Timestamp("2026-07-16"))[0][0])
+END = pd.Timestamp("2026-07-15")
+
+def load(sym, folder=DATA):
+    df = pd.read_csv(os.path.join(folder, sym + ".csv"), parse_dates=[0])
+    df.columns = [c.strip() for c in df.columns]
+    dcol = [c for c in df.columns if c.lower() in ("date", "datetime")][0]
+    df = df.set_index(pd.to_datetime(df[dcol])).sort_index()
+    ccol = [c for c in df.columns if c.lower() == "close"][0]
+    return df[ccol]
+
+SER = {s: load(s).loc[: END] for s in ASSETS}          # per-asset close, own calendar
+VIX = load("VIX", IDX).loc[: END]                       # VIX close, own calendar
+CLOSE_PANEL = pd.DataFrame({s: SER[s].reindex(CAL).ffill() for s in ASSETS})  # eval panel
+CLOSE_PANEL = CLOSE_PANEL.loc[: END]
+
+def factor_row(sym, s, vix):
+    """Return dict of raw factor values for one asset as of its last visible row."""
+    out = {}
+    if len(s) >= 126:
+        out["mom_120d_skip5"] = float(s.iloc[-6] / s.iloc[-126] - 1.0)
+    if len(s) >= 16:
+        out["mom_10d_skip5"] = float(s.iloc[-6] / s.iloc[-16] - 1.0)
+    if len(s) >= 90:
+        vol20 = s.pct_change().rolling(20).std()
+        v = vol20.rolling(60).std()
+        if len(v.dropna()) > 0:
+            out["vol_of_vol20x60"] = float(v.iloc[-1])
+    if len(s) >= 30 and len(vix) >= 30:
+        r_a = s.pct_change()
+        r_v = vix.pct_change()
+        m = pd.concat([r_a.rename("a"), r_v.rename("v")], axis=1, join="inner").dropna()
+        if len(m) >= 30:
+            m60 = m.tail(60)
+            var_v = float(m60["v"].var())
+            if var_v > 1e-14:
+                beta = float(m60["a"].cov(m60["v"]) / var_v)
+                vix_move = float(vix.iloc[-1] / vix.iloc[-21] - 1.0)
+                out["vix_beta_cond_60x20"] = -beta * vix_move
+    return out
+
+FACTOR_LIST = ["mom_120d_skip5", "mom_10d_skip5", "vix_beta_cond_60x20", "vol_of_vol20x60"]
+DIRS = {"mom_120d_skip5": 1, "mom_10d_skip5": 1, "vix_beta_cond_60x20": -1, "vol_of_vol20x60": 1}
+WGT = {"mom_120d_skip5": 0.486158, "mom_10d_skip5": 0.276633, "vix_beta_cond_60x20": 0.184054, "vol_of_vol20x60": 0.053155}
+
+decision_idx = [i for i in range(140, len(CAL))
+                if (i - REF_IDX) % 10 == 0 and CAL[i] <= END and i + 10 <= len(CLOSE_PANEL) - 1]
+
+def factor_cross_section(i):
+    """dict[factor] -> Series(asset -> raw value) using per-asset last value <= CAL[i-1]."""
+    cutoff = CAL[i - 1]
+    out = {}
+    for a in ASSETS:
+        s = SER[a]
+        s = s[s.index <= cutoff]
+        if len(s) < 16:
+            continue
+        fr = factor_row(a, s, VIX[VIX.index <= cutoff])
+        for f, v in fr.items():
+            out.setdefault(f, {})[a] = v
+    return out
+
+def percentile_rank(vals, assets):
+    out = pd.Series(0.5, index=assets)
+    v = pd.Series(vals)
+    if len(v) >= 8 and v.nunique() > 1:
+        out.loc[v.index] = v.rank(pct=True)
+    return out
+
+def scores_at(i, overlay):
+    cs = factor_cross_section(i)
+    sc = pd.Series(0.0, index=ASSETS)
+    for f in FACTOR_LIST:
+        if f not in cs:
+            continue
+        sc = sc + WGT[f] * DIRS[f] * percentile_rank(cs[f], ASSETS)
+    if overlay == "def12" or overlay == "def30":
+        # defensive tilt when equal-weight 20d market return < 0
+        row = CAL[i - 1]
+        m = CLOSE_PANEL[ASSETS].mean(axis=1)
+        r20 = m.loc[row] / m.shift(20).loc[row] - 1
+        if r20 < 0 and "vix_beta_cond_60x20" in cs:
+            k = 0.12 if overlay == "def12" else 0.30
+            vb = pd.Series(cs["vix_beta_cond_60x20"])
+            sc = sc - k * (vb - vb.mean()) / (vb.std() + 1e-12)
+    return sc
+
+def weights_from_scores(sc, temp, floor, cap):
+    s = sc - sc.mean()
+    e = np.exp(np.clip(s / temp, -10, 10))
+    w = e / e.sum()
+    if floor > 0:
+        w = (1 - floor) * w + floor / len(ASSETS)
+    if cap is not None:
+        for _ in range(80):
+            over = float((w[w > cap] - cap).sum())
+            if over <= 1e-12:
+                break
+            w[w > cap] = cap
+            room = w[w < cap - 1e-12]
+            if len(room) == 0:
+                break
+            w.loc[room.index] += over * room / room.sum()
+    return w / w.sum()
+
+def simulate(temp, floor, cap, overlay, minmv):
+    nav, prev_w = 1.0, None
+    navs, dates, stats = [], [], []
+    for i in decision_idx:
+        sc = scores_at(i, overlay)
+        if sc.abs().sum() < 1e-12:
+            continue
+        w = weights_from_scores(sc, temp, floor, cap)
+        rets10 = CLOSE_PANEL.loc[CAL[i + 10]].reindex(ASSETS) / CLOSE_PANEL.loc[CAL[i]].reindex(ASSETS) - 1.0
+        if prev_w is not None and minmv > 0 and float((w - prev_w).abs().sum()) < minmv:
+            r = float((prev_w * rets10).sum())
+            nav *= (1 + r)
+            navs.append(nav); dates.append(CAL[i]); stats.append((CAL[i], r, 0.0, 0.0))
+            continue
+        r = float((w * rets10).sum())
+        turnover = float((w - prev_w).abs().sum()) if prev_w is not None else float(w.abs().sum())
+        cost = 0.0 if prev_w is None else 0.0003 * turnover
+        nav = nav * (1 + r) - cost * nav
+        navs.append(nav); dates.append(CAL[i]); stats.append((CAL[i], r, cost, turnover))
+        prev_w = w
+    return pd.Series(navs, index=pd.DatetimeIndex(dates)), stats
+
+def metrics(navs, stats):
+    if len(navs) < 5:
+        return dict(ret=0, cagr=0, sharpe=0, mdd=0, to=0, cost=0, n=0)
+    daily = navs.pct_change().dropna()
+    yrs = max((navs.index[-1] - navs.index[0]).days / 365.25, 0.5)
+    ret = navs.iloc[-1] / navs.iloc[0] - 1
+    cagr = (navs.iloc[-1] / navs.iloc[0]) ** (1 / yrs) - 1
+    sharpe = daily.mean() / daily.std() * np.sqrt(252) if daily.std() > 0 else 0
+    mdd = float((navs / navs.cummax() - 1).min())
+    to = float(np.mean([s[3] for s in stats]))
+    cost = float(sum(s[2] for s in stats))
+    return dict(ret=ret, cagr=cagr, sharpe=sharpe, mdd=mdd, to=to, cost=cost, n=len(navs))
+
+rows = []
+for temp, floor, cap, overlay, minmv in itertools.product(
+        [0.5, 0.75, 1.0, 1.5], [0.0, 0.05, 0.10], [0.25, 0.35, None],
+        ["none", "def12", "def30"], [0.0, 0.03]):
+    navs, stats = simulate(temp, floor, cap, overlay, minmv)
+    m = metrics(navs, stats)
+    rows.append((temp, floor, cap, overlay, minmv, m["ret"], m["cagr"], m["sharpe"], m["mdd"], m["to"], m["cost"], m["n"]))
+
+res = pd.DataFrame(rows, columns=["temp","floor","cap","overlay","minmv","ret","cagr","sharpe","mdd","turnover","cost","n"])
+res = res[res.n >= 40].sort_values("sharpe", ascending=False)
+pd.set_option("display.width", 220)
+print("\n=== SWEEP top25 (2020-2026, sorted by Sharpe) ===")
+print(res.head(25).to_string(index=False))
+print("\n=== SWEEP bottom5 ===")
+print(res.tail(5).to_string(index=False))

@@ -1,8 +1,8 @@
-"""Trader design sweep v2: offline cross-sectional ensemble simulation (warm-up data only).
+"""Trader design sweep v3: per-asset factor computation (matches live API semantics).
 
-Sweeps weighting schemes / risk overlays on the 15-asset long-only fully-invested
-portfolio with 3bps rebalance costs. All decisions use data visible through the
-previous completed trading day (no lookahead).
+Each asset's factors are computed on its OWN calendar; cross-sectional ranking at
+a decision date uses each asset's last value visible through the previous
+completed trading day. VIX beta pairs asset returns with VIX on common dates.
 """
 import json, os, itertools
 import numpy as np
@@ -14,6 +14,7 @@ DATA = "../persistent/stock_data"
 IDX = "../persistent/index_data"
 CAL = pd.DatetimeIndex([pd.Timestamp(d) for d in json.load(open("../persistent/date.json"))["trading_days"]])
 REF_IDX = int(np.where(CAL == pd.Timestamp("2026-07-16"))[0][0])
+END = pd.Timestamp("2026-07-15")
 
 def load(sym, folder=DATA):
     df = pd.read_csv(os.path.join(folder, sym + ".csv"), parse_dates=[0])
@@ -23,55 +24,81 @@ def load(sym, folder=DATA):
     ccol = [c for c in df.columns if c.lower() == "close"][0]
     return df[ccol]
 
-close = pd.DataFrame({s: load(s).reindex(CAL) for s in ASSETS}).loc[: "2026-07-15"]
-vix = load("VIX", IDX).reindex(CAL).loc[: "2026-07-15"]
-rets = close.pct_change()
+SER = {s: load(s).loc[: END] for s in ASSETS}          # per-asset close, own calendar
+VIX = load("VIX", IDX).loc[: END]                       # VIX close, own calendar
+CLOSE_PANEL = pd.DataFrame({s: SER[s].reindex(CAL).ffill() for s in ASSETS})  # eval panel
+CLOSE_PANEL = CLOSE_PANEL.loc[: END]
 
-f_mom10  = close.shift(5) / close.shift(15) - 1.0
-f_mom120 = close.shift(5) / close.shift(125) - 1.0
-f_vov    = rets.rolling(20).std().rolling(60).std()
-vix_ret  = vix.pct_change()
-beta60   = rets.rolling(60).cov(vix_ret) / vix_ret.rolling(60).var()
-vix_move = vix / vix.shift(20) - 1.0
-f_vixb   = -beta60.multiply(vix_move, axis=0)
+def factor_row(sym, s, vix):
+    """Return dict of raw factor values for one asset as of its last visible row."""
+    out = {}
+    if len(s) >= 126:
+        out["mom_120d_skip5"] = float(s.iloc[-6] / s.iloc[-126] - 1.0)
+    if len(s) >= 16:
+        out["mom_10d_skip5"] = float(s.iloc[-6] / s.iloc[-16] - 1.0)
+    if len(s) >= 90:
+        vol20 = s.pct_change().rolling(20).std()
+        v = vol20.rolling(60).std()
+        if len(v.dropna()) > 0:
+            out["vol_of_vol20x60"] = float(v.iloc[-1])
+    if len(s) >= 30 and len(vix) >= 30:
+        r_a = s.pct_change()
+        r_v = vix.pct_change()
+        m = pd.concat([r_a.rename("a"), r_v.rename("v")], axis=1, join="inner").dropna()
+        if len(m) >= 30:
+            m60 = m.tail(60)
+            var_v = float(m60["v"].var())
+            if var_v > 1e-14:
+                beta = float(m60["a"].cov(m60["v"]) / var_v)
+                vix_move = float(vix.iloc[-1] / vix.iloc[-21] - 1.0)
+                out["vix_beta_cond_60x20"] = -beta * vix_move
+    return out
 
-FACTORS = {
-    "mom_120d_skip5":      (f_mom120, 1, 0.486158),
-    "mom_10d_skip5":       (f_mom10,  1, 0.276633),
-    "vix_beta_cond_60x20": (f_vixb,  -1, 0.184054),
-    "vol_of_vol20x60":     (f_vov,    1, 0.053155),
-}
+FACTOR_LIST = ["mom_120d_skip5", "mom_10d_skip5", "vix_beta_cond_60x20", "vol_of_vol20x60"]
 DIRS = {"mom_120d_skip5": 1, "mom_10d_skip5": 1, "vix_beta_cond_60x20": -1, "vol_of_vol20x60": 1}
 WGT = {"mom_120d_skip5": 0.486158, "mom_10d_skip5": 0.276633, "vix_beta_cond_60x20": 0.184054, "vol_of_vol20x60": 0.053155}
 
 decision_idx = [i for i in range(140, len(CAL))
-                if (i - REF_IDX) % 10 == 0 and CAL[i] <= pd.Timestamp("2026-07-15") and i + 10 <= len(close) - 1]
-print(f"decisions: {len(decision_idx)}  from {CAL[decision_idx[0]].date()} to {CAL[decision_idx[-1]].date()}")
+                if (i - REF_IDX) % 10 == 0 and CAL[i] <= END and i + 10 <= len(CLOSE_PANEL) - 1]
 
-def percentile_rank(s):
-    out = pd.Series(0.5, index=s.index)
-    v = s.dropna()
+def factor_cross_section(i):
+    """dict[factor] -> Series(asset -> raw value) using per-asset last value <= CAL[i-1]."""
+    cutoff = CAL[i - 1]
+    out = {}
+    for a in ASSETS:
+        s = SER[a]
+        s = s[s.index <= cutoff]
+        if len(s) < 16:
+            continue
+        fr = factor_row(a, s, VIX[VIX.index <= cutoff])
+        for f, v in fr.items():
+            out.setdefault(f, {})[a] = v
+    return out
+
+def percentile_rank(vals, assets):
+    out = pd.Series(0.5, index=assets)
+    v = pd.Series(vals)
     if len(v) >= 8 and v.nunique() > 1:
         out.loc[v.index] = v.rank(pct=True)
     return out
 
-def scores_at(i):
-    row = CAL[i - 1]
+def scores_at(i, overlay):
+    cs = factor_cross_section(i)
     sc = pd.Series(0.0, index=ASSETS)
-    contrib = {}
-    for name, (panel, d, w) in FACTORS.items():
-        x = panel.loc[row].reindex(ASSETS)
-        if x.notna().sum() < 8:
+    for f in FACTOR_LIST:
+        if f not in cs:
             continue
-        c = w * d * percentile_rank(x)
-        sc = sc + c
-        contrib[name] = c
-    return sc, contrib
-
-def ew_trend(i):
-    row = CAL[i - 1]
-    m = close[ASSETS].mean(axis=1)
-    return (m.loc[row] / m.shift(20).loc[row] - 1, m.loc[row] / m.shift(60).loc[row] - 1)
+        sc = sc + WGT[f] * DIRS[f] * percentile_rank(cs[f], ASSETS)
+    if overlay == "def12" or overlay == "def30":
+        # defensive tilt when equal-weight 20d market return < 0
+        row = CAL[i - 1]
+        m = CLOSE_PANEL[ASSETS].mean(axis=1)
+        r20 = m.loc[row] / m.shift(20).loc[row] - 1
+        if r20 < 0 and "vix_beta_cond_60x20" in cs:
+            k = 0.12 if overlay == "def12" else 0.30
+            vb = pd.Series(cs["vix_beta_cond_60x20"])
+            sc = sc - k * (vb - vb.mean()) / (vb.std() + 1e-12)
+    return sc
 
 def weights_from_scores(sc, temp, floor, cap):
     s = sc - sc.mean()
@@ -95,28 +122,21 @@ def simulate(temp, floor, cap, overlay, minmv):
     nav, prev_w = 1.0, None
     navs, dates, stats = [], [], []
     for i in decision_idx:
-        sc, contrib = scores_at(i)
-        if len(contrib) < 2:
+        sc = scores_at(i, overlay)
+        if sc.abs().sum() < 1e-12:
             continue
         w = weights_from_scores(sc, temp, floor, cap)
-        if overlay == "def12" or overlay == "def30":
-            r20, _ = ew_trend(i)
-            if r20 < 0:
-                k = 0.12 if overlay == "def12" else 0.30
-                vb = f_vixb.loc[CAL[i - 1]].reindex(ASSETS)
-                if vb.notna().sum() >= 8:
-                    sc2 = sc - k * (vb - vb.mean()) / (vb.std() + 1e-12)
-                    w = weights_from_scores(sc2, temp, floor, cap)
-        rets10 = close.loc[CAL[i + 10]].reindex(ASSETS) / close.loc[CAL[i]].reindex(ASSETS) - 1.0
+        rets10 = CLOSE_PANEL.loc[CAL[i + 10]].reindex(ASSETS) / CLOSE_PANEL.loc[CAL[i]].reindex(ASSETS) - 1.0
         if prev_w is not None and minmv > 0 and float((w - prev_w).abs().sum()) < minmv:
             r = float((prev_w * rets10).sum())
             nav *= (1 + r)
             navs.append(nav); dates.append(CAL[i]); stats.append((CAL[i], r, 0.0, 0.0))
             continue
         r = float((w * rets10).sum())
-        cost = 0.0 if prev_w is None else 0.0003 * float((w - prev_w).abs().sum())
+        turnover = float((w - prev_w).abs().sum()) if prev_w is not None else float(w.abs().sum())
+        cost = 0.0 if prev_w is None else 0.0003 * turnover
         nav = nav * (1 + r) - cost * nav
-        navs.append(nav); dates.append(CAL[i]); stats.append((CAL[i], r, cost, float((w - prev_w).abs().sum()) if prev_w is not None else float(w.abs().sum())))
+        navs.append(nav); dates.append(CAL[i]); stats.append((CAL[i], r, cost, turnover))
         prev_w = w
     return pd.Series(navs, index=pd.DatetimeIndex(dates)), stats
 
@@ -144,7 +164,7 @@ for temp, floor, cap, overlay, minmv in itertools.product(
 res = pd.DataFrame(rows, columns=["temp","floor","cap","overlay","minmv","ret","cagr","sharpe","mdd","turnover","cost","n"])
 res = res[res.n >= 40].sort_values("sharpe", ascending=False)
 pd.set_option("display.width", 220)
-print("\n=== SWEEP top25 (full 2020-2026, sorted by Sharpe) ===")
+print("\n=== SWEEP top25 (2020-2026, sorted by Sharpe) ===")
 print(res.head(25).to_string(index=False))
 print("\n=== SWEEP bottom5 ===")
 print(res.tail(5).to_string(index=False))

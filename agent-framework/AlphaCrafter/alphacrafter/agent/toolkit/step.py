@@ -9,6 +9,7 @@ import numpy as np
 
 from .base import BaseTool
 from alphacrafter.sim.hook import Hook
+from alphacrafter.sim.utils import ensure_fully_invested
 
 class StepTool(BaseTool):
     def __init__(self, 
@@ -387,6 +388,23 @@ class StepTool(BaseTool):
                     if i == 0 or not _REBALANCE_ON_CYCLE_START:
                         print(f"  Executing strategy hook...")
                         self.hook.on_tick()
+                        # The benchmark contract is online-only: every normal
+                        # 15-asset step must leave a fractional, fully invested
+                        # portfolio.  Strategies may still emit legacy orders;
+                        # repair those before Exchange.post_tick can partially
+                        # fill them because of price-range or cash checks.
+                        try:
+                            account_after_hook = json.loads(self._read_account_file())
+                        except Exception:
+                            account_after_hook = {}
+                        if len(account_after_hook.get("watch_list", [])) == 15:
+                            repaired = ensure_fully_invested(
+                                account_file_path=self.account_file_path,
+                                date_file_path=self.date_file_path,
+                                dataset_dir_path=self.dataset_dir_path,
+                            )
+                            if repaired is not None:
+                                print("  ✓ Enforced 15-asset full-investment invariant")
                         print(f"  ✓ Strategy hook executed")
                         sleep(0.4)
                     else:

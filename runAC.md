@@ -112,6 +112,12 @@ AC 原生 `template_a` 中的 `FW=(.17,.15,...,.05)` 是固定的 10 项策略�
 - online 策略的数量计算，不再用 `int(...)` 截断；
 - `persistent/account.json` 的读写链路，保留 JSON 浮点值。
 
+online 调仓现在必须走 `sim/utils/rebalance_to_weights.py` 的原子路径：目标字典必须精确覆盖
+`watch_list` 的 15 个资产，权重和为 1；它直接写入 15 个 fractional long positions、将
+`available_cash` 置零，并对后续资产迁移收取 3 bps。两个 AC 版本的 `StepTool` 还会在策略
+hook 后调用 `ensure_fully_invested()` 兜底，清理旧式 pending order 或现金残留，避免上一收盘价
+订单因下一交易日价格区间不匹配而只成交部分资产。
+
 因此 2026-07-16 的首次建仓可以把 1M 按 15 资产目标权重精确分配，产生小数单位；后续调仓同样按迁移名义金额计算一次 `3 bps`，不因整数舍入制造现金残留。小数只放宽 online 持仓/订单数量，不改变 15 个资产、long-only、cash=0、权重和为 1 的约束。旧的整手检查和“必须是 100 的倍数”已从两个版本的在线下单工具删除。
 
 ### 3.3 DeepSeek 原生 Responses 路由与已有因子恢复
@@ -239,11 +245,11 @@ cat results/ac_wl_data_final_state.json
 
 当前代码已经具备：冻结 warmup、共享 workspace 播种、位置式 AC CLI、10 日 cadence、session resume、状态文件和重试退避；两个 AC 版本的 online 数量链路也已改成允许小数。`rebalance_to_weights()` 本身实现了 15 资产权重校验、首次免费、后续迁移额 3bps 和 cash=0。
 
-但在正式 AC 启动前仍必须修复/验证：
+仍需持续验证：
 
 - `factor_contract.py` 现在在每个 Miner 阶段后由 AC 主循环单点接入，负责 IC/ICIR、相关性、库容量 30 和滚动末尾淘汰；Screener 只负责 active ensemble <=10 和质量 tilt，不重复做库排序；
 - AC 原生固定 `FW` 模板不是动态质量 tilt；正式策略仍需消费当前 `factor_ensemble.json`，不能把固定 `FW` 当作 FM 同步合同的替代品；
-- StepTool 没有不可绕过地强制每个 online block 使用完整 15 资产权重向量，旧式 Agent strategy 仍可能下单、空仓或持有现金；正式运行必须以 `rebalance_to_weights()` 的完整目标向量为准；
+- 两个 AC 的 StepTool 已在非 warmup 的 15-资产 session 中执行 `ensure_fully_invested()`；旧式 Agent strategy 的订单会被清理并按最近有效目标权重修复，仍需在每个 online block 审计 15 个 positions、cash=0 和 `rebalance_history`；
 - 现有 Trader 指令包含 cash/no-trade 语义，与本合同冲突；
 - scheduler 的数据入口已切换到 `WL-data-final`，通过 `AC_DATA_ROOT`/`panels`/`news` 单一解析点读取；最终数据包自身的重建/OHLC 缺口仍按第 1 节记录，不能在运行时静默修补。
 
