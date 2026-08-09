@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Run the original Luna/Terra AC copy with three parallel worldlines.
+"""Run the original Luna/Terra AC copy with configurable parallel worldlines.
 
 The shared ws1 warm-up is reused only after its persisted manifest,
 frozen-date, account, workflow, and factor-artifact checks pass. WL1-WL3 are
-then seeded independently and kept in separate resumable AC sessions.
+then seeded independently and kept in separate resumable AC sessions.  The
+default remains three; ``AC_LUNA_WORLDLINES`` can extend an existing run
+without changing its session prefix or warm-up.
 """
 from __future__ import annotations
 
@@ -44,7 +46,9 @@ STATE_PATH = RESULTS / "run_state.json"
 MILESTONE_PUSH = ROOT / "ops" / "git_milestone_push.sh"
 CADENCE = 10
 ONLINE_MAX_CYCLES = 300
-ONLINE_WORLDLINES = 3
+ONLINE_WORLDLINES = int(os.environ.get("AC_LUNA_WORLDLINES", "3"))
+if not 1 <= ONLINE_WORLDLINES <= 9:
+    raise SystemExit("AC_LUNA_WORLDLINES must be between 1 and 9")
 RETRY_SECONDS = 60
 SESSION_PREFIX = os.environ.get("AC_LUNA_SESSION_PREFIX", "wl")
 
@@ -96,6 +100,15 @@ def push_milestone(label: str) -> None:
 
 def state_for_wl(state: dict, wl: int) -> dict:
     return state.setdefault(f"wl{wl}", {})
+
+
+def pause_marker(wl: int) -> Path:
+    """Persistent operator/429 pause marker for one worldline."""
+    return RESULTS / f"pause_wl{wl}_429"
+
+
+def is_paused(wl: int) -> bool:
+    return pause_marker(wl).exists()
 
 
 def verify_persisted_warmup() -> tuple[bool, dict]:
@@ -253,7 +266,9 @@ def main() -> int:
     active: dict[int, tuple[subprocess.Popen, object]] = {}
     retry_at: dict[int, float] = {}
     for wl in range(1, ONLINE_WORLDLINES + 1):
-        if ac_session_complete(session_name(wl)):
+        if is_paused(wl):
+            state_for_wl(state, wl).update({"status": "paused_429", "paused_marker": str(pause_marker(wl))})
+        elif ac_session_complete(session_name(wl)):
             state_for_wl(state, wl).update({"status": "complete", "ac_done": True})
         else:
             retry_at[wl] = 0.0
@@ -263,6 +278,11 @@ def main() -> int:
     while retry_at or active:
         now = time.monotonic()
         for wl in list(retry_at):
+            if is_paused(wl):
+                state_for_wl(state, wl).update({"status": "paused_429", "paused_marker": str(pause_marker(wl))})
+                del retry_at[wl]
+                save_state(state)
+                continue
             if wl in active or now < retry_at[wl]:
                 continue
             active[wl] = start_worldline(wl, config, state)
@@ -290,9 +310,13 @@ def main() -> int:
                 push_milestone(f"luna-wl{wl}-complete")
             else:
                 entry["status"] = "retry_wait"
-                retry_at[wl] = time.monotonic() + RETRY_SECONDS
+                if is_paused(wl):
+                    entry.update({"status": "paused_429", "paused_marker": str(pause_marker(wl))})
+                else:
+                    retry_at[wl] = time.monotonic() + RETRY_SECONDS
                 print(
-                    f"[luna-ac] WL{wl} rc={rc}, retrying in {RETRY_SECONDS}s",
+                    f"[luna-ac] WL{wl} rc={rc}, "
+                    + ("paused by 429 marker" if is_paused(wl) else f"retrying in {RETRY_SECONDS}s"),
                     flush=True,
                 )
                 save_state(state)
