@@ -9,6 +9,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import yaml
+
 from scheduler.run_pipeline import (
     AC_REPO,
     RESULTS as PIPELINE_RESULTS,
@@ -17,7 +19,6 @@ from scheduler.run_pipeline import (
     ac_command,
     ac_env,
     ac_session_complete,
-    ensure_ac_shared_warmup,
     load_llm_environment,
     load_state,
     prepare_ac_worldline,
@@ -55,7 +56,20 @@ def save_state(state: dict) -> None:
 
 
 def push_milestone(label: str) -> None:
-    """Create and push a result checkpoint without stopping the experiment."""
+    """Create and push a result checkpoint when explicitly enabled.
+
+    A foreground/network-blocking git fetch must never hold the experiment
+    supervisor before it can resume a checkpoint.  The operator can enable
+    this only after configuring a path-scoped publisher with
+    ``AC_DEEPSEEK_ENABLE_MILESTONE_PUSH=1``.
+    """
+    if os.environ.get("AC_DEEPSEEK_ENABLE_MILESTONE_PUSH") != "1":
+        print(
+            f"[deepseek-ac] milestone {label} deferred "
+            "(non-blocking path-scoped push disabled)",
+            flush=True,
+        )
+        return
     try:
         result = subprocess.run(
             [str(MILESTONE_PUSH), label],
@@ -81,6 +95,55 @@ def push_milestone(label: str) -> None:
 
 def state_for_wl(state: dict, wl: int) -> dict:
     return state.setdefault(f"wl{wl}", {})
+
+
+def load_persisted_warmup() -> tuple[bool, dict]:
+    """Validate the existing DeepSeek warm-up without making an API call."""
+    from scheduler.ac_shared_warmup import (
+        validate_warmup_workspace,
+        workflow_cycle_complete,
+        workspace_digest,
+    )
+
+    manifest_path = PIPELINE_RESULTS / "ac" / "shared_warmup" / "manifest.json"
+    manifest = load_state(manifest_path)
+    session_dir = AC_REPO / "sandbox" / "ws1"
+    if manifest.get("status") != "ready" or manifest.get("session") != "ws1":
+        print(f"[deepseek-ac] persisted warmup manifest is not ready: {manifest_path}", flush=True)
+        return False, {}
+    try:
+        artifacts = validate_warmup_workspace(session_dir)
+        config = yaml.safe_load((AC_REPO / "config.yaml").read_text(encoding="utf-8"))
+        miner_ids = list(config["miner"]["ids"])
+        date_state = load_state(session_dir / "persistent" / "date.json")
+        account = load_state(session_dir / "persistent" / "account.json")
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        print(f"[deepseek-ac] persisted warmup validation failed: {exc}", flush=True)
+        return False, {}
+    checks = {
+        "workflow_complete": workflow_cycle_complete(session_dir, miner_ids),
+        "workspace_digest": artifacts.get("workspace_digest") == manifest.get("workspace_digest"),
+        "manifest_factor_files": artifacts.get("factor_files") == manifest.get("factor_files"),
+        "baseline_date": date_state.get("current_date") == manifest.get("baseline_date"),
+        "history_end": date_state.get("visible_through") == manifest.get("history_end"),
+        "simulation_frozen": not date_state.get("simulation_complete"),
+        "no_positions": not account.get("positions"),
+        "no_orders": not account.get("orders"),
+        "initial_capital": float(account.get("initial_capital", 0.0))
+        == float(manifest.get("initial_capital_usd", 0.0)),
+        "available_cash": float(account.get("available_cash", 0.0))
+        == float(manifest.get("initial_capital_usd", 0.0)),
+    }
+    if not all(checks.values()):
+        print(f"[deepseek-ac] persisted warmup rejected: {checks}", flush=True)
+        return False, {}
+    print(
+        "[deepseek-ac] reusing persisted shared warmup without remine: "
+        f"fingerprint={manifest.get('warmup_fingerprint', '')[:16]} "
+        f"workspace={workspace_digest(session_dir / 'workspace')[:16]}",
+        flush=True,
+    )
+    return True, manifest
 
 
 def start_worldline(wl: int, config: Path, state: dict):
@@ -179,10 +242,12 @@ def main() -> int:
     save_state(state)
     push_milestone("deepseek-run-start")
 
-    print("[deepseek-ac] starting shared 40-cycle warmup", flush=True)
-    warmup_ok, manifest = ensure_ac_shared_warmup(
-        worldline_panel(1), CADENCE, EscalatingBackoff(), 0
-    )
+    # This copy is online-only.  It must never recreate or extend warmup from
+    # a monitor, a stale environment variable, or a manual restart.  The
+    # persisted artifact is validated locally; an invalid artifact is a hard
+    # stop so recovery cannot silently consume new LLM warmup calls.
+    print("[deepseek-ac] validating and reusing persisted shared warmup", flush=True)
+    warmup_ok, manifest = load_persisted_warmup()
     if not warmup_ok:
         print("[deepseek-ac] shared warmup failed", flush=True)
         return 1

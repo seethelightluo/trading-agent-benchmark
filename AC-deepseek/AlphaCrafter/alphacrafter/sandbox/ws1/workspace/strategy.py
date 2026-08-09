@@ -1,6 +1,8 @@
 """Defensive cross-asset ensemble, Screener 2035-12-20.
 Completed daily bars only; one atomic fully-invested rebalance per decision."""
 from math import isfinite
+import json
+from pathlib import Path
 import pandas as pd
 from alphacrafter.sim.utils import (get_account_dict, get_stock_daily_data,
     get_index_daily_data, rebalance_to_weights, register_hook)
@@ -51,7 +53,11 @@ def strategy_hook():
     usable=[c.pct_change().rename(a) for a,c in closes.items() if c is not None]
     panel=pd.concat(usable,axis=1,join="inner").dropna().tail(100) if len(usable)>=8 else pd.DataFrame()
     if len(panel)<61:
-        rebalance_to_weights({a:1/len(assets) for a in assets}); return
+        rebalance_to_weights(
+            {a:1/len(assets) for a in assets},
+            forecast_returns={a:0.0 for a in assets},
+            horizon_days=10,
+        ); return
     market=panel.mean(axis=1); mv=float(market.var())
     residual={a:panel[a]-(float(panel[a].cov(market)/mv)*market if mv>1e-14 else 0.) for a in panel}
     vf=index("VIX"); vix=vf.close.astype(float).pct_change() if vf is not None and "close" in vf else None
@@ -89,4 +95,23 @@ def strategy_hook():
     raw={a:(DEF_W if a in DEF else .64*pref.get(a,0.)/den) for a in assets} if den else {a:1/len(assets) for a in assets}
     weights=capped_normalize(raw,pref)
     weights[assets[-1]] += 1-sum(weights.values())
-    rebalance_to_weights(weights)
+    score_values = [float(score[a]) for a in assets]
+    score_mean = sum(score_values) / len(score_values)
+    score_std = (sum((value - score_mean) ** 2 for value in score_values) / len(score_values)) ** .5
+    return_scale = float(panel.tail(252).std(axis=1, ddof=0).median()) if len(panel) else .01
+    if not isfinite(return_scale) or return_scale <= 0: return_scale = .01
+    forecast_returns = {
+        a: ((float(score[a]) - score_mean) / max(score_std, 1e-12)) * return_scale
+        for a in assets
+    }
+    try:
+        ensemble = json.loads((Path(__file__).parent / "factor_ensemble.json").read_text())
+        factor_ids = [str(item["factor_id"]) for item in ensemble.get("selected_factors", []) if isinstance(item, dict) and item.get("factor_id")]
+    except (OSError, ValueError, TypeError):
+        factor_ids = []
+    rebalance_to_weights(
+        weights,
+        forecast_returns=forecast_returns,
+        factor_ids=factor_ids[:10],
+        horizon_days=10,
+    )
