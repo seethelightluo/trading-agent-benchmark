@@ -360,27 +360,76 @@
 
 ---
 
-## 9. 尚未统一、不能替用户做决定的事项
+## 9. 已确认正式合同（2026-08-09）
 
-### 9.1 因子门槛的历史冲突
+以下口径覆盖 AC 两个版本和 FM benchmark live 路径；历史运行若使用过其他口径，必须保留原始配置并标记为非正式 benchmark 结果。
 
-`agent-framework/progress.md` 的早期记录保留 `.04/.10`；`runAC.md`、`runFM.md`、当前配置保留 `.007/.084`。需要用户确认最终实验是否：
+- 因子准入只承认 `abs(IC) >= 0.007` 且 `abs(ICIR) >= 0.084`；`.04/.10` 仅可作为历史/native paper 配置，不能作为本实验正式结果。
+- 因子质量为 `quality = abs(IC) * abs(ICIR)`。同一可见数据、共同有效样本上的 `abs(Spearman rho) < 0.5` 时两个因子都保留；`>= 0.5` 时只保留质量较高者，淘汰较低者；同质量按稳定 factor ID 决定。
+- 因子库容量为 30，先做门槛和 pairwise 冲突淘汰，再按质量保留 best30；活跃 ensemble 最多 10 个，可少于 10 个，按质量 tilt 分配权重。滚动更新时淘汰质量较低或冲突的因子，不允许被 resume 复活。
+- 所有历史因子若缺少可重算 formula/signal/provenance，不得把缺失信号静默当作 `rho=0`；必须恢复信号或进入 quarantine，并写入迁移审计。
+- 交易 universe 固定为 15 个 tradable 资产，long-only、允许小数持仓、零权重资产允许存在，现金始终为 0。
+- 首次 `2026-07-16` 全部 `1M` 建仓：有合格 ensemble 时使用其目标权重；没有时使用 15 资产等权 `1/15`。首次建仓豁免成本门控。
+- 后续每 10 个交易日才产生一次研究/交易决策。共同 forecast predictor 产生 proposed target；`one_way_turnover = 0.5 * sum(abs(target-current))`，`gross_edge_bps = 10000 * sum((target-current) * forecast_returns)`。
+- 固定决策门槛为 3bp：只有 `gross_edge_bps > 3.0` 才执行，`<= 3.0` 一律 no-trade。实际成本为 `NAV * one_way_turnover * 3 / 10000`；成本门控不改变因子准入。
+- no-trade 必须持久化 proposed target、forecast、研究因子、turnover、edge、skip reason；executed target 和真实持仓保持不变。账户修复不得把合法 no-trade 变成交易，原始 `add_order` 不得绕过统一 gate。
+- AC 和 FM 使用同一 proposal/gate 字段与 deterministic fixture；Luna 3WL 在代码、迁移、单测和 smoke 完成前继续暂停。
 
-- 只承认 `.007/.084` 为正式合同，并将 `.04/.10` 标成历史 smoke；或
-- 对不同阶段/不同 provider 保留不同门槛，并在 manifest 中显式标明。
+## 10. 当前代码审计—不一致项与解决清单
 
-不能通过改文档把历史运行的真实门槛抹平。
+以下每项都记录当前证据、违反合同、解决方式、验收条件和是否需要旧状态迁移。运行结果、因子 JSON、sandbox、DeepSeek/Luna 状态不在本轮文档提交中修改。
 
-### 9.2 AC 原生 fixed FW 与动态 factor ensemble
+### 10.1 配置与准入
 
-`template_a` 的 `FW=(.17,.15,...,.05)` 是固定的 10 项策略模板。当前 benchmark 设计要求动态 active ensemble、质量 tilt 和滚动淘汰。需要确认后续是否：
+1. **决策门槛仍为 6bp**。证据：`agent-framework/ASSETS.yaml:53` 和 AC-deepseek 对应配置为 `min_round_trip_edge_bps: 6`。违反：固定 3bp 且严格 `edge > 3bp` 才交易。解决：改为 benchmark `decision_edge_threshold_bps: 3`，同时保留单边 `friction_bps: 3`；不再用双边 6bp 推导门槛。验收：配置、forward state、audit 均为 3.0；2.99/3.00 跳过、3.01 执行。迁移：需要为新 contract/code fingerprint 重新标记旧 forward state，不覆盖旧结果。
+2. **FM benchmark live 仍读取 `.04/.10`**。证据：`FactorMiner/factorminer/configs/fm_live.yaml` 为 `0.04/0.10`，native `default.yaml`/`walkforward.yaml` 亦有旧 paper 默认。违反：正式 benchmark 路径只承认 `.007/.084`。解决：修改 `fm_live.yaml` 为正式值，并在 native 配置中明确 `non_benchmark_paper_config`，让 scheduler 注入 benchmark contract。验收：live manifest 和运行时配置不再出现 `.04/.10`。迁移：旧 FM library/checkpoint 需按新门槛离线重审，不能当作新合同结果。
+3. **AC 只检查候选自报的最大相关性**。证据：`factor_contract.py:evaluate_factor()` 读取 `max_abs_library_correlation`，在 `>=0.5` 时拒绝，但不重算候选与已存因子的 pairwise rho，也不比较双方质量。违反：相关冲突必须比较双方 `abs(IC)*abs(ICIR)`。解决：引入共享 deterministic library policy，要求共同样本 signal，冲突时保留高质量者。验收：相关/质量 fixture 结果确定，低质量因子进入 evicted/quarantine，不能仅靠自报 0.0 通过。迁移：已有 AC 因子必须恢复 signal/provenance；无法恢复者 quarantine。
+4. **AC `enforce_library()` 只有容量超限排序**。证据：当前只在超过 30 个文件时按质量排序，没有 pairwise 冲突淘汰。违反：pairwise 冲突处理必须先于 best30。解决：先应用门槛，再共同样本 pairwise 淘汰，再按 quality 和稳定 ID 排序截断 30，并同步 audit/ensemble。验收：`rho<.5` 双保留、`rho>=.5` 只保留高质量、容量/resume 确定。迁移：需重建 AC library/checkpoint/signals/audit 的一致快照。
+5. **历史 AC artifact 缺少可重算 signal**。证据：大量 factor JSON 为 `formula: null`，已有 `max_abs_library_correlation=0` 不能证明真实 rho 为零。违反：缺失 signal 不得静默等于零相关。解决：恢复真实 signal 或 provenance；不能恢复则写 quarantine 原因，禁止进入正式 library。验收：每个正式因子有 signal hash/共同样本来源，或明确 quarantine。迁移：是，且不能重新消耗已完成的 LLM warmup。
 
-- 完全由 `factor_ensemble.json` 驱动资产打分；或
-- 保留 fixed FW 作为资产层先验，并明确它如何与因子层 tilt 合成。
+### 10.2 AC 执行层
 
-如果没有显式的合成规则，不能宣称“AC 已和 FM 对齐”。
+6. **两个 AC 版本执行层未完全一致**。证据：两份 `factor_contract.py`、rebalance helper、`add_order.py` 一致，但 `step.py` SHA 不一致。违反：Luna/DeepSeek 必须使用同一代码合同。解决：统一 `step.py` 及其 proposal/gate 调用路径。验收：两份执行文件 SHA 一致，共同 fixture 输出一致。迁移：旧运行保留；新 fingerprint 后才能恢复。
+7. **策略可直接 rebalance，原始 order 仍可用**。证据：策略直接调用 `rebalance_to_weights()`，`add_order` 仍可调用。违反：Trader/Screener 只能产生 proposal，不能绕过 gate 改账户。解决：统一 deterministic execution firewall；`add_order` 只能被拒绝或转成 proposal，不能直接改变 benchmark 账户。验收：绕过 gate 的测试失败并留下审计记录。迁移：需要迁移账户执行审计，不修改历史成交。
+8. **AC 只有实际迁移成本，没有预测 edge gate**。证据：`rebalance_to_weights()` 能按单边迁移额扣 3bp，但无固定 3bp 预测收益门控。违反：`edge<=3bp` 必须跳过。解决：接入共同 forecast/proposal gate，区分 proposed/executed target。验收：2.99、3.00、3.01 fixture 分别得到 skip、skip、execute，成本为单边迁移额×3bp。迁移：需要新的 decision audit schema。
+9. **账户自愈可能覆盖合法 no-trade**。证据：`ensure_fully_invested()` 在策略 hook 后可自动 rebalance；当前不能区分账户损坏修复和合法不调仓。违反：no-trade 时真实持仓、executed target 不变。解决：只在明确 cash/position 损坏时以 repair reason 执行；正常 portfolio 不得触发 fallback rebalance。验收：合法 no-trade 不被自愈改写，损坏账户仍可修复。迁移：旧 `last_target_weights` 需核验后再作为 repair fallback。
+10. **AC 当前策略含固定资产 FW/直接权重**。证据：workspace strategy 存在固定 FW 和直接 rebalance。违反：正式策略须由动态 active ensemble 和确定性 forecast 驱动。解决：统一 proposal 生成接口，保留因子质量 tilt，禁止固定 FW 绕过动态库。验收：同一 factor fixture 下两份 AC 输出同一 target/gate。迁移：已有策略文件只作为历史 artifact，不直接当新合同执行代码。
 
-### 9.3 DeepSeek 与 Luna 的“原生 Responses”定义
+### 10.3 FM 前向与合同持久化
+
+11. **FM turnover 是双边 L1**。证据：`fm_walk_forward.py` 使用 `sum(abs(target-current))`，而 AC 使用单边迁移额。违反：正式合同统一 `0.5*sum(abs(delta))`。解决：统一 helper、预测 edge、实际成本和 decision 字段。验收：同一 target/current 在 AC/FM turnover、cost、gate 完全相同。迁移：旧 forward state 的成本和 edge 不能直接与新结果拼接。
+12. **FM 首次无因子可能保持全现金**。证据：`_target_weights()` 无有效因子时返回空 target，旧测试 `test_first_trade_uses_baseline_open_and_does_not_buy_all_assets` 体现旧口径。违反：首次 `2026-07-16` 无 ensemble 也必须 15 资产等权全仓。解决：首个决策空 target 时生成 `1/15`；后续空 target 只保持真实持仓。验收：首笔 15 资产、cash=0、fractional quantity；后续空 target 不变仓。迁移：旧首次全现金结果不能标为正式合同结果。
+13. **FM 有 forecast，AC 没有同套 predictor**。证据：FM `_target_weights()` 已计算 factor direction/rank/vol-adjusted forecast；AC workspace strategy 仍有固定 FW/手写权重。违反：AC/FM 必须共用 deterministic predictor 和 proposal schema。解决：抽出共享 predictor/gate 纯函数，AC 和 FM 使用相同输入/fixture。验收：共同 fixture 产生相同 forecast、turnover、edge、决策。迁移：需要为 AC 旧 ensemble 补充 forecast provenance。
+14. **文档未完整写清决策成本语义**。证据：`runAC.md`/`runFM.md` 只记录 3bp 执行成本，未完整记录固定 3bp gate、`edge<=3bp`、proposal/executed 分离、no-trade 持久化。违反：运行、恢复、验收必须可由文档重现。解决：同步 runbook 和 checklist；运行状态写入 schema/version/fingerprint。验收：新运行可仅依 runbook 重建 gate 与 cost。迁移：旧 state 需注明缺少字段，不能静默补写为真实历史。
+15. **旧运行结果与新合同混杂风险**。证据：当前 worktree 有大量日志、因子、sandbox、DeepSeek/Luna 状态修改。违反：本次代码/文档提交不得覆盖或混入运行结果。解决：只做 scoped staging；新合同生成新 fingerprint，运行前复制 warmup/library/WL state/account/workflow/logs。验收：git diff --cached 只含预期文档或对应代码；Luna 继续暂停。迁移：是，且必须保留 WL-data-final、旧因子 artifact 和运行状态原样备份。
+
+### 10.4 已解决的原待决策项
+
+- [x] `.04/.10` 与 `.007/.084`：正式合同只认 `.007/.084`，前者标为历史/native paper。
+- [x] rho 方向：`abs(Spearman rho) < .5` 双保留；`>=.5` 按 `abs(IC)*abs(ICIR)` 淘汰低质量者。
+- [x] 成本门槛：固定 3bp，严格 `edge > 3bp`；不是双边 6bp，也不是 `max(6bp, cost)`。
+- [x] no-trade 语义：研究/proposed 持久化，executed target/真实持仓不变；账户自愈只修复损坏。
+- [x] AC 动态 ensemble：active 最多 10、可少于 10，质量 tilt；固定 FW 不能替代正式动态策略。
+
+### 10.5 迁移风险清单
+
+- [ ] 以 `WL-data-final` 为唯一最终输入，并保留其 README、provenance、manifest 缺口记录；不修改历史数据快照。
+- [ ] 复制 AC 两版本 warmup、library、signals、checkpoint、WL state、account、workflow 和 logs 后再生成新 contract/code fingerprint。
+- [ ] 对 `formula=null` 或无 signal hash 的旧因子执行恢复/验证；无法恢复的进入 quarantine，不伪造 rho=0。
+- [ ] 旧 `.04/.10`、6bp、双边 L1、首次全现金 forward state 只保留为历史结果，不能与新合同结果合并。
+- [ ] Luna 3WL 保持暂停；先完成无 API 单测、AC/FM deterministic smoke、1WL×2 block，才创建/恢复新 online run。
+
+## 11. 历史记录与仍需验证的事项
+
+### 11.1 因子门槛的历史冲突
+
+`agent-framework/progress.md` 的早期记录保留 `.04/.10`。本项已决策：正式 benchmark 只承认 `.007/.084`，旧门槛必须在历史 manifest 中保留，不能被改写为新合同结果。
+
+### 11.2 AC 原生 fixed FW 与动态 factor ensemble
+
+`template_a` 的 `FW=(.17,.15,...,.05)` 是固定的 10 项策略模板。此项已决策：正式 benchmark 采用动态 active ensemble、质量 tilt 和滚动淘汰；fixed FW 只能作为历史 artifact，不能绕过正式 proposal/gate。
+
+### 11.3 DeepSeek 与 Luna 的“原生 Responses”定义
 
 sub2api 可以向 AC 暴露 `/v1/responses`，但如果上游实际仍是 Chat Completions，仍需验证桥接是否完整保留：
 
@@ -392,13 +441,13 @@ sub2api 可以向 AC 暴露 `/v1/responses`，但如果上游实际仍是 Chat C
 
 “端点返回 200”不等于“与 Luna 原生行为等价”。
 
-### 9.4 最终数据包的可复现性
+### 11.4 最终数据包的可复现性
 
 WL1–8 可在浮点误差内重建，WL9 当前不能完整由 markdown 解析器重建；high/low 还有 fallback 缺口。是否先修生成器并重新生成最终数据，还是把 `WL-data-final` 固化为不可变输入快照，需要用户决定。
 
 ---
 
-## 10. 当前用户关心的“错误为什么又冒出来”对应关系
+## 12. 当前用户关心的“错误为什么又冒出来”对应关系
 
 以下不是本轮对当前代码的最终判定，而是把历史上已经出现过的错误按机制归类：
 
@@ -413,32 +462,32 @@ WL1–8 可在浮点误差内重建，WL9 当前不能完整由 markdown 解析�
 
 ---
 
-## 11. 待用户决策后执行的统一 current-state comparison
+## 13. 执行中的统一 current-state comparison
 
 本节是后续工作入口，本轮不执行、不替用户裁决。
 
-### 11.1 代码与合同对照
+### 13.1 代码与合同对照
 
 - [ ] 从 `ASSETS.yaml`、`runAC.md`、`runFM.md` 读取单一合同，确认门槛、library cap、active top-k、15 assets、cash=0、3 bps。
 - [ ] 对 AC 两个版本逐项审计 `factor_contract.py`、Screener ensemble、Trader strategy、StepTool、rebalance helper。
 - [ ] 对 FM audit `RalphLoop`、`combine`、`run_forward`、trim、checkpoint/library/signals 和 cost dead-zone。
 - [ ] 确认 fixed FW 是否被真正替换/融合为动态 factor ensemble。
 
-### 11.2 数据与 fingerprint 对照
+### 13.2 数据与 fingerprint 对照
 
 - [ ] 确认所有 scheduler 使用 `WL-data-final`，不读旧 `online-worldline`。
 - [ ] 计算 9 panel/news 的逐文件 SHA，并补充或记录 WL9 2030 anchor。
 - [ ] 审计 high/low 空值、周末 stage anchor 和 generator fallback。
 - [ ] 对 warmup fingerprint、代码 fingerprint、配置 fingerprint 做逐层差异报告。
 
-### 11.3 运行状态与恢复对照
+### 13.3 运行状态与恢复对照
 
 - [ ] 在不恢复 Luna 的前提下，读取暂停时三条 WL 的 date/account/snapshot/transaction/workflow。
 - [ ] 审计 DeepSeek warmup 是否停在原 block、失败是否在原地重试、是否有因子 JSON/公式/指标可加载。
 - [ ] 检查当前运行树、relay、sub2api 的实际启动环境和日志，不以历史 PID 或旧报告代替。
 - [ ] 选择“继续已有 warmup/checkpoint”还是“按新 fingerprint 建新 stage”，不得混用。
 
-### 11.4 结果完整性对照
+### 13.4 结果完整性对照
 
 - [ ] 每个 WL 每个 online block：15 positions、cash=0、weight sum=1、fractional quantity、rebalance history、3 bps。
 - [ ] 每个 active ensemble：ID 在库内、最多 10、保存 sign/quality/tilt。
@@ -447,7 +496,7 @@ WL1–8 可在浮点误差内重建，WL9 当前不能完整由 markdown 解析�
 
 ---
 
-## 12. 证据索引
+## 14. 证据索引
 
 ### 工作区文档
 
@@ -477,7 +526,7 @@ WL1–8 可在浮点误差内重建，WL9 当前不能完整由 markdown 解析�
 
 ---
 
-## 13. 本轮交付确认
+## 15. 本轮交付确认
 
 - [x] 已建立本文件并覆盖 AC、FM、数据、provider、运维、恢复和研究方向。
 - [x] 已按日期重建 7/26–8/6 的关键规划演进。
@@ -487,4 +536,3 @@ WL1–8 可在浮点误差内重建，WL9 当前不能完整由 markdown 解析�
 - [x] 已保留后续统一 current-state comparison 的检查入口。
 - [ ] 用户确认最终门槛、AC dynamic ensemble 合成方式、DeepSeek Responses 等价标准和 WL-data-final 固化策略。
 - [ ] 用户确认后执行第 11 节的统一代码/数据/运行/结果审计。
-
