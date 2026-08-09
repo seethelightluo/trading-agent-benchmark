@@ -371,7 +371,7 @@
 - 交易 universe 固定为 15 个 tradable 资产，long-only、允许小数持仓、零权重资产允许存在，现金始终为 0。
 - 首次 `2026-07-16` 全部 `1M` 建仓：有合格 ensemble 时使用其目标权重；没有时使用 15 资产等权 `1/15`。首次建仓豁免成本门控。
 - 后续每 10 个交易日才产生一次研究/交易决策。共同 forecast predictor 产生 proposed target；`one_way_turnover = 0.5 * sum(abs(target-current))`，`gross_edge_bps = 10000 * sum((target-current) * forecast_returns)`。
-- 固定决策门槛为 3bp：只有 `gross_edge_bps > 3.0` 才执行，`<= 3.0` 一律 no-trade。实际成本为 `NAV * one_way_turnover * 3 / 10000`；成本门控不改变因子准入。
+- 成本门控保持本地语义：只有 `gross_edge_bps > one_way_turnover * 3.0` 才执行，`gross_edge_bps <= one_way_turnover * 3.0` 一律 no-trade；不是对资产总额固定收/要求 3bp。实际成本为 `NAV * one_way_turnover * 3 / 10000`；成本门控不改变因子准入。
 - no-trade 必须持久化 proposed target、forecast、研究因子、turnover、edge、skip reason；executed target 和真实持仓保持不变。账户修复不得把合法 no-trade 变成交易，原始 `add_order` 不得绕过统一 gate。
 - AC 和 FM 使用同一 proposal/gate 字段与 deterministic fixture；Luna 3WL 在代码、迁移、单测和 smoke 完成前继续暂停。
 
@@ -381,7 +381,7 @@
 
 ### 10.1 配置与准入
 
-1. **决策门槛仍为 6bp**。证据：`agent-framework/ASSETS.yaml:53` 和 AC-deepseek 对应配置为 `min_round_trip_edge_bps: 6`。违反：固定 3bp 且严格 `edge > 3bp` 才交易。解决：改为 benchmark `decision_edge_threshold_bps: 3`，同时保留单边 `friction_bps: 3`；不再用双边 6bp 推导门槛。验收：配置、forward state、audit 均为 3.0；2.99/3.00 跳过、3.01 执行。迁移：需要为新 contract/code fingerprint 重新标记旧 forward state，不覆盖旧结果。
+1. **决策门槛仍为 6bp**。证据：`agent-framework/ASSETS.yaml:53` 和 AC-deepseek 对应配置为旧 `min_round_trip_edge_bps: 6`。违反：本地合同要求 gross edge 严格超过“单边迁移额 × 3bp”，而不是固定资产总额 3bp或双边 6bp。解决：改用 `decision_cost_bps: 3` 作为迁移成本率，运行时计算 `required_edge_bps = one_way_turnover * 3`。验收：迁移额 10% 时 0.30bp 跳过、0.31bp 执行；实际成本为 NAV×10%×3bp。迁移：需要为新 contract/code fingerprint 重新标记旧 forward state，不覆盖旧结果。
 2. **FM benchmark live 仍读取 `.04/.10`**。证据：`FactorMiner/factorminer/configs/fm_live.yaml` 为 `0.04/0.10`，native `default.yaml`/`walkforward.yaml` 亦有旧 paper 默认。违反：正式 benchmark 路径只承认 `.007/.084`。解决：修改 `fm_live.yaml` 为正式值，并在 native 配置中明确 `non_benchmark_paper_config`，让 scheduler 注入 benchmark contract。验收：live manifest 和运行时配置不再出现 `.04/.10`。迁移：旧 FM library/checkpoint 需按新门槛离线重审，不能当作新合同结果。
 3. **AC 只检查候选自报的最大相关性**。证据：`factor_contract.py:evaluate_factor()` 读取 `max_abs_library_correlation`，在 `>=0.5` 时拒绝，但不重算候选与已存因子的 pairwise rho，也不比较双方质量。违反：相关冲突必须比较双方 `abs(IC)*abs(ICIR)`。解决：引入共享 deterministic library policy，要求共同样本 signal，冲突时保留高质量者。验收：相关/质量 fixture 结果确定，低质量因子进入 evicted/quarantine，不能仅靠自报 0.0 通过。迁移：已有 AC 因子必须恢复 signal/provenance；无法恢复者 quarantine。
 4. **AC `enforce_library()` 只有容量超限排序**。证据：当前只在超过 30 个文件时按质量排序，没有 pairwise 冲突淘汰。违反：pairwise 冲突处理必须先于 best30。解决：先应用门槛，再共同样本 pairwise 淘汰，再按 quality 和稳定 ID 排序截断 30，并同步 audit/ensemble。验收：`rho<.5` 双保留、`rho>=.5` 只保留高质量、容量/resume 确定。迁移：需重建 AC library/checkpoint/signals/audit 的一致快照。
@@ -391,7 +391,7 @@
 
 6. **两个 AC 版本执行层未完全一致**。证据：两份 `factor_contract.py`、rebalance helper、`add_order.py` 一致，但 `step.py` SHA 不一致。违反：Luna/DeepSeek 必须使用同一代码合同。解决：统一 `step.py` 及其 proposal/gate 调用路径。验收：两份执行文件 SHA 一致，共同 fixture 输出一致。迁移：旧运行保留；新 fingerprint 后才能恢复。
 7. **策略可直接 rebalance，原始 order 仍可用**。证据：策略直接调用 `rebalance_to_weights()`，`add_order` 仍可调用。违反：Trader/Screener 只能产生 proposal，不能绕过 gate 改账户。解决：统一 deterministic execution firewall；`add_order` 只能被拒绝或转成 proposal，不能直接改变 benchmark 账户。验收：绕过 gate 的测试失败并留下审计记录。迁移：需要迁移账户执行审计，不修改历史成交。
-8. **AC 只有实际迁移成本，没有预测 edge gate**。证据：`rebalance_to_weights()` 能按单边迁移额扣 3bp，但无固定 3bp 预测收益门控。违反：`edge<=3bp` 必须跳过。解决：接入共同 forecast/proposal gate，区分 proposed/executed target。验收：2.99、3.00、3.01 fixture 分别得到 skip、skip、execute，成本为单边迁移额×3bp。迁移：需要新的 decision audit schema。
+8. **AC 只有实际迁移成本，没有预测 edge gate**。证据：`rebalance_to_weights()` 能按单边迁移额扣 3bp，但无迁移额比例化的预测 edge 门控。违反：`gross_edge_bps <= one_way_turnover*3bp` 必须跳过。解决：接入共同 forecast/proposal gate，区分 proposed/executed target。验收：迁移额 10% 时 0.29/0.30/0.31bp 分别得到 skip/skip/execute，成本为单边迁移额×3bp。迁移：需要新的 decision audit schema。
 9. **账户自愈可能覆盖合法 no-trade**。证据：`ensure_fully_invested()` 在策略 hook 后可自动 rebalance；当前不能区分账户损坏修复和合法不调仓。违反：no-trade 时真实持仓、executed target 不变。解决：只在明确 cash/position 损坏时以 repair reason 执行；正常 portfolio 不得触发 fallback rebalance。验收：合法 no-trade 不被自愈改写，损坏账户仍可修复。迁移：旧 `last_target_weights` 需核验后再作为 repair fallback。
 10. **AC 当前策略含固定资产 FW/直接权重**。证据：workspace strategy 存在固定 FW 和直接 rebalance。违反：正式策略须由动态 active ensemble 和确定性 forecast 驱动。解决：统一 proposal 生成接口，保留因子质量 tilt，禁止固定 FW 绕过动态库。验收：同一 factor fixture 下两份 AC 输出同一 target/gate。迁移：已有策略文件只作为历史 artifact，不直接当新合同执行代码。
 
@@ -400,14 +400,14 @@
 11. **FM turnover 是双边 L1**。证据：`fm_walk_forward.py` 使用 `sum(abs(target-current))`，而 AC 使用单边迁移额。违反：正式合同统一 `0.5*sum(abs(delta))`。解决：统一 helper、预测 edge、实际成本和 decision 字段。验收：同一 target/current 在 AC/FM turnover、cost、gate 完全相同。迁移：旧 forward state 的成本和 edge 不能直接与新结果拼接。
 12. **FM 首次无因子可能保持全现金**。证据：`_target_weights()` 无有效因子时返回空 target，旧测试 `test_first_trade_uses_baseline_open_and_does_not_buy_all_assets` 体现旧口径。违反：首次 `2026-07-16` 无 ensemble 也必须 15 资产等权全仓。解决：首个决策空 target 时生成 `1/15`；后续空 target 只保持真实持仓。验收：首笔 15 资产、cash=0、fractional quantity；后续空 target 不变仓。迁移：旧首次全现金结果不能标为正式合同结果。
 13. **FM 有 forecast，AC 没有同套 predictor**。证据：FM `_target_weights()` 已计算 factor direction/rank/vol-adjusted forecast；AC workspace strategy 仍有固定 FW/手写权重。违反：AC/FM 必须共用 deterministic predictor 和 proposal schema。解决：抽出共享 predictor/gate 纯函数，AC 和 FM 使用相同输入/fixture。验收：共同 fixture 产生相同 forecast、turnover、edge、决策。迁移：需要为 AC 旧 ensemble 补充 forecast provenance。
-14. **文档未完整写清决策成本语义**。证据：`runAC.md`/`runFM.md` 只记录 3bp 执行成本，未完整记录固定 3bp gate、`edge<=3bp`、proposal/executed 分离、no-trade 持久化。违反：运行、恢复、验收必须可由文档重现。解决：同步 runbook 和 checklist；运行状态写入 schema/version/fingerprint。验收：新运行可仅依 runbook 重建 gate 与 cost。迁移：旧 state 需注明缺少字段，不能静默补写为真实历史。
+14. **文档未完整写清决策成本语义**。证据：`runAC.md`/`runFM.md` 只记录 3bp 执行成本，未完整记录迁移额比例化 gate、proposal/executed 分离、no-trade 持久化。违反：运行、恢复、验收必须可由文档重现。解决：同步 runbook 和 checklist；运行状态写入 schema/version/fingerprint。验收：新运行可仅依 runbook 重建 `required_edge_bps = migration*3` 与 actual cost。迁移：旧 state 需注明缺少字段，不能静默补写为真实历史。
 15. **旧运行结果与新合同混杂风险**。证据：当前 worktree 有大量日志、因子、sandbox、DeepSeek/Luna 状态修改。违反：本次代码/文档提交不得覆盖或混入运行结果。解决：只做 scoped staging；新合同生成新 fingerprint，运行前复制 warmup/library/WL state/account/workflow/logs。验收：git diff --cached 只含预期文档或对应代码；Luna 继续暂停。迁移：是，且必须保留 WL-data-final、旧因子 artifact 和运行状态原样备份。
 
 ### 10.4 已解决的原待决策项
 
 - [x] `.04/.10` 与 `.007/.084`：正式合同只认 `.007/.084`，前者标为历史/native paper。
 - [x] rho 方向：`abs(Spearman rho) < .5` 双保留；`>=.5` 按 `abs(IC)*abs(ICIR)` 淘汰低质量者。
-- [x] 成本门槛：固定 3bp，严格 `edge > 3bp`；不是双边 6bp，也不是 `max(6bp, cost)`。
+- [x] 成本门槛：本地语义为严格 `gross_edge_bps > one_way_turnover*3bp`；不是固定资产总额 3bp、双边 6bp，也不是 `max(6bp, cost)`。
 - [x] no-trade 语义：研究/proposed 持久化，executed target/真实持仓不变；账户自愈只修复损坏。
 - [x] AC 动态 ensemble：active 最多 10、可少于 10，质量 tilt；固定 FW 不能替代正式动态策略。
 

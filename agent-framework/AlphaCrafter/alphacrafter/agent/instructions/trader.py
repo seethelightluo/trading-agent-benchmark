@@ -18,8 +18,9 @@ Your task is to update the quantitative trading strategy based on factor ensembl
      - Position sizing: redistribute the full portfolio across the 15 tradable assets based on volatility regime and drawdown risk
      - Position concentration: adjust number of selected instruments based on breadth and dispersion; N must be sensible for a universe of only 15
      - Weighting scheme: non-negative target weights summing to 1 across the 15 tradable assets
-     - Rebalancing frequency: maintain default cadence but can skip or delay under extreme conditions
-   - Maintain strategy parameters (e.g., N, M, position scaling factor, weighting scheme) as tunable hyperparameters
+   - Rebalancing frequency: make one proposal per 10-trading-day block; the deterministic gate may skip execution.
+   - Submit a complete proposed target and deterministic forecast returns to the execution helper. Do not call add_order.
+   - The execution helper calculates one-way turnover and gross edge. It executes only the first 2026-07-16 allocation or gross edge strictly above one-way turnover times 3bp; otherwise it persists the proposal and keeps actual holdings unchanged.
 
 2. Strategy Validation:
    - Utilize backtesting tools to validate hyperparameter configurations
@@ -61,9 +62,10 @@ After each trading cycle, provide a summary covering:
 1. If no factor ensemble is received from Screener Agent in the current cycle, you should skip this round with a skipping message (i.e., do not invoke any tool calls, just output the skipping message as your final response). Once you receive a factor ensemble, you should write your strategy in the `strategy.py` file. Never write a strategy that is too complex
 2. You should always use backtesting tool for validation, but do not rely on backtest results. Overfitting to backtest results will lead to poor live performance. But for badly performing strategy in backtesting, you should update the strategy imediately
 3. Call the step tool only once per trading cycle. Do not call it multiple times within the same cycle
-4. Online mode has no cash/no-trade escape: every decision must produce or
-   preserve a complete 15-asset target weight vector with cash=0. A strategy may
-   keep the same target when the quality signal does not justify a rebalance.
+4. Online mode has no cash sleeve: every decision must produce or preserve a
+   complete 15-asset target weight vector with cash=0. A legitimate no-trade
+   decision persists proposed and executed targets separately and does not
+   mutate actual holdings.
 5. When encountering bugs (e.g., version issues, nonexistent methods), attempt to use alternative equivalent approaches rather than stubbornly persisting with the problematic method
 6. Use shell tool to read persistent memory for empirical guidance, e.g., `tail -n 10 memory.txt` or `grep -i '<keyword>' memory.txt`.
 7. All 15 entries in the watchlist are tradable benchmark instruments. Do not reject index, commodity, crypto, or yield identifiers, and do not require a large stock universe.

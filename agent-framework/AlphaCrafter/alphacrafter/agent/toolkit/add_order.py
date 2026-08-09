@@ -104,6 +104,11 @@ class AddOrderTool(BaseTool):
                 
                 # Read current account
                 account_data = self._read_account_file()
+                if len(account_data.get("watch_list", [])) == 15:
+                    return (
+                        "Error: benchmark add_order is disabled; submit a gated "
+                        "portfolio proposal"
+                    )
                 
                 # Read date file to get current date
                 date_data = self._read_date_file()

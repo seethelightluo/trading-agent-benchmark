@@ -580,7 +580,7 @@ class ValidationPipeline:
         theta, keep the one with higher IC and reject the other.
         """
         before = sum(1 for result in results if result.admitted and result.signals is not None)
-        quality_attr = "research_score" if self._research_enabled() else "ic_mean"
+        quality_attr = "research_score" if self._research_enabled() else "benchmark_quality"
         results = self.kernel.deduplicate_results(results, quality_attr=quality_attr)
         dedup_rejected = before - sum(
             1 for result in results if result.admitted and result.signals is not None

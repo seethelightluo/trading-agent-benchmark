@@ -80,11 +80,11 @@ class Launcher:
         factor_validation = self.config.get('factor_validation', {})
         self.factor_ic_threshold = float(os.environ.get(
             "AC_FACTOR_IC_THRESHOLD",
-            factor_validation.get('ic_threshold', 0.04),
+            factor_validation.get('ic_threshold', 0.007),
         ))
         self.factor_icir_threshold = float(os.environ.get(
             "AC_FACTOR_ICIR_THRESHOLD",
-            factor_validation.get('icir_threshold', 0.10),
+            factor_validation.get('icir_threshold', 0.084),
         ))
         
         # Agent instances

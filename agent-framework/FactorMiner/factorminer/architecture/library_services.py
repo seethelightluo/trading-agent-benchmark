@@ -38,8 +38,22 @@ class FactorAdmissionService:
                     logger.warning("Failed to replace factor %d (already removed?)", replaced)
                 continue
 
-            self.library.admit_factor(factor)
-            admitted.append(result)
+            evicted = self.library.evict_correlated_lower_quality(factor)
+            if evicted:
+                logger.info(
+                    "Evicted lower-quality correlated factors %s for '%s'",
+                    evicted,
+                    result.factor_name,
+                )
+            assigned_id = self.library.admit_factor(factor)
+            capacity_evicted = self.library.trim_to_capacity(30)
+            if capacity_evicted:
+                logger.info("Trimmed rolling factor library: evicted %s", capacity_evicted)
+            if assigned_id not in capacity_evicted:
+                admitted.append(result)
+            else:
+                result.admitted = False
+                result.rejection_reason = "Rolling capacity eviction"
 
         return admitted
 

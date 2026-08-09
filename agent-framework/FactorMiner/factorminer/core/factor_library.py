@@ -166,7 +166,8 @@ class FactorLibrary:
     # ------------------------------------------------------------------
 
     def check_admission(
-        self, candidate_ic: float, candidate_signals: np.ndarray
+        self, candidate_ic: float, candidate_signals: np.ndarray,
+        candidate_icir: float | None = None,
     ) -> tuple[bool, str]:
         """Check if candidate passes admission criteria (Eq. 10).
 
@@ -195,14 +196,66 @@ class FactorLibrary:
         max_corr = self._max_correlation_with_library(candidate_signals)
 
         if max_corr >= self.correlation_threshold:
+            if candidate_icir is None:
+                return False, (
+                    f"Max correlation/{self.dependence_metric.name} dependence {max_corr:.4f} >= threshold "
+                    f"{self.correlation_threshold}; candidate quality is unavailable"
+                )
+            candidate_quality = abs(float(candidate_ic)) * abs(float(candidate_icir))
+            conflicts = []
+            for factor in self.factors.values():
+                if factor.signals is None:
+                    continue
+                corr = self._compute_correlation_vectorized(candidate_signals, factor.signals)
+                if corr >= self.correlation_threshold:
+                    quality = abs(float(factor.ic_paper_mean or factor.ic_mean)) * abs(float(factor.ic_paper_icir or factor.icir))
+                    conflicts.append((factor.id, quality))
+            if conflicts and all(candidate_quality > quality for _, quality in conflicts):
+                return True, (
+                    f"Admitted by quality conflict resolution: candidate quality={candidate_quality:.6f} "
+                    f"> all {len(conflicts)} conflicting library factors"
+                )
             return False, (
                 f"Max correlation/{self.dependence_metric.name} dependence {max_corr:.4f} >= threshold "
-                f"{self.correlation_threshold} with existing library factor"
+                f"{self.correlation_threshold}; existing factor quality wins"
             )
 
         return True, (
             f"Admitted: IC={candidate_ic:.4f}, max_corr={max_corr:.4f}"
         )
+
+    def evict_correlated_lower_quality(self, candidate: Factor) -> list[int]:
+        """Evict every conflicting lower-quality factor before admission."""
+        candidate_quality = abs(float(candidate.ic_paper_mean or candidate.ic_mean)) * abs(float(candidate.ic_paper_icir or candidate.icir))
+        evicted: list[int] = []
+        for factor in list(self.factors.values()):
+            if factor.signals is None or candidate.signals is None:
+                continue
+            corr = self._compute_correlation_vectorized(candidate.signals, factor.signals)
+            quality = abs(float(factor.ic_paper_mean or factor.ic_mean)) * abs(float(factor.ic_paper_icir or factor.icir))
+            if corr >= self.correlation_threshold and candidate_quality > quality:
+                evicted.append(factor.id)
+        for factor_id in evicted:
+            self.remove_factor(factor_id)
+        return evicted
+
+    def trim_to_capacity(self, capacity: int = 30) -> list[int]:
+        """Keep the highest-quality stable-ID factors at the rolling cap."""
+        if capacity <= 0:
+            raise ValueError("library capacity must be positive")
+        ordered = sorted(
+            self.factors.values(),
+            key=lambda factor: (
+                abs(float(factor.ic_paper_mean or factor.ic_mean))
+                * abs(float(factor.ic_paper_icir or factor.icir)),
+                -int(factor.id),
+            ),
+            reverse=True,
+        )
+        evicted = [factor.id for factor in ordered[capacity:]]
+        for factor_id in evicted:
+            self.remove_factor(factor_id)
+        return evicted
 
     def check_replacement(
         self,

@@ -94,7 +94,7 @@ class FactorMinerForwardTests(unittest.TestCase):
             self.assertEqual(set(visible["asset_id"]), set(ASSETS))
             self.assertEqual(visible["datetime"].max(), pd.Timestamp("2026-07-15"))
 
-    def test_first_trade_uses_baseline_open_and_does_not_buy_all_assets(self):
+    def test_first_trade_uses_baseline_open_and_executes_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             panel, days = _panel(root / "panel.parquet", online_days=1)
@@ -110,8 +110,9 @@ class FactorMinerForwardTests(unittest.TestCase):
                     online_end=days[-1].strftime("%Y-%m-%d"),
                 )
 
-            # 100M less 3bps, bought at 200 and marked at 220 => 109.967M.
-            self.assertAlmostEqual(state["nav"], 109_967_000.0, places=2)
+            # Initial allocation is explicitly free: 100M bought at 200 and
+            # marked at 220 => 110M.
+            self.assertAlmostEqual(state["nav"], 110_000_000.0, places=2)
             self.assertEqual(state["state_version"], 3)
             self.assertEqual(state["schema_version"], 1)
             self.assertEqual(state["initial_capital"], 100_000_000.0)
@@ -149,18 +150,14 @@ class FactorMinerForwardTests(unittest.TestCase):
 
             # The prior visible close is 100.  Filling from the unknown same-day
             # close (220) would leave NAV near 100M instead of earning the move.
-            self.assertAlmostEqual(state["nav"], 219_934_000.0, places=2)
+            self.assertAlmostEqual(state["nav"], 220_000_000.0, places=2)
 
-    def test_edge_below_round_trip_cost_keeps_100m_cash(self):
+    def test_first_trade_without_factors_is_equal_weight_full_investment(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             panel, days = _panel(root / "panel.parquet", online_days=1)
 
-            def weak_target(*_args, **_kwargs):
-                weights, ids, _ = _strong_target()
-                return weights, ids, {asset: 0.0004 for asset in ASSETS}
-
-            with patch("scheduler.fm_walk_forward._target_weights", side_effect=weak_target):
+            with patch("scheduler.fm_walk_forward._target_weights", return_value=({}, [], {})):
                 state = run_forward(
                     panel,
                     library_path=root / "library.json",
@@ -172,17 +169,13 @@ class FactorMinerForwardTests(unittest.TestCase):
                     online_end=days[-1].strftime("%Y-%m-%d"),
                 )
 
-            self.assertEqual(state["nav"], 100_000_000.0)
-            self.assertEqual(state["cash"], 100_000_000.0)
-            self.assertEqual(state["shares"], {})
+            self.assertEqual(len(state["shares"]), 15)
+            self.assertEqual(state["cash"], 0.0)
             decision = state["decisions"][0]
-            self.assertFalse(decision["executed"])
-            self.assertEqual(
-                decision["skip_reason"],
-                "predicted_edge_not_above_cost_threshold",
-            )
-            self.assertAlmostEqual(decision["predicted_incremental_edge_bps"], 4.0)
-            self.assertEqual(decision["required_edge_bps"], 6.0)
+            self.assertTrue(decision["executed"])
+            self.assertEqual(decision["skip_reason"], "")
+            self.assertAlmostEqual(decision["decision_edge_threshold_bps"], 1.5)
+            self.assertAlmostEqual(sum(decision["executed_target_weights"].values()), 1.0)
 
     def test_resume_keeps_original_ten_day_cadence_anchor(self):
         with tempfile.TemporaryDirectory() as tmp:

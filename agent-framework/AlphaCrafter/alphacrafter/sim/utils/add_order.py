@@ -62,6 +62,15 @@ def add_order(
         # Read account data
         with open(account_file_path, 'r', encoding='utf-8') as f:
             account_data = json.load(f)
+
+        # Benchmark accounts must be changed only by the deterministic
+        # proposal/gate/rebalance path.  Keep add_order available for native
+        # non-benchmark simulations, but make a 15-asset benchmark attempt a
+        # hard failure rather than a pending order that can bypass the gate.
+        if len(account_data.get("watch_list", [])) == 15:
+            raise ValueError(
+                "benchmark add_order is disabled; submit a gated portfolio proposal"
+            )
         
         # Generate order ID
         order_id = f"ORD_{uuid.uuid4().hex[:8].upper()}"

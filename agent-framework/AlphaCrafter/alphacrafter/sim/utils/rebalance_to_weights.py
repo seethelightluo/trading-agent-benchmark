@@ -9,6 +9,10 @@ from pathlib import Path
 import pandas as pd
 
 from alphacrafter.utils.atomic_io import atomic_write_json, load_json
+try:
+    from portfolio_contract import evaluate_trade, one_way_turnover
+except ModuleNotFoundError:  # pragma: no cover - package execution fallback
+    from AlphaCrafter.portfolio_contract import evaluate_trade, one_way_turnover
 
 
 def _execution_price(dataset_dir: Path, symbol: str, current_date: str) -> float:
@@ -67,6 +71,10 @@ def rebalance_to_weights(
     date_file_path: str = "../persistent/date.json",
     dataset_dir_path: str = "../persistent/stock_data",
     cost_bps: float | None = None,
+    forecast_returns: dict[str, float] | None = None,
+    factor_ids: list[str] | None = None,
+    horizon_days: int = 10,
+    bypass_gate: bool = False,
 ) -> dict:
     """Rebuild the portfolio at target weights using fractional asset units.
 
@@ -107,18 +115,67 @@ def rebalance_to_weights(
         raise ValueError("portfolio NAV must be positive")
 
     initial_allocation = not bool(account.get("portfolio_initialized", False))
+    current_weights = {
+        asset: current_values[asset] / pre_trade_nav for asset in assets
+    }
     applied_cost_bps = 0.0 if initial_allocation else float(
         cost_bps if cost_bps is not None else os.environ.get("AC_REBALANCE_COST_BPS", "3")
     )
-    if initial_allocation:
-        target_values = {asset: pre_trade_nav * weight for asset, weight in weights.items()}
-        transferred = pre_trade_nav
-        cost = 0.0
-    else:
-        target_values, transferred, cost = _solve_transfer(
-            current_values, weights, pre_trade_nav, applied_cost_bps
+    if initial_allocation or bypass_gate:
+        decision = evaluate_trade(
+            current_weights=current_weights,
+            proposed_target_weights=weights,
+            forecast_returns=forecast_returns or {},
+            pre_trade_nav=pre_trade_nav,
+            factor_ids=factor_ids,
+            horizon_days=horizon_days,
+            initial_allocation=initial_allocation,
+            force_execute=bypass_gate,
+            cost_bps=applied_cost_bps,
         )
+    elif forecast_returns is None:
+        decision = None
+    else:
+        decision = evaluate_trade(
+            current_weights=current_weights,
+            proposed_target_weights=weights,
+            forecast_returns=forecast_returns,
+            pre_trade_nav=pre_trade_nav,
+            factor_ids=factor_ids,
+            horizon_days=horizon_days,
+            initial_allocation=False,
+            cost_bps=applied_cost_bps,
+        )
+
+    if decision is None or not decision.executed:
+        decision_payload = {
+            "date": current_date,
+            "initial_allocation": initial_allocation,
+            "current_weights": current_weights,
+            "proposed_target_weights": weights,
+            "executed_target_weights": current_weights,
+            "forecast_returns": forecast_returns or {},
+            "factor_ids": [str(value) for value in (factor_ids or [])],
+            "horizon_days": int(horizon_days),
+            "one_way_turnover": one_way_turnover(current_weights, weights) if decision is None else decision.one_way_turnover,
+            "gross_edge_bps": 0.0 if decision is None else decision.gross_edge_bps,
+            "decision_edge_threshold_bps": applied_cost_bps * one_way_turnover(current_weights, weights) if decision is None else decision.decision_edge_threshold_bps,
+            "actual_cost": 0.0,
+            "executed": False,
+            "skip_reason": "missing_forecast_proposal" if decision is None else decision.skip_reason,
+        }
+        account["last_proposed_target_weights"] = weights
+        account["last_executed_target_weights"] = current_weights
+        account.setdefault("decision_history", []).append(decision_payload)
+        atomic_write_json(account_path, account)
+        return decision_payload
+
+    # The formal contract charges exactly NAV × one-way migrated notional ×
+    # 3bp.  Do not recompute a bilateral L1 or a post-cost fixed point here.
+    transferred = pre_trade_nav * decision.one_way_turnover
+    cost = decision.actual_cost
     post_trade_nav = pre_trade_nav - cost
+    target_values = {asset: post_trade_nav * weight for asset, weight in weights.items()}
     positions = []
     for asset in assets:
         target_value = target_values[asset]
@@ -152,6 +209,8 @@ def rebalance_to_weights(
         "portfolio_initialized": True,
         "last_rebalance_date": current_date,
         "last_target_weights": weights,
+        "last_proposed_target_weights": weights,
+        "last_executed_target_weights": weights,
         "cumulative_transaction_cost": float(
             account.get("cumulative_transaction_cost", 0.0)
         ) + cost,
@@ -165,6 +224,17 @@ def rebalance_to_weights(
         "cost_bps": applied_cost_bps,
         "cost": cost,
         "target_weights": weights,
+        "proposed_target_weights": weights,
+        "executed_target_weights": weights,
+        "forecast_returns": forecast_returns or {},
+        "factor_ids": [str(value) for value in (factor_ids or [])],
+        "horizon_days": int(horizon_days),
+        "one_way_turnover": decision.one_way_turnover,
+        "gross_edge_bps": decision.gross_edge_bps,
+        "decision_edge_threshold_bps": decision.decision_edge_threshold_bps,
+        "actual_cost": cost,
+        "executed": True,
+        "skip_reason": "",
     }
     account.setdefault("rebalance_history", []).append(record)
     atomic_write_json(account_path, account)
@@ -197,6 +267,7 @@ def ensure_fully_invested(
             account_file_path=account_file_path,
             date_file_path=date_file_path,
             dataset_dir_path=dataset_dir_path,
+            bypass_gate=True,
         )
 
     if not account.get("portfolio_initialized", False):

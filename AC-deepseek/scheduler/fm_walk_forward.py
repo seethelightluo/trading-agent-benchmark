@@ -18,6 +18,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from AlphaCrafter.portfolio_contract import evaluate_trade, normalize_weights
+
 
 def _atomic_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,7 +175,7 @@ def run_forward(
     cadence: int = 10,
     initial_capital: float = 100_000_000.0,
     cost_bps: float = 3.0,
-    min_round_trip_edge_bps: float = 6.0,
+    decision_cost_bps: float = 3.0,
     max_factors: int = 10,
 ) -> dict:
     """Run or resume the deterministic FM portfolio leg."""
@@ -213,7 +215,7 @@ def run_forward(
         "cadence": int(cadence),
         "initial_capital": float(initial_capital),
         "cost_bps": float(cost_bps),
-        "min_round_trip_edge_bps": float(min_round_trip_edge_bps),
+        "decision_cost_bps": float(decision_cost_bps),
         "max_factors": int(max_factors),
         "tradable_ids": sorted(str(asset) for asset in tradable_ids),
     }
@@ -299,37 +301,45 @@ def run_forward(
             )
 
             current_weights = {
-                asset: value / pre_trade_nav
-                for asset, value in open_values.items()
-                if pre_trade_nav > 0
+                str(asset): (open_values.get(str(asset), 0.0) / pre_trade_nav)
+                if pre_trade_nav > 0 else 0.0
+                for asset in tradable_ids
             }
-            all_assets = set(current_weights) | set(target)
-            turnover = sum(
-                abs(target.get(asset, 0.0) - current_weights.get(asset, 0.0))
-                for asset in all_assets
+            initial_allocation = idx == 0 and not shares
+            if not target:
+                target = (
+                    {asset: 1.0 / len(tradable_ids) for asset in tradable_ids}
+                    if initial_allocation
+                    else dict(current_weights)
+                )
+                skip_reason = "no_valid_factor_target" if not initial_allocation else ""
+            target = normalize_weights(target, [str(asset) for asset in tradable_ids])
+            decision = evaluate_trade(
+                current_weights=current_weights,
+                proposed_target_weights=target,
+                forecast_returns=forecasts,
+                pre_trade_nav=pre_trade_nav,
+                factor_ids=[str(value) for value in factor_ids],
+                horizon_days=cadence,
+                initial_allocation=initial_allocation,
+                cost_bps=decision_cost_bps,
             )
-            predicted_edge = sum(
-                (target.get(asset, 0.0) - current_weights.get(asset, 0.0))
-                * forecasts.get(asset, 0.0)
-                for asset in all_assets
-            )
-            predicted_edge_bps = predicted_edge * 10_000.0
+            turnover = decision.one_way_turnover
+            predicted_edge_bps = decision.gross_edge_bps
             estimated_cost_bps = cost_bps * turnover
-            required_edge_bps = max(min_round_trip_edge_bps, estimated_cost_bps)
-
-            if turnover <= 1e-10:
-                skip_reason = "target_unchanged"
-            elif predicted_edge_bps <= required_edge_bps:
-                skip_reason = "predicted_edge_not_above_cost_threshold"
-            else:
-                executed = True
+            required_edge_bps = decision.decision_edge_threshold_bps
+            executed = decision.executed
+            if decision.skip_reason:
+                skip_reason = decision.skip_reason
+            if executed:
                 skip_reason = ""
-                cost = pre_trade_nav * (cost_bps / 10_000.0) * turnover
+                cost = decision.actual_cost
                 investable = max(pre_trade_nav - cost, 0.0)
                 shares = {
                     asset: (investable * weight) / float(opens.at[day, asset])
                     for asset, weight in target.items()
                     if asset in opens.columns
+                    and weight > 1e-12
                     and np.isfinite(opens.at[day, asset])
                     and opens.at[day, asset] > 0
                 }
@@ -337,23 +347,32 @@ def run_forward(
                     target[asset] for asset in shares if asset in target
                 )
                 cash = investable * max(0.0, 1.0 - invested_weight)
+            else:
+                cost = 0.0
 
-            state.setdefault("decisions", []).append({
+            decision_payload = decision.as_dict()
+            decision_payload.update({
                 "decision_date": active_decision_date,
                 "execution_date": day.strftime("%Y-%m-%d"),
-                "factor_ids": factor_ids,
+                "factor_ids": [str(value) for value in factor_ids],
                 "target_weights": target,
+                "proposed_target_weights": target,
+                "executed_target_weights": decision.executed_target_weights,
                 "current_weights": current_weights,
                 "forecast_returns": forecasts,
                 "turnover": turnover,
+                "one_way_turnover": turnover,
                 "cost": cost,
+                "actual_cost": cost,
                 "predicted_incremental_edge_bps": predicted_edge_bps,
+                "gross_edge_bps": predicted_edge_bps,
                 "estimated_one_way_cost_bps": estimated_cost_bps,
                 "required_edge_bps": required_edge_bps,
                 "executed": executed,
                 "skip_reason": skip_reason,
                 "pre_trade_nav": pre_trade_nav,
             })
+            state.setdefault("decisions", []).append(decision_payload)
 
         close_values = {
             asset: quantity * float(closes.at[day, asset])

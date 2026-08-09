@@ -245,12 +245,29 @@ cat results/ac_wl_data_final_state.json
 
 当前代码已经具备：冻结 warmup、共享 workspace 播种、位置式 AC CLI、10 日 cadence、session resume、状态文件和重试退避；两个 AC 版本的 online 数量链路也已改成允许小数。`rebalance_to_weights()` 本身实现了 15 资产权重校验、首次免费、后续迁移额 3bps 和 cash=0。
 
+### 7.1 统一 proposal / gate 合同
+
+Trader 只能产生 proposal，统一执行层才允许改账户。proposal 至少保存
+`current_weights`、`proposed_target_weights`、`executed_target_weights`、
+`forecast_returns`、`factor_ids`、`horizon_days=10`、
+`one_way_turnover`、`gross_edge_bps`、`decision_edge_threshold_bps=one_way_turnover*3`、
+`actual_cost`、`executed` 和 `skip_reason`。计算规则与 FM 完全相同：
+
+```text
+one_way_turnover = 0.5 * sum(abs(target-current))
+gross_edge_bps = 10000 * sum((target-current) * forecast_returns)
+execute = initial_allocation or gross_edge_bps > one_way_turnover * 3
+actual_cost = NAV * one_way_turnover * 3 / 10000
+```
+
+首次 `2026-07-16` 有 ensemble 用其质量 tilt target，无 ensemble 等权 15 资产；后续 `edge <= migration*3bp` 只持久化研究和 proposed target，不改变真实持仓。`add_order` 在 15 资产 benchmark 账户中被拒绝，`ensure_fully_invested()` 只允许明确账户损坏修复，不得覆盖合法 no-trade。
+
 仍需持续验证：
 
-- `factor_contract.py` 现在在每个 Miner 阶段后由 AC 主循环单点接入，负责 IC/ICIR、相关性、库容量 30 和滚动末尾淘汰；Screener 只负责 active ensemble <=10 和质量 tilt，不重复做库排序；
+- `factor_contract.py` 现在在每个 Miner 阶段后由 AC 主循环单点接入，负责 IC/ICIR、真实 signal 上的 pairwise 相关性、库容量 30 和滚动末尾淘汰；缺少 signal artifact 的旧因子进入 quarantine，不再静默视为 rho=0；Screener 只负责 active ensemble <=10 和质量 tilt，不重复做库排序；
 - AC 原生固定 `FW` 模板不是动态质量 tilt；正式策略仍需消费当前 `factor_ensemble.json`，不能把固定 `FW` 当作 FM 同步合同的替代品；
 - 两个 AC 的 StepTool 已在非 warmup 的 15-资产 session 中执行 `ensure_fully_invested()`；旧式 Agent strategy 的订单会被清理并按最近有效目标权重修复，仍需在每个 online block 审计 15 个 positions、cash=0 和 `rebalance_history`；
-- 现有 Trader 指令包含 cash/no-trade 语义，与本合同冲突；
+- Trader 指令和执行 helper 现在要求 proposal/gate/no-trade 持久化；旧 workspace 中固定 FW 策略仍是历史 artifact，不能作为新 fingerprint 的正式执行策略；
 - scheduler 的数据入口已切换到 `WL-data-final`，通过 `AC_DATA_ROOT`/`panels`/`news` 单一解析点读取；最终数据包自身的重建/OHLC 缺口仍按第 1 节记录，不能在运行时静默修补。
 
 在这些项目完成前，不能把“AC warmup 通过”或“API function-call 通过”当成 9 条 WL 全量 AC 完成。

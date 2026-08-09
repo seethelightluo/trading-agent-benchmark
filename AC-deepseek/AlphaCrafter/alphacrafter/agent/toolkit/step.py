@@ -388,9 +388,11 @@ class StepTool(BaseTool):
                     if i == 0 or not _REBALANCE_ON_CYCLE_START:
                         print(f"  Executing strategy hook...")
                         self.hook.on_tick()
-                        # Enforce the benchmark online contract after any
-                        # strategy/tool output: all 15 assets, fractional
-                        # quantities, zero cash, and 3bps transfer cost.
+                        # The benchmark contract is online-only: every normal
+                        # 15-asset step must leave a fractional, fully invested
+                        # portfolio.  Strategies may still emit legacy orders;
+                        # repair those before Exchange.post_tick can partially
+                        # fill them because of price-range or cash checks.
                         try:
                             account_after_hook = json.loads(self._read_account_file())
                         except Exception:

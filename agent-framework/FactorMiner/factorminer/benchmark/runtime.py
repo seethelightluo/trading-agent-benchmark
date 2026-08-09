@@ -1107,21 +1107,24 @@ def build_benchmark_library(
         "correlation_rejections": 0,
     }
 
-    ordered = [artifact for artifact in artifacts if artifact.succeeded]
-    ordered.sort(
-        key=lambda artifact: artifact.split_stats[split_name]["ic_paper_mean"],
-        reverse=True,
-    )
-    stats["succeeded"] = len(ordered)
+    eligible = []
+    for artifact in artifacts:
+        if not artifact.succeeded:
+            continue
+        split_stats = artifact.split_stats[split_name]
+        candidate_ic = abs(float(split_stats["ic_paper_mean"]))
+        candidate_icir = abs(float(split_stats["ic_paper_icir"]))
+        if candidate_ic < ic_threshold or candidate_icir < float(getattr(cfg.mining, "icir_threshold", 0.084)):
+            stats["threshold_rejections"] += 1
+            continue
+        eligible.append((candidate_ic * candidate_icir, str(artifact.name), artifact))
+    stats["succeeded"] = sum(1 for artifact in artifacts if artifact.succeeded)
+    eligible.sort(key=lambda item: (-item[0], item[1]))
 
-    for artifact in ordered:
+    for _, _, artifact in eligible:
         split_stats = artifact.split_stats[split_name]
         candidate_ic = float(split_stats["ic_paper_mean"])
         candidate_signals = artifact.split_signals[split_name]
-        if candidate_ic < ic_threshold:
-            stats["threshold_rejections"] += 1
-            continue
-
         max_corr = (
             library._max_correlation_with_library(candidate_signals)  # noqa: SLF001
             if library.size
@@ -1142,24 +1145,25 @@ def build_benchmark_library(
             batch_number=0,
             signals=candidate_signals,
         )
-        admitted, _ = library.check_admission(candidate_ic, candidate_signals)
-        if admitted:
-            library.admit_factor(factor)
-            stats["admitted"] += 1
+        conflicts = []
+        for existing in library.list_factors():
+            if existing.signals is None:
+                raise ValueError(
+                    f"benchmark library factor {existing.id} has no signal artifact"
+                )
+            corr = library.compute_correlation(candidate_signals, existing.signals)
+            if corr >= correlation_threshold:
+                conflicts.append((existing.id, corr))
+        if conflicts:
+            # Candidates were quality-sorted, so every conflicting existing
+            # member has quality >= this candidate.  Keep the stable winner.
+            stats["correlation_rejections"] += 1
             continue
-
-        replace, replace_id, _ = library.check_replacement(
-            candidate_ic,
-            candidate_signals,
-            ic_min=cfg.mining.replacement_ic_min,
-            ic_ratio=cfg.mining.replacement_ic_ratio,
-        )
-        if replace and replace_id is not None:
-            library.replace_factor(replace_id, factor)
-            stats["replaced"] += 1
+        if library.size >= 30:
+            stats["correlation_rejections"] += 1
             continue
-
-        stats["correlation_rejections"] += 1
+        library.admit_factor(factor)
+        stats["admitted"] += 1
 
     return library, stats
 

@@ -33,9 +33,24 @@ FM 由三段组成：`mine`（唯一消耗 LLM）→ `combine`（确定性）→
 | warmup | `200` iterations、目标池 `110`、每批 `40` candidates |
 | online | 每个 10 交易日窗口默认追加 `1` 次 Ralph iteration |
 | 投资 | long-only、15 项权重非负且和为 1、允许小数份额、cash=0 |
-| 成本 | 首建仓免费；后续一次调仓只对资产迁移总额收 `3 bps` |
+| 成本 | 首建仓免费；后续只有 gross edge 严格超过单边迁移额×3bp才调仓，实际只对单边迁移额收 `3 bps` |
 
 唯一合同源是 `agent-framework/ASSETS.yaml`；过时的 100M、6 bps、整手和现金持有口径不适用于当前 benchmark。
+
+### 2.1 统一 proposal / gate 合同
+
+每个 10 个交易日决策点先生成研究 proposal，再由确定性执行层决定是否成交：
+
+```text
+current_weights, proposed_target_weights, executed_target_weights
+forecast_returns, factor_ids, horizon_days=10
+one_way_turnover = 0.5 * sum(abs(target-current))
+gross_edge_bps = 10000 * sum((target-current) * forecast_returns)
+decision_edge_threshold_bps = one_way_turnover * 3
+actual_cost = NAV * one_way_turnover * 3 / 10000
+```
+
+首次 `2026-07-16` 建仓豁免门控；没有有效 ensemble 时使用 15 资产等权 `1/15`。之后严格要求 `gross_edge_bps > one_way_turnover * 3`，否则保存研究/proposed target 但保持 executed target、真实持仓和 cash 不变。
 
 ## 3. 完整共享 warmup
 
@@ -103,4 +118,3 @@ echo $! > results/full_warmup_fm.pid
 - `agent-framework/ASSETS.yaml`
 - `agent-framework/progress.md`
 - `RUN.md`
-

@@ -6,6 +6,7 @@ import json
 import math
 import os
 import shutil
+import numpy as np
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -113,6 +114,81 @@ def _find_correlation(payload: dict) -> tuple[float | None, str | None]:
     return None, None
 
 
+def _load_signal_artifact(payload: dict, factor_path: Path) -> np.ndarray | None:
+    """Load a real signal matrix when the factor provides one.
+
+    A summary field such as ``max_abs_library_correlation: 0`` is never a
+    signal artifact.  Missing matrices are intentionally returned as None so
+    the caller can quarantine the legacy factor instead of weakening rho.
+    """
+    direct = payload.get("signals")
+    artifact = payload.get("signal_artifact")
+    validation = payload.get("validation")
+    if isinstance(validation, dict):
+        direct = direct if direct is not None else validation.get("signals")
+        metrics = validation.get("metrics")
+        if isinstance(metrics, dict):
+            artifact = artifact or metrics.get("signal_artifact")
+    if direct is not None:
+        try:
+            array = np.asarray(direct, dtype=float)
+            return array if array.ndim >= 2 else None
+        except (TypeError, ValueError):
+            return None
+    if not artifact:
+        return None
+    path = Path(str(artifact))
+    if not path.is_absolute():
+        path = factor_path.parent / path
+    if not path.exists():
+        return None
+    try:
+        if path.suffix == ".npy":
+            array = np.load(path, allow_pickle=False)
+        elif path.suffix == ".npz":
+            with np.load(path, allow_pickle=False) as archive:
+                array = archive[archive.files[0]]
+        else:
+            array = np.asarray(json.loads(path.read_text(encoding="utf-8")), dtype=float)
+        return array if array.ndim >= 2 else None
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _pairwise_abs_spearman(left: np.ndarray, right: np.ndarray) -> float:
+    """Compute mean cross-sectional absolute Spearman rho over common rows."""
+    if left.shape != right.shape:
+        raise ValueError(f"signal shapes differ: {left.shape} vs {right.shape}")
+    values: list[float] = []
+    for row_left, row_right in zip(left, right):
+        finite = np.isfinite(row_left) & np.isfinite(row_right)
+        if int(finite.sum()) < 2:
+            continue
+        rank_left = pd_rank(row_left[finite])
+        rank_right = pd_rank(row_right[finite])
+        if np.std(rank_left) <= 1e-12 or np.std(rank_right) <= 1e-12:
+            continue
+        values.append(abs(float(np.corrcoef(rank_left, rank_right)[0, 1])))
+    if not values:
+        raise ValueError("signal artifacts have no common valid cross-section")
+    return float(np.mean(values))
+
+
+def pd_rank(values: np.ndarray) -> np.ndarray:
+    """Small dependency-free average-rank implementation."""
+    order = np.argsort(values, kind="mergesort")
+    ranks = np.empty(len(values), dtype=float)
+    sorted_values = values[order]
+    start = 0
+    while start < len(values):
+        end = start + 1
+        while end < len(values) and sorted_values[end] == sorted_values[start]:
+            end += 1
+        ranks[order[start:end]] = (start + end - 1) / 2.0 + 1.0
+        start = end
+    return ranks
+
+
 def evaluate_factor(payload: dict, contract: FactorContract) -> dict[str, Any]:
     validation = payload.get("validation") if isinstance(payload, dict) else None
     status = str((validation or {}).get("status", "")).upper()
@@ -199,25 +275,10 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
     """Validate active factor files and retain all up to cap, then best-N above cap."""
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
-    admitted: list[tuple[float, Path]] = []
+    admitted: list[tuple[float, str, Path, np.ndarray]] = []
     rejected: list[str] = []
-    inferred_first_correlation: list[str] = []
-
-    # A factor already stamped by this gate means the rolling library is not
-    # empty.  Missing correlation is only recoverable for the first admitted
-    # member; after that, new factors must report their FM-compatible
-    # max_abs_library_correlation explicitly.
-    existing_admitted = False
-    for existing in root.glob("*.json"):
-        if existing.name == "factor_ensemble.json":
-            continue
-        try:
-            existing_payload = json.loads(existing.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if isinstance(existing_payload, dict) and existing_payload.get("benchmark_admission"):
-            existing_admitted = True
-            break
+    quarantined: list[str] = []
+    evicted: list[str] = []
 
     for path in sorted(root.glob("*.json")):
         # The Screener may persist the active ensemble beside factor files.
@@ -227,53 +288,61 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
             continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            try:
-                stamped, metrics = stamp_admission(payload, contract)
-            except ValueError as exc:
-                if (
-                    not existing_admitted
-                    and not admitted
-                    and "must report validation.metrics.max_abs_library_correlation" in str(exc)
-                ):
-                    payload = _with_first_admission_correlation(payload)
-                    stamped, metrics = stamp_admission(payload, contract)
-                    metrics["correlation_inferred_for_first_admission"] = True
-                    inferred_first_correlation.append(path.name)
-                else:
-                    raise
+            stamped, metrics = stamp_admission(payload, contract)
+            signal = _load_signal_artifact(stamped, path)
+            if signal is None:
+                raise ValueError(
+                    "factor has no recoverable signal artifact; quarantine instead of assuming rho=0"
+                )
         except Exception as exc:
-            archived = _archive(path, "rejected")
+            bucket = "quarantine" if "signal artifact" in str(exc) else "rejected"
+            archived = _archive(path, bucket)
             atomic_write_json(
                 archived.with_suffix(archived.suffix + ".reason.json"),
                 {"source": path.name, "reason": str(exc), "contract": contract.as_dict()},
             )
-            rejected.append(path.name)
+            (quarantined if bucket == "quarantine" else rejected).append(path.name)
             continue
         atomic_write_json(path, stamped)
-        admitted.append((float(metrics["quality"]), path))
+        admitted.append((float(metrics["quality"]), str(payload.get("factor_id", path.stem)), path, signal))
+
+    # Quality order makes conflict resolution deterministic: when rho >= .5,
+    # the first factor wins and the lower-quality member is archived.
+    ordered: list[tuple[float, str, Path, np.ndarray]] = []
+    for candidate in sorted(admitted, key=lambda item: (-item[0], item[1], item[2].name)):
+        conflicts = []
+        for kept in ordered:
+            rho = _pairwise_abs_spearman(candidate[3], kept[3])
+            if rho >= contract.correlation_threshold:
+                conflicts.append((kept, rho))
+        if conflicts:
+            archived = _archive(candidate[2], "evicted")
+            atomic_write_json(
+                archived.with_suffix(archived.suffix + ".reason.json"),
+                {"source": candidate[2].name, "reason": "pairwise correlation conflict; lower quality", "quality": candidate[0], "conflicts": [item[1] for item in conflicts], "contract": contract.as_dict()},
+            )
+            evicted.append(candidate[2].name)
+        else:
+            ordered.append(candidate)
 
     # This is the single quality ordering for the library gate.  Reuse the
     # ordered list for both eviction and the audit payload; do not sort the
     # same library a second time just to report it.
-    ordered = sorted(
-        admitted, key=lambda item: (item[0], item[1].name), reverse=True
-    )
-    evicted: list[str] = []
     if len(ordered) > contract.library_capacity:
-        keep = {path for _, path in ordered[: contract.library_capacity]}
-        for _, path in admitted:
+        keep = {path for _, _, path, _ in ordered[: contract.library_capacity]}
+        for _, _, path, _ in ordered:
             if path not in keep:
                 _archive(path, "evicted")
                 evicted.append(path.name)
-        ordered = [(score, path) for score, path in ordered if path in keep]
+        ordered = [item for item in ordered if item[2] in keep]
 
     return {
         "kept": len(ordered),
         "capacity": contract.library_capacity,
         "rejected": rejected,
         "evicted": evicted,
-        "kept_files": [path.name for _, path in ordered],
-        "inferred_first_correlation": inferred_first_correlation,
+        "kept_files": [path.name for _, _, path, _ in ordered],
+        "quarantined": quarantined,
     }
 
 

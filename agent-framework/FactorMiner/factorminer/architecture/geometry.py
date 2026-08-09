@@ -75,6 +75,7 @@ class LibraryGeometry:
         self,
         candidate_ic: float,
         candidate_signals: np.ndarray,
+        candidate_icir: float | None = None,
     ) -> tuple[bool, str]:
         if candidate_ic < self.library.ic_threshold:
             return False, (
@@ -86,6 +87,21 @@ class LibraryGeometry:
 
         geometry = self.candidate_geometry(candidate_signals)
         if geometry.max_dependence >= self.library.correlation_threshold:
+            if candidate_icir is not None:
+                candidate_quality = abs(float(candidate_ic)) * abs(float(candidate_icir))
+                conflicts = [
+                    self.library.get_factor(fid)
+                    for fid in geometry.correlated_factor_ids
+                ]
+                if conflicts and all(
+                    candidate_quality
+                    > abs(float(f.ic_paper_mean or f.ic_mean))
+                    * abs(float(f.ic_paper_icir or f.icir))
+                    for f in conflicts
+                ):
+                    return True, (
+                        f"Admitted by quality conflict resolution: candidate quality={candidate_quality:.6f}"
+                    )
             return False, (
                 f"Max {geometry.dependence_metric} dependence {geometry.max_dependence:.4f} "
                 f">= threshold {self.library.correlation_threshold}"

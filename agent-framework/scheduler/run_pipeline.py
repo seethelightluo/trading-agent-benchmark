@@ -1114,8 +1114,8 @@ def run_fm_wl(
             cadence=cadence_days,
             initial_capital=initial_capital,
             cost_bps=float(contract.get("friction_bps", 3.0)),
-            min_round_trip_edge_bps=float(
-                contract.get("min_round_trip_edge_bps", 6.0)
+            decision_cost_bps=float(
+                contract.get("decision_cost_bps", contract.get("friction_bps", 3.0))
             ),
             max_factors=max_active,
         )

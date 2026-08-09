@@ -151,10 +151,16 @@ class EvaluationKernel:
             return results
 
         corr_threshold = self.protocol.correlation_threshold
+        def quality(result: Any) -> tuple[float, str]:
+            if quality_attr == "benchmark_quality":
+                ic = abs(float(getattr(result, "ic_paper_mean", getattr(result, "ic_mean", 0.0))))
+                icir = abs(float(getattr(result, "ic_paper_icir", getattr(result, "icir", 0.0))))
+                return ic * icir, str(getattr(result, "factor_name", ""))
+            return float(getattr(result, quality_attr, 0.0)), str(getattr(result, "factor_name", ""))
+
         admitted_indices = sorted(
             admitted_indices,
-            key=lambda idx: float(getattr(results[idx], quality_attr, 0.0)),
-            reverse=True,
+            key=lambda idx: (-quality(results[idx])[0], quality(results[idx])[1]),
         )
 
         kept: list[np.ndarray] = []
