@@ -463,7 +463,9 @@ class ValidationPipeline:
             return result
 
         # Stage 2: Correlation check against library (admission)
-        admitted, reason = self.kernel.admission_decision(result.ic_paper_mean, signals)
+        admitted, reason = self.kernel.admission_decision(
+            result.ic_paper_mean, signals, result.ic_paper_icir
+        )
         if admitted:
             result.admitted = True
             result.stage_passed = 3

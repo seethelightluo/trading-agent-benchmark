@@ -122,9 +122,10 @@ class EvaluationKernel:
         }
 
     def admission_decision(
-        self, candidate_ic: float, candidate_signals: np.ndarray
+        self, candidate_ic: float, candidate_signals: np.ndarray,
+        candidate_icir: float | None = None,
     ) -> tuple[bool, str]:
-        return self.geometry.check_admission(candidate_ic, candidate_signals)
+        return self.geometry.check_admission(candidate_ic, candidate_signals, candidate_icir)
 
     def replacement_decision(
         self, candidate_ic: float, candidate_signals: np.ndarray
