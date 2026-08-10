@@ -33,10 +33,15 @@ LOGS = RESULTS / "logs"
 STATE_PATH = RESULTS / "run_state.json"
 CADENCE = 10
 WARMUP_MAX_CYCLES = 40
-ONLINE_MAX_CYCLES = int(os.environ.get("AC_DEEPSEEK_MAX_CYCLES", "3"))
+ONLINE_MAX_CYCLES = 300
 RETRY_DELAYS = (60, 120, 300, 600, 900)
 RETRY_JITTER = 0.20
-ONLINE_WORLDLINES = int(os.environ.get("AC_DEEPSEEK_WORLDLINES", "1"))
+ONLINE_WORLDLINES = int(os.environ.get("AC_DEEPSEEK_WORLDLINES", "9"))
+if not 1 <= ONLINE_WORLDLINES <= 9:
+    raise SystemExit("AC_DEEPSEEK_WORLDLINES must be between 1 and 9")
+MAX_CONCURRENT_WL = int(os.environ.get("AC_DEEPSEEK_CONCURRENCY", "3"))
+if not 1 <= MAX_CONCURRENT_WL <= ONLINE_WORLDLINES:
+    raise SystemExit("AC_DEEPSEEK_CONCURRENCY must be between 1 and ONLINE_WORLDLINES")
 MINER_RETRY_ATTEMPTS = 4
 MINER_RETRY_DELAYS = "15,30,60"
 MINER_RETRY_429_ATTEMPTS = 10
@@ -237,6 +242,7 @@ def main() -> int:
         "warmup_max_cycles": WARMUP_MAX_CYCLES,
         "online_max_cycles": ONLINE_MAX_CYCLES,
         "parallel_worldlines": ONLINE_WORLDLINES,
+        "max_concurrent_wl": MAX_CONCURRENT_WL,
         "run_started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     })
     save_state(state)
@@ -279,12 +285,14 @@ def main() -> int:
             retry_at[wl] = 0.0
     save_state(state)
 
-    print(f"[deepseek-ac] launching {ONLINE_WORLDLINES} WL processes in parallel", flush=True)
+    print(f"[deepseek-ac] launching WL1..WL{ONLINE_WORLDLINES} with max {MAX_CONCURRENT_WL} concurrent", flush=True)
     while retry_at or active:
         now = time.monotonic()
         for wl in list(retry_at):
             if wl in active or now < retry_at[wl]:
                 continue
+            if len(active) >= MAX_CONCURRENT_WL:
+                break
             active[wl] = start_worldline(wl, config, state)
             del retry_at[wl]
 
