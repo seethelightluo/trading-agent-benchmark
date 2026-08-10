@@ -5,7 +5,7 @@ Admission gates (15-instrument cross-asset universe):
     |IC1| >= 0.0070  and  |ICIR1| >= 0.0840
 Validation window: 2021-01-01 .. 2026-07-15 (1y warm-up for rolling windows).
 """
-import sys, os, json, time
+import sys, os, json, time, base64, gzip
 import numpy as np
 import pandas as pd
 
@@ -113,6 +113,25 @@ for i in range(len(names)):
             corr[f"{names[i]}|{names[j]}"] = round(float(rho), 3)
 print("\npairwise signal corr among passers:", corr)
 
+
+def make_artifact(panel):
+    """Recoverable signal artifact: gzip+base64 of float32 (dates x symbols)
+    matrix on the validation index, NaN bit patterns preserved."""
+    P = panel.reindex(idx).astype(np.float32)
+    cols = [c for c in SYMBOLS if c in P.columns]
+    M = P[cols].values.astype(np.float32, copy=False)
+    b64 = base64.b64encode(gzip.compress(M.tobytes(), compresslevel=6)).decode("ascii")
+    return {
+        "format": "gzip+base64 float32 matrix (dates x symbols), NaN preserved",
+        "symbols": cols,
+        "n_dates": int(M.shape[0]),
+        "n_symbols": int(M.shape[1]),
+        "date_start": str(idx[0].date()),
+        "date_end": str(idx[-1].date()),
+        "data_b64": b64,
+        "recovery": "base64.b64decode -> gzip.decompress -> np.frombuffer(dtype=float32).reshape(n_dates, n_symbols)",
+    }
+
 # ============ Part D: persist ============
 os.makedirs("factors", exist_ok=True)
 META = {
@@ -189,10 +208,17 @@ for nm, r in passers.items():
         "provenance": {"miner": "miner_2", "script": "scripts/miner2_20260716_persist_reversal.py",
                        "computed_from": "real daily OHLC data (no fabricated metrics)"}
     }
+    doc["signal_artifact"] = make_artifact(r["panel"])
     path = f"factors/{factor_id}.json"
     with open(path, "w") as fh:
         json.dump(doc, fh, indent=2)
+    chk = json.load(open(path))
+    assert chk["factor_id"] == factor_id, f"id mismatch {path}"
+    assert chk["validation"]["status"] == "EFFECTIVE"
+    art = chk.get("signal_artifact")
+    assert art is not None and len(art["data_b64"]) > 1000, f"no artifact {path}"
+    assert art["n_symbols"] == 15 and art["n_dates"] == len(idx), f"artifact shape {path}"
     persisted.append(path)
-    print(f"[persisted] {path}")
+    print(f"[persisted+verified] {path} artifact={art['n_dates']}x{art['n_symbols']} b64len={len(art['data_b64'])}")
 
 print(f"\nfinished {time.time()-T0:.1f}s | passed={len(passers)} persisted={len(persisted)}")

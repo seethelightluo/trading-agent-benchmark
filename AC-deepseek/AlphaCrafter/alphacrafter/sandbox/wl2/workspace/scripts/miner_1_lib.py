@@ -66,31 +66,43 @@ def forward_returns(panel: pd.DataFrame, horizon: int) -> pd.DataFrame:
 
 def compute_ic(factor_panel: pd.DataFrame, ret_panel: pd.DataFrame,
                min_assets: int = 8) -> pd.Series:
-    """Daily cross-sectional Spearman IC between factor and forward returns."""
+    """Daily cross-sectional Spearman IC, vectorized ranks + numpy per-date pearson."""
     dates = factor_panel.index.intersection(ret_panel.index)
-    ic_vals, idx = [], []
-    for d in dates:
-        f, r = factor_panel.loc[d], ret_panel.loc[d]
-        m = f.notna() & r.notna()
-        if m.sum() >= min_assets:
-            ic = f[m].rank().corr(r[m].rank())
-            if not math.isnan(ic):
-                ic_vals.append(ic)
-                idx.append(d)
-    return pd.Series(ic_vals, index=pd.DatetimeIndex(idx), name="ic")
+    F = factor_panel.loc[dates]
+    R = ret_panel.loc[dates]
+    Fr = F.rank(axis=1).values
+    Rr = R.rank(axis=1).values
+    m = (~np.isnan(Fr)) & (~np.isnan(Rr))
+    valid = m.sum(axis=1) >= min_assets
+    ics = np.full(len(dates), np.nan)
+    idx = np.where(valid)[0]
+    for i in idx:
+        f = Fr[i, m[i]]
+        r = Rr[i, m[i]]
+        f = f - f.mean()
+        r = r - r.mean()
+        denom = np.sqrt((f * f).sum() * (r * r).sum())
+        ics[i] = (f * r).sum() / denom if denom > 0 else np.nan
+    return pd.Series(ics, index=dates, name="ic")
 
 
 def panel_rank_corr(a: pd.DataFrame, b: pd.DataFrame, min_assets: int = 8) -> float:
     """Mean daily cross-sectional Spearman correlation between two factor panels."""
     dates = a.index.intersection(b.index)
+    Ar = a.loc[dates].rank(axis=1).values
+    Br = b.loc[dates].rank(axis=1).values
+    m = (~np.isnan(Ar)) & (~np.isnan(Br))
+    valid = m.sum(axis=1) >= min_assets
     cs = []
-    for d in dates:
-        x, y = a.loc[d], b.loc[d]
-        m = x.notna() & y.notna()
-        if m.sum() >= min_assets:
-            c = x[m].rank().corr(y[m].rank())
-            if not math.isnan(c):
-                cs.append(c)
+    idx = np.where(valid)[0]
+    for i in idx:
+        x = Ar[i, m[i]]
+        y = Br[i, m[i]]
+        x = x - x.mean()
+        y = y - y.mean()
+        denom = np.sqrt((x * x).sum() * (y * y).sum())
+        if denom > 0:
+            cs.append((x * y).sum() / denom)
     return float(np.mean(cs)) if cs else 0.0
 
 
@@ -128,12 +140,23 @@ def coverage_stats(factor_panel: pd.DataFrame, n_assets: int = 15, min_assets: i
 
 def validate_factor(factor_panel: pd.DataFrame, panel: pd.DataFrame,
                     horizons=(1, 2, 3, 5, 10, 20), admission_horizon: int = 10,
-                    library: dict = None, min_assets: int = 8) -> dict:
+                    library: dict = None, min_assets: int = 8,
+                    fwd_cache: dict = None) -> dict:
+    """fwd_cache: dict {h: forward return panel} to avoid recomputation."""
     ic_by_h = {}
     for h in horizons:
-        ret = forward_returns(panel, h)
+        ret = fwd_cache.get(str(h)) if fwd_cache else None
+        if ret is None:
+            ret = forward_returns(panel, h)
+            if fwd_cache is not None:
+                fwd_cache[str(h)] = ret
         ic_by_h[str(h)] = float(compute_ic(factor_panel, ret, min_assets).mean())
-    ic_ser = compute_ic(factor_panel, forward_returns(panel, admission_horizon), min_assets)
+    ret_a = fwd_cache.get(str(admission_horizon)) if fwd_cache else None
+    if ret_a is None:
+        ret_a = forward_returns(panel, admission_horizon)
+        if fwd_cache is not None:
+            fwd_cache[str(admission_horizon)] = ret_a
+    ic_ser = compute_ic(factor_panel, ret_a, min_assets).dropna()
     ic = float(ic_ser.mean())
     icir = float(ic_ser.mean() / ic_ser.std()) if ic_ser.std() > 0 else 0.0
     hit = float((np.sign(ic_ser) == np.sign(ic)).mean()) if ic != 0 else 0.0
@@ -161,14 +184,12 @@ def validate_factor(factor_panel: pd.DataFrame, panel: pd.DataFrame,
 def load_library_signals(panel: pd.DataFrame) -> dict:
     """Recompute existing library factor signals (per-asset calendars, aligned)."""
     close = panel
-    ret = per_asset(close, lambda s: s.pct_change())
     sig = {}
     sig["mom_10d_skip5"] = per_asset(close, lambda s: s.shift(5) / s.shift(15) - 1.0)
     sig["mom_120d_skip5"] = per_asset(close, lambda s: s.shift(5) / s.shift(125) - 1.0)
     sig["vol_of_vol20x60"] = per_asset(close, lambda s: s.pct_change().rolling(20).std().rolling(60).std())
 
     vix = macro_series("VIX").pct_change()
-    rate_ret = ret  # placeholder unused
     beta_parts = {}
     for a in close.columns:
         s = close[a].dropna()

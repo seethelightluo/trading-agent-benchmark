@@ -2,11 +2,16 @@
 
 All data comes from the simulator API (no future data). Validation window is
 restricted to research warm-up 2020-01-01..2026-07-15 to match library factors.
+
+Also provides signal-artifact persistence: every persisted factor JSON must be
+accompanied by a recoverable 2D signal matrix (n_dates x 15) stored on a shared
+canonical date grid so the deterministic gate can recompute pairwise rho.
 """
 import json
 import numpy as np
 import pandas as pd
-from alphacrafter.sim.utils import get_stock_daily_data
+from pathlib import Path
+from alphacrafter.sim.utils import get_stock_daily_data, get_index_daily_data
 
 WATCHLIST = ['000300.SH', 'SPX', 'HSI', 'N225', 'SX5E', '000688.SH', 'SOX', 'NDX',
              'XAU', 'COPPER', 'WTI', 'BTC', 'ETH', 'US10Y', 'CN10Y']
@@ -14,6 +19,8 @@ INDEX_SIGNALS = ['DXY', 'USDCNY', 'USDJPY', 'EURUSD', 'VIX']
 VAL_END = pd.Timestamp('2026-07-15')
 VAL_START = pd.Timestamp('2020-01-01')
 LIBRARY_FACTORS = ['mom_10d_skip5', 'mom_120d_skip5', 'vix_beta_cond_60x20', 'vol_of_vol20x60']
+
+_CANON_GRID = None  # cached canonical date grid
 
 
 def load_prices(days=2000):
@@ -34,18 +41,73 @@ def load_prices(days=2000):
     return out
 
 
-def load_index(symbol, days=2000):
+def load_index(symbol, days=2000, prices=None):
+    """Load observation-only index signal; falls back to persistent CSV capped at
+    the max date visible in the tradable price history (no future data)."""
     try:
         df = get_index_daily_data(symbol=symbol, days=days)
-        if df is None or len(df) < 30:
-            return None
-        df = df.copy()
-        df['date'] = pd.to_datetime(df['date'])
-        df = df.set_index('date')
+        if df is not None and len(df) >= 30:
+            df = df.copy()
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.set_index('date')
+            df['close'] = pd.to_numeric(df['close'], errors='coerce')
+            return df
+    except Exception:
+        pass
+    # CSV fallback (persistent/index_data), capped at visible horizon
+    try:
+        path = Path('../persistent/index_data') / f'{symbol}.csv'
+        df = pd.read_csv(path, parse_dates=['date'])
+        df = df.set_index('date').sort_index()
         df['close'] = pd.to_numeric(df['close'], errors='coerce')
+        if prices is not None:
+            visible = max(dd.index.max() for dd in prices.values())
+            df = df[df.index <= visible]
         return df
     except Exception:
         return None
+
+
+def canonical_grid(prices):
+    """Sorted union of all trading dates within the validation window.
+
+    Every persisted factor artifact must use this exact grid (n_dates x 15) so
+    the gate's pairwise Spearman comparison sees identical shapes.
+    """
+    global _CANON_GRID
+    if _CANON_GRID is not None:
+        return _CANON_GRID
+    idx = set()
+    for s, df in prices.items():
+        idx.update(df.index)
+    grid = pd.DatetimeIndex(sorted(idx))
+    grid = grid[(grid >= VAL_START) & (grid <= VAL_END)]
+    _CANON_GRID = grid
+    return grid
+
+
+def signal_matrix(panel, grid=None, prices=None):
+    """Reindex factor panel to the canonical grid -> (n_dates, 15) float matrix.
+
+    Missing values become NaN; column order is fixed to WATCHLIST order so every
+    factor artifact is directly comparable shape-wise.
+    """
+    if grid is None:
+        grid = canonical_grid(prices)
+    m = panel.reindex(grid)
+    for c in WATCHLIST:
+        if c not in m.columns:
+            m[c] = np.nan
+    return m[WATCHLIST].values.astype(float)
+
+
+def save_signal_artifact(panel, grid, path):
+    """Persist factor signal matrix as .npy; returns the matrix."""
+    arr = signal_matrix(panel, grid)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(path, arr)
+    return arr
 
 
 def factor_to_panel(factor_fn, prices, index_dict=None):
@@ -155,7 +217,7 @@ def max_library_correlation(factor_panel, library_panels):
 
 def build_library_panels(prices):
     """Recompute the 4 currently-effective library factor signals (for correlation audit)."""
-    vix = load_index('VIX')
+    vix = load_index('VIX', prices=prices)
     out = {}
     def f_mom10(df, s): return df['close'].shift(5) / df['close'].shift(15) - 1.0
     def f_mom120(df, s): return df['close'].shift(5) / df['close'].shift(125) - 1.0
@@ -181,7 +243,7 @@ def evaluate_candidate(factor_id, factor_fn, prices, library_panels=None, print_
     if m is None:
         if print_out:
             print(f"{factor_id}: insufficient data -> None")
-        return None
+        return None, panel
     if library_panels is None:
         library_panels = build_library_panels(prices)
     rho, fid = max_library_correlation(panel, library_panels)
@@ -193,4 +255,84 @@ def evaluate_candidate(factor_id, factor_fn, prices, library_panels=None, print_
         print("decay:", json.dumps(m['decay_ic_by_horizon'], default=str))
         ok = abs(m['ic']) >= 0.007 and abs(m['icir']) >= 0.084
         print(f"ADMISSION: |IC|={abs(m['ic']):.4f}>=0.007 {abs(m['ic'])>=0.007} | |ICIR|={abs(m['icir']):.4f}>=0.084 {abs(m['icir'])>=0.084} -> {'PASS' if ok else 'FAIL'}")
-    return m
+    return m, panel
+
+
+def persist_factor(factor_id, factor_name, expression, description, dependencies,
+                   parameters, expected_direction, panel, metrics, tags,
+                   grid=None, prices=None, version='1.0.0', status='EFFECTIVE',
+                   regime_notes='', extra=None):
+    """Persist a factor JSON + .npy signal artifact to factors/.
+
+    Returns the path written. The artifact is mandatory for the gate's pairwise
+    rho computation.
+    """
+    if grid is None:
+        grid = canonical_grid(prices)
+    art_path = Path('factors') / f'{factor_id}_signal.npy'
+    arr = save_signal_artifact(panel, grid, art_path)
+    payload = {
+        'factor_id': factor_id,
+        'factor_name': factor_name,
+        'version': version,
+        'calculation': {
+            'expression': expression,
+            'description': description,
+        },
+        'dependencies': dependencies,
+        'parameters': parameters,
+        'expected_direction': expected_direction,
+        'signal_artifact': art_path.name,
+        'signal_artifact_format': 'npy',
+        'signal_artifact_shape': list(arr.shape),
+        'signal_artifact_grid': {
+            'start': str(grid.min().date()),
+            'end': str(grid.max().date()),
+            'n_dates': int(len(grid)),
+            'columns': WATCHLIST,
+            'note': 'canonical grid shared by all library factors (see factor_common.canonical_grid)',
+        },
+        'validation': {
+            'status': status,
+            'period': f'{VAL_START.date()}..{VAL_END.date()}',
+            'last_validated': '2026-07-30',
+            'admission_horizon': 10,
+            'regime_notes': regime_notes,
+            'metrics': metrics,
+        },
+        'tags': tags,
+        'benchmark_admission': {
+            'contract': {
+                'ic_threshold': 0.007,
+                'icir_threshold': 0.084,
+                'correlation_threshold': 0.5,
+                'library_capacity': 30,
+                'active_top_k': 10,
+            },
+            'selected_metrics': {
+                'ic': metrics['ic'],
+                'icir': metrics['icir'],
+                'metric_path': 'validation.metrics',
+                'max_abs_library_correlation': metrics.get('max_abs_library_correlation'),
+                'correlation_path': 'validation.metrics.max_abs_library_correlation',
+            },
+        },
+    }
+    if extra:
+        payload.update(extra)
+    path = Path('factors') / f'{factor_id}.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding='utf-8')
+    return path, arr
+
+
+def load_artifact_matrix(factor_json_path):
+    """Reconstruct the 2D signal matrix referenced by a persisted factor JSON."""
+    payload = json.loads(Path(factor_json_path).read_text(encoding='utf-8'))
+    art = payload.get('signal_artifact')
+    if not art:
+        return None
+    p = Path(factor_json_path).parent / str(art)
+    if not p.exists():
+        return None
+    return np.load(p, allow_pickle=False)

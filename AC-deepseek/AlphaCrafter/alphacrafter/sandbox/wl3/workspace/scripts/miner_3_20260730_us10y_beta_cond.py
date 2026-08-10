@@ -1,18 +1,21 @@
-"""miner_3 2026-07-30 exploration: US10Y rate-beta conditional factor.
+"""miner_3 2026-07-30 exploration: US10Y rate-beta conditional factor (FIX).
 
 Idea: assets with high sensitivity (rolling 60d beta) to US10Y yield changes
 tend to underperform when yields rise (rate-sensitive = duration/valuation drag)
 and outperform when yields fall. Factor = asset_beta_to_US10Y * 20d change in US10Y.
 Economically distinct driver (rates) vs VIX-beta (risk-off) and DXY-beta (dollar).
+
+FIX: US10Y is a tradable watchlist asset (get_stock_daily_data), not an
+observation-only index (get_index_daily_data) -> use prices['US10Y'].
 """
 import sys
 sys.path.insert(0, 'scripts')
-from factor_common import load_prices, load_index, factor_to_panel, validate_factor, build_library_panels, max_library_correlation
+from factor_common import load_prices, factor_to_panel, validate_factor, build_library_panels, max_library_correlation
 import json
 import pandas as pd
 
 prices = load_prices(days=2000)
-us10y = load_index('US10Y')
+us10y = prices.get('US10Y')
 print(f"loaded {len(prices)} assets; US10Y len={0 if us10y is None else len(us10y)}")
 
 def us10y_beta_cond_60x20(df, s):
@@ -26,6 +29,7 @@ def us10y_beta_cond_60x20(df, s):
     return (b * y_move).reindex(z.index)
 
 panel = factor_to_panel(us10y_beta_cond_60x20, prices)
+print(f"Factor us10y_beta_cond_60x20: panel {panel.shape} range {panel.index.min()}..{panel.index.max()}")
 lib = build_library_panels(prices)
 m = validate_factor('us10y_beta_cond_60x20', panel, prices)
 if m:
@@ -36,3 +40,5 @@ if m:
     print("decay:", json.dumps(m['decay_ic_by_horizon'], default=str))
     ok = abs(m['ic']) >= 0.007 and abs(m['icir']) >= 0.084
     print(f"ADMISSION: |IC|={abs(m['ic']):.4f}>=0.007 {abs(m['ic'])>=0.007} | |ICIR|={abs(m['icir']):.4f}>=0.084 {abs(m['icir'])>=0.084} -> {'PASS' if ok else 'FAIL'}")
+else:
+    print("insufficient data -> None")
