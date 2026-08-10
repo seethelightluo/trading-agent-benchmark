@@ -133,14 +133,14 @@ for nm in deep:
     p = passers.get(nm)
     if p is None:
         continue
-    dec = F.fast_ic_all(p["panel"].reindex(idx), closes, horizons=(1, 2, 3, 5, 10, 20, 30))
+    dec = F.ic_all(p["panel"].reindex(idx), closes, horizons=(1, 2, 3, 5, 10, 20, 30))
     yr = {}
     for y in range(2021, 2027):
         lo, hi = pd.Timestamp(f"{y}-01-01"), pd.Timestamp(f"{y}-12-31")
         m = (idx >= lo) & (idx <= hi)
         r = F.fast_ic(p["panel"].reindex(idx[m]), fwd[1].reindex(idx[m]))
         yr[y] = {"ic": round(r["ic"], 4), "icir": round(r["icir"], 3), "n": r["n_dates"]}
-    extra[nm] = {"decay": {k: round(v["ic"], 4) for k, v in dec.items()}, "by_year": yr}
+    extra[nm] = {"decay": {int(k): round(v["ic"], 4) for k, v in dec.items()}, "by_year": yr}
     print(f"{nm:16s} decay={ {k: v for k, v in extra[nm]['decay'].items() if k in (1,2,3,5,10)} }")
     print(f"{'':16s} by_year={yr}")
 
