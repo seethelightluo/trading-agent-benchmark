@@ -76,8 +76,10 @@ for k, v in lib.items():
 
 
 def pair_rho(a, b, min_valid=8):
+    n = min(len(a), len(b))
+    a, b = a[-n:], b[-n:]
     corrs = []
-    for i in range(len(a)):
+    for i in range(n):
         x, y = a[i], b[i]
         m = np.isfinite(x) & np.isfinite(y)
         if m.sum() >= min_valid:
