@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import gzip
+import zlib
 import math
 import os
 import shutil
@@ -114,8 +116,39 @@ def _find_correlation(payload: dict) -> tuple[float | None, str | None]:
     return None, None
 
 
+def _decode_inline_artifact(artifact: dict) -> np.ndarray | None:
+    """Decode an inline signal artifact dict (base64:zlib:csv or base64:zlib:npy)."""
+    import base64
+    import pandas as pd
+    fmt = artifact.get("format", "")
+    raw_b64 = artifact.get("data")
+    if not raw_b64:
+        return None
+    try:
+        raw = base64.b64decode(raw_b64)
+        if "zlib" in fmt:
+            raw = zlib.decompress(raw)
+        elif "gzip" in fmt:
+            raw = gzip.decompress(raw)
+        if "csv" in fmt or "csv" in fmt.replace(":", " "):
+            import io
+            df = pd.read_csv(io.BytesIO(raw), index_col=0)
+            return df.to_numpy(dtype=float)
+        else:
+            import io
+            return np.load(io.BytesIO(raw), allow_pickle=False)
+    except Exception:
+        return None
+
+
 def _load_signal_artifact(payload: dict, factor_path: Path) -> np.ndarray | None:
     """Load a real signal matrix when the factor provides one.
+
+    Supports three formats:
+    1. Inline ``signals`` array (legacy direct).
+    2. Inline ``signal_artifact`` dict with ``format`` + ``data`` keys
+       (e.g. ``base64:zlib:csv``) -- the standard DeepSeek/Luna miner output.
+    3. File-path reference to a ``.npy`` / ``.npz`` / JSON file.
 
     A summary field such as ``max_abs_library_correlation: 0`` is never a
     signal artifact.  Missing matrices are intentionally returned as None so
@@ -126,6 +159,8 @@ def _load_signal_artifact(payload: dict, factor_path: Path) -> np.ndarray | None
     validation = payload.get("validation")
     if isinstance(validation, dict):
         direct = direct if direct is not None else validation.get("signals")
+        # Check validation.signal_artifact FIRST (standard miner output location)
+        artifact = artifact or validation.get("signal_artifact")
         metrics = validation.get("metrics")
         if isinstance(metrics, dict):
             artifact = artifact or metrics.get("signal_artifact")
@@ -137,7 +172,13 @@ def _load_signal_artifact(payload: dict, factor_path: Path) -> np.ndarray | None
             return None
     if not artifact:
         return None
-    path = Path(str(artifact))
+    # Case: inline dict artifact with format + data
+    if isinstance(artifact, dict):
+        return _decode_inline_artifact(artifact)
+    # Case: file-path reference
+    if not isinstance(artifact, str):
+        return None
+    path = Path(artifact)
     if not path.is_absolute():
         path = factor_path.parent / path
     if not path.exists():

@@ -616,6 +616,40 @@ Keep the summary concise, but explicitly include:
                     print(f"  ▶️ {func_name}({arguments})")
                     
                     if func_name not in self.function_map:
+                        # DeepSeek compatibility: the model sometimes emits
+                        # whitelisted shell commands (python, tail, grep, ...)
+                        # as top-level function names instead of wrapping them
+                        # in shell().  Route those through the shell tool so
+                        # the cycle doesn't crash.
+                        _shell_whitelist = {"ls", "python", "echo", "tail", "grep"}
+                        if func_name in _shell_whitelist and "shell" in self.function_map:
+                            cmd_text = arguments.get("command", "") if isinstance(arguments, dict) else str(arguments)
+                            if func_name == "python":
+                                # When DeepSeek emits python(command=<inline code>)
+                                # write to a temp .py file to avoid shell
+                                # quoting issues, then run via shell tool.
+                                first_token = cmd_text.strip().split()[0] if cmd_text.strip() else ""
+                                if first_token.endswith(".py"):
+                                    cmd_text = f"python {cmd_text}" if not cmd_text.startswith("python") else cmd_text
+                                else:
+                                    import tempfile as _tf, os as _os
+                                    _fd, _tmp = _tf.mkstemp(suffix=".py", prefix="ds_alias_", dir=self.working_dir if hasattr(self, "working_dir") else ".")
+                                    with _os.fdopen(_fd, "w") as _fh:
+                                        _fh.write(cmd_text)
+                                    cmd_text = f"python {_os.path.basename(_tmp)}"
+                            else:
+                                if not cmd_text.startswith(func_name):
+                                    cmd_text = f"{func_name} {cmd_text}" if cmd_text else func_name
+                            print(f"  alias {func_name} -> shell({cmd_text[:80]}...)")
+                            output = self.function_map["shell"](command=cmd_text)
+                            print(f"  shell(aliased {func_name}) output:\n\n {output}")
+                            current_input.append({
+                                "type": "function_call_output",
+                                "call_id": call_id,
+                                "output": str(output),
+                            })
+                            continue
+
                         error_msg = f"Unknown tool function: {func_name}"
                         print(f"  ❌ {error_msg}")
                         
