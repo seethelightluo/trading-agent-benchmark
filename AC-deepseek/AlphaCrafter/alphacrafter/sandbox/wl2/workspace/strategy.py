@@ -1,9 +1,23 @@
-"""Trader strategy v2 -- Screener quality_ic_tilt ensemble (8 factors) + regime overlay.
+"""Trader strategy v4 -- Screener quality_ic_tilt ensemble (9 factors) + regime overlay + trend-sanity cap.
 
 Cross-sectional factor composite (CS rank -> z-score -> winsorize 3 sigma, dir +1),
 fully-invested 15-asset long-only target, one atomic rebalance per 10-trading-day block.
 Risk-off regime tilts toward defensive tradable assets (XAU/US10Y/CN10Y); never cash.
-Signals come from persisted factor artifacts aligned to the visible trading date.
+Signals come from persisted factor artifacts aligned to the visible trading date
+(stale artifacts are clamped to their last validated row, matching Screener's gate).
+
+Ensemble (2026-08-13, quality_ic_tilt, <=10 cap): max_consec_gain_20 .208,
+mom20_volproxy60 .165, spx_corr60 .115, mom_20d_skip5 .110, gain_loss_20 .108,
+downbeta_spx_60 .093, usdjpy_beta_cond_120x60 .083, volcluster_60 .059, calmness_20 .058.
+All directions +1.
+
+v4 change (2026-08-27): trend-sanity cap overlay. Factor artifacts froze at
+2026-07-29 (20 trading days stale, miners no-output cycle), so a deeply falling
+asset can still receive a top factor score (COPPER z=+1.69 while 20d return
+-7.5% / 60d -8.8%, top-cap drag for two consecutive live cycles). Any asset with
+a live 20d return below -4% has its per-asset cap reduced from CAP (0.17) to
+TREND_CAP (0.09) before the cap/floor fit. This is a risk-sizing overlay only;
+factor direction and ensemble weights are untouched.
 """
 import json
 import math
@@ -26,6 +40,8 @@ ONLINE_START = "2026-07-16"
 BLOCK = 10
 CAP = 0.17
 FLOOR = 0.012
+TREND_CAP = 0.09        # per-asset cap when live 20d return < TREND_THRESH
+TREND_THRESH = -0.04    # 20d return threshold triggering the trend cap
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 AGGRESSIVE = {"SOX", "NDX", "ETH", "BTC", "000688.SH", "N225"}
 EMBEDDED = {"mom_20d_skip5", "range_pos_252", "spx_corr60"}
@@ -127,19 +143,36 @@ def _regime(closes, assets):
     return r, vix_level, m20, disp20
 
 
-def _fit_weights(pref, cap=CAP, floor=FLOOR):
-    """Iterative cap/floor normalization of a non-negative preference vector."""
-    w = {a: max(0.0, float(x)) for a, x in pref.items()}
-    for _ in range(300):
-        excess = sum(max(0.0, x - cap) for x in w.values())
+def _fit_weights(pref, cap=CAP, floor=FLOOR, cap_map=None):
+    """Iterative cap/floor normalization of a non-negative preference vector.
+
+    cap_map optionally overrides the cap per asset (e.g., trend-failing assets).
+    Preserves sum-to-1 (pref is normalized internally; excess above caps is
+    redistributed only up to each asset's headroom).
+    """
+    total_pref = sum(max(0.0, float(x)) for x in pref.values())
+    if total_pref <= 0.0:
+        n = len(pref)
+        return {a: 1.0 / n for a in pref}
+    w = {a: max(0.0, float(x)) / total_pref for a, x in pref.items()}
+    cap_a = {a: (cap_map.get(a, cap) if cap_map else cap) for a in w}
+    n = len(w)
+    for _ in range(500):
+        excess = sum(max(0.0, w[a] - cap_a[a]) for a in w)
         if excess > 1e-12:
-            room = [a for a in w if w[a] < cap - 1e-12]
-            if room:
-                den = sum(max(0.0, pref.get(a, 0.0)) for a in room)
-                for a in room:
-                    w[a] += excess * (max(0.0, pref.get(a, 0.0)) / den if den > 1e-12 else 1.0 / len(room))
-        for a in w:
-            w[a] = min(cap, w[a])
+            room = [a for a in w if w[a] < cap_a[a] - 1e-12]
+            if not room:
+                break
+            den = sum(max(0.0, pref.get(a, 0.0)) for a in room)
+            moved = 0.0
+            for a in room:
+                add = excess * (max(0.0, pref.get(a, 0.0)) / den if den > 1e-12 else 1.0 / len(room))
+                add = min(add, cap_a[a] - w[a])  # never exceed per-asset cap
+                if add > 1e-14:
+                    w[a] += add
+                    moved += add
+            if moved <= 1e-12:
+                break  # headroom exhausted -> fall back to normalization
         short = sum(max(0.0, floor - x) for x in w.values())
         if short > 1e-12:
             donors = [a for a in w if w[a] > floor + 1e-12]
@@ -147,13 +180,13 @@ def _fit_weights(pref, cap=CAP, floor=FLOOR):
             if avail > 1e-12:
                 for a in donors:
                     w[a] -= short * (w[a] - floor) / avail
-        for a in w:
-            w[a] = max(0.0, w[a])
+            for a in w:
+                if w[a] < floor:
+                    w[a] = floor
         if excess <= 1e-12 and short <= 1e-12:
             break
     total = sum(w.values())
     if total <= 0.0:
-        n = len(w)
         return {a: 1.0 / n for a in w}
     return {a: x / total for a, x in w.items()}
 
@@ -203,7 +236,14 @@ def build_target(assets, date_state, ensemble):
             pref[a] = base[a] + delta / len(DEFENSIVE)
         else:
             pref[a] = base[a] * (1.0 - delta)
-    weights = _fit_weights(pref)
+
+    # v4 trend-sanity overlay: deeply negative live 20d return -> tighter cap
+    r20 = {}
+    for a in assets:
+        c = closes.get(a)
+        r20[a] = float(c.iloc[-1] / c.iloc[-21] - 1.0) if (c is not None and len(c) >= 21) else 0.0
+    cap_map = {a: TREND_CAP for a in assets if r20[a] < TREND_THRESH}
+    weights = _fit_weights(pref, cap=CAP, floor=FLOOR, cap_map=cap_map or None)
 
     # deterministic forecast returns (10-day horizon): z * daily vol * sqrt(10)
     sigma = {}
@@ -219,7 +259,8 @@ def build_target(assets, date_state, ensemble):
     forecast = {a: (max(-0.25, min(0.25, v)) if v == v else 0.0) for a, v in forecast.items()}
 
     meta = {"risk": risk, "vix": vix, "m20": m20, "disp": disp,
-            "n_factors": len(used), "z": dict(zip(assets, z_std))}
+            "n_factors": len(used), "z": dict(zip(assets, z_std)),
+            "r20": r20, "cap_map": cap_map}
     return weights, forecast, used, meta
 
 

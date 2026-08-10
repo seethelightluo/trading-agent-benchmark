@@ -15,7 +15,7 @@ Structurally new ideas (not previously screened in repo):
 
 Admission gate: |IC|>=0.007, |ICIR|>=0.084, max library rho < 0.5 (artifact-based).
 """
-import sys, json, glob
+import sys, json, glob, traceback
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -89,17 +89,15 @@ def f_weekday_40(df, s): return f_weekday_ret(df, s, 40)
 def f_month_season_prior(df, s):
     """Prior-year same-calendar-month avg monthly return (fully causal: only years < current)."""
     c = df['close']
-    r = c.pct_change()
     y = df.index.year.values
     m = df.index.month.values
-    # monthly return per (year, month): close at last day of month / close at last day of prev month - 1
-    g = df.groupby([df.index.year, df.index.month])['close'].last()
-    g = g.reset_index().rename(columns={'level_0': 'year', 'level_1': 'month', 'close': 'last_close'})
+    g = df.groupby([pd.Series(y, index=df.index, name='year'),
+                    pd.Series(m, index=df.index, name='month')])['close'].last()
+    g = g.reset_index()
     g['prev_close'] = g['last_close'].shift(1)
     g['mret'] = g['last_close'] / g['prev_close'] - 1.0
     g['key'] = g['year'] * 12 + g['month']
     mret_by_key = dict(zip(g['key'], g['mret']))
-    # for each date, factor = mean of mret for same month in years < current
     vals = np.full(len(df), np.nan)
     keys = y * 12 + m
     for i in range(len(df)):
@@ -161,10 +159,7 @@ def f_streak_asym(df, s):
 def f_turn_of_month_12(df, s):
     """Avg 5-trading-day return around trailing 12 completed month-ends (value known at e+2)."""
     c = df['close']
-    r = c.pct_change()
-    # month-end trading dates
     idx = df.index
-    is_month_end = idx.to_period('M').to_timestamp('M')  # period end as timestamp
     me_mask = idx.month != idx.shift(-1).month
     me_dates = idx[me_mask]
     win = {}
@@ -175,7 +170,6 @@ def f_turn_of_month_12(df, s):
         if e3 >= 0 and e2 < len(df):
             win[e2] = c.iloc[e2] / c.iloc[e3] - 1.0  # window return known at e+2
     wser = pd.Series(win).sort_index()
-    # value at each known date = mean of last <=12 windows (excluding current date's own window)
     out = {}
     seen = []
     for dt, wv in wser.items():
@@ -249,26 +243,32 @@ candidates = {
 
 results = {}
 for fid, fn in candidates.items():
-    panel = factor_to_panel(fn, prices)
-    m = validate_factor(fid, panel, prices)
-    if m is None:
-        print(f"{fid}: INSUFFICIENT DATA (panel {panel.shape})")
-        continue
-    rho, fid_lib = max_lib_corr(panel)
-    m['max_abs_library_correlation'] = rho
-    m['max_corr_library_id'] = fid_lib
-    ok = abs(m['ic']) >= 0.007 and abs(m['icir']) >= 0.084 and rho < 0.5
-    results[fid] = dict(ok=ok, metrics=m)
-    print(f"\n=== {fid} === panel {panel.shape} "
-          f"range {panel.index.min().date()}..{panel.index.max().date()}")
-    print(f"IC={m['ic']:.4f} ICIR={m['icir']:.4f} hit={m['ic_hit_ratio']:.3f} "
-          f"n={m['n_ic_dates']} cov={m['coverage_asset_days']:.3f} "
-          f"ge8={m['coverage_dates_ge8']:.3f} turn={m['turnover_10d_rank']:.2f} "
-          f"maxlibrho={rho:.3f}({fid_lib})")
-    print("decay:", {k: round(v, 4) for k, v in m['decay_ic_by_horizon'].items()})
-    print(f"ADMISSION: |IC|={abs(m['ic']):.4f} {'PASS' if abs(m['ic'])>=0.007 else 'FAIL'} | "
-          f"|ICIR|={abs(m['icir']):.4f} {'PASS' if abs(m['icir'])>=0.084 else 'FAIL'} | "
-          f"rho={rho:.3f} {'PASS' if rho<0.5 else 'FAIL'} -> {'PASS' if ok else 'FAIL'}")
+    try:
+        panel = factor_to_panel(fn, prices)
+        m = validate_factor(fid, panel, prices)
+        if m is None:
+            print(f"{fid}: INSUFFICIENT DATA (panel {panel.shape})")
+            results[fid] = dict(ok=False, error='insufficient_data', panel_shape=list(panel.shape))
+            continue
+        rho, fid_lib = max_lib_corr(panel)
+        m['max_abs_library_correlation'] = rho
+        m['max_corr_library_id'] = fid_lib
+        ok = abs(m['ic']) >= 0.007 and abs(m['icir']) >= 0.084 and rho < 0.5
+        results[fid] = dict(ok=ok, metrics=m)
+        print(f"\n=== {fid} === panel {panel.shape} "
+              f"range {panel.index.min().date()}..{panel.index.max().date()}")
+        print(f"IC={m['ic']:.4f} ICIR={m['icir']:.4f} hit={m['ic_hit_ratio']:.3f} "
+              f"n={m['n_ic_dates']} cov={m['coverage_asset_days']:.3f} "
+              f"ge8={m['coverage_dates_ge8']:.3f} turn={m['turnover_10d_rank']:.2f} "
+              f"maxlibrho={rho:.3f}({fid_lib})")
+        print("decay:", {k: round(v, 4) for k, v in m['decay_ic_by_horizon'].items()})
+        print(f"ADMISSION: |IC|={abs(m['ic']):.4f} {'PASS' if abs(m['ic'])>=0.007 else 'FAIL'} | "
+              f"|ICIR|={abs(m['icir']):.4f} {'PASS' if abs(m['icir'])>=0.084 else 'FAIL'} | "
+              f"rho={rho:.3f} {'PASS' if rho<0.5 else 'FAIL'} -> {'PASS' if ok else 'FAIL'}")
+    except Exception as e:
+        print(f"\n=== {fid} === ERROR: {e}")
+        traceback.print_exc()
+        results[fid] = dict(ok=False, error=str(e))
 
 json.dump({k: v for k, v in results.items()},
           open('scripts/miner_1_20260730_results_round11.json', 'w'), indent=1, default=str)
