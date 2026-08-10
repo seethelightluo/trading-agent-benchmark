@@ -28,7 +28,7 @@ CAP = 0.17
 FLOOR = 0.012
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 AGGRESSIVE = {"SOX", "NDX", "ETH", "BTC", "000688.SH", "N225"}
-EMBEDDED = {"mom_20d_skip5", "range_pos_252"}
+EMBEDDED = {"mom_20d_skip5", "range_pos_252", "spx_corr60"}
 ARTIFACT_START = "2020-01-01"
 
 
