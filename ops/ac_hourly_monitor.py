@@ -47,6 +47,8 @@ LOG_PATH = MONITOR_ROOT / "monitor.log"
 LOCK_PATH = MONITOR_ROOT / "monitor.lock"
 SNAPSHOT_ROOT = Path("/data/ac-hourly-snapshots")
 TIMER_UNIT = "ac-hourly-monitor.timer"
+TERRA_OPERATOR_PAUSE = TERRA_RESULTS / "operator_pause.json"
+DS_OPERATOR_PAUSE = DS_RESULTS / "operator_pause.json"
 
 TERRA_WLS = (1, 2, 3)
 TERRA_PREFIX = "terra_v4_wl"
@@ -248,6 +250,7 @@ def terra_snapshot(state: dict) -> dict:
         "logs": [str(path) for path in logs if path.exists()],
         "process_ok": bool(supervisor),
         "target_ok": bool(active or len(complete) == len(TERRA_WLS)),
+        "operator_paused": TERRA_OPERATOR_PAUSE.exists(),
     }
 
 
@@ -478,6 +481,8 @@ def start_supervisor(kind: str, dry_run: bool) -> bool:
 
 
 def safe_to_restart(kind: str, snapshot: dict, previous: dict) -> bool:
+    if snapshot.get("operator_paused"):
+        return False
     if kind == "deepseek" and not snapshot.get("safe_online_state"):
         return False
     previous_changed = float(previous.get("last_changed_epoch", time.time()))
@@ -486,6 +491,8 @@ def safe_to_restart(kind: str, snapshot: dict, previous: dict) -> bool:
 
 
 def experiment_health(kind: str, snapshot: dict, errors: dict, previous: dict) -> tuple[bool, str]:
+    if snapshot.get("operator_paused"):
+        return True, "operator pause active; monitoring only, no restart"
     if kind == "deepseek" and not snapshot.get("safe_online_state"):
         return False, str(snapshot.get("blocked_reason"))
     if errors["fatal"] and (not snapshot["process_ok"] or not snapshot["target_ok"]):
@@ -538,7 +545,7 @@ def run_once(dry_run: bool = False) -> int:
                 previous["last_changed_epoch"] = time.time()
             previous["signature"] = signature
             healthy[kind], reasons[kind] = experiment_health(kind, snapshot, errors, previous)
-            if not transport_ok and kind == "terra":
+            if not transport_ok and kind == "terra" and not snapshot.get("operator_paused"):
                 healthy[kind] = False
                 reasons[kind] = "transport repair did not restore both paths"
             if safe_to_restart(kind, snapshot, previous) and transport_ok:
