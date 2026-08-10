@@ -164,7 +164,8 @@ cands["vol_cond_rev1"] = (-LRET * (vol_z > 0.5).astype(float)).to_numpy(dtype=fl
 vix = panel["macro"]["VIX"].reindex(idx)
 vix_z = (vix - vix.rolling(120).mean()) / (vix.rolling(120).std() + 1e-12)
 intra_rev = (1.0 - C / O)
-cands["rev_intra_x_vixhi"] = zscore_win((intra_rev * (vix_z > 0.0).astype(float)).to_numpy(dtype=float), 120, 40)
+vix_hi = (vix_z > 0.0).astype(float)
+cands["rev_intra_x_vixhi"] = zscore_win(intra_rev.mul(vix_hi, axis=0).to_numpy(dtype=float), 120, 40)
 
 # K. vol level z (60d) - previously passed gates but rho high; try per-symbol z
 cands["vol_z_60"] = zscore_win(LRET.rolling(60).std().to_numpy(dtype=float), 250, 60)
