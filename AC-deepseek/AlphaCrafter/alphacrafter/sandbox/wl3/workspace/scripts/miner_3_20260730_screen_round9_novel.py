@@ -1,0 +1,235 @@
+"""Round 9: novel factor candidates vs the 12-factor library artifacts.
+
+Fresh ideas (single-idea constructs, none previously screened in the repo):
+ 1. vwap_dev_20        - close / 20d VWAP - 1 (volume-weighted anchor deviation)
+ 2. macd_hist_12_26    - classic MACD histogram (technical trend oscillator)
+ 3. adx_14             - ADX trend strength (directionless, Wilder smoothing)
+ 4. overnight_skew_20  - skewness of overnight returns (open/prev_close-1)
+ 5. max_gap_20         - max absolute overnight gap over 20d (gap risk)
+ 6. updown_range_asym_20 - mean up-day range / mean down-day range
+ 7. dxy_cond_mom_20    - 20d momentum x sign(DXY 20d change)  [macro gate]
+ 8. us10y_cond_mom_20  - 20d momentum x sign(US10Y 20d change) [rate gate]
+ 9. win_rate_40        - fraction of positive days over 40d
+10. rel_strength_ndx_20- asset 20d momentum minus NDX 20d momentum
+11. intraday_ret_skew_20 - skewness of intraday returns (close/open-1)
+12. amihud_trend_20_60 - amihud(20)/amihud(60): liquidity trend
+"""
+import sys, json, glob
+import numpy as np
+import pandas as pd
+from pathlib import Path
+sys.path.insert(0, 'scripts')
+from factor_common import (WATCHLIST, load_prices, load_index, canonical_grid,
+                           signal_matrix, factor_to_panel, validate_factor)
+
+np.seterr(all='ignore')
+
+prices = load_prices(days=2500)
+grid = canonical_grid(prices)
+print(f"prices loaded: {len(prices)} assets; canonical grid {len(grid)} dates "
+      f"({grid.min().date()}..{grid.max().date()})")
+dxy = load_index('DXY', prices=prices)
+print(f"DXY loaded: {dxy is not None}, rows={0 if dxy is None else len(dxy)}")
+
+# ---------- library artifacts (real signal matrices) ----------
+lib = {}
+for f in sorted(glob.glob('factors/*.json')):
+    try:
+        d = json.load(open(f))
+        if d.get('validation', {}).get('status') == 'EFFECTIVE':
+            art = d.get('signal_artifact')
+            if art and Path('factors', art).exists():
+                lib[d['factor_id']] = np.load(Path('factors', art))
+    except Exception as e:
+        print("lib skip", f, e)
+print(f"library artifacts loaded: {len(lib)} -> {sorted(lib)}")
+
+
+def max_lib_corr(panel):
+    arr = signal_matrix(panel, grid)
+    best, best_id = 0.0, None
+    for fid, la in lib.items():
+        # align artifact (built on a sub-grid of the canonical grid) by tail overlap
+        if la.shape[0] < arr.shape[0]:
+            arr_use = arr[-la.shape[0]:]
+        else:
+            arr_use = arr
+        corrs = []
+        for i in range(arr_use.shape[0]):
+            x, y = arr_use[i], la[i]
+            m = np.isfinite(x) & np.isfinite(y)
+            if m.sum() >= 8:
+                r = pd.Series(x[m]).rank().corr(pd.Series(y[m]).rank())
+                if np.isfinite(r):
+                    corrs.append(r)
+        if corrs:
+            r = float(np.mean(corrs))
+            if abs(r) > best:
+                best, best_id = abs(r), fid
+    return best, best_id
+
+
+def cand_corr(panels):
+    ids = list(panels.keys())
+    M = np.full((len(ids), len(ids)), np.nan)
+    arrs = {k: signal_matrix(v, grid) for k, v in panels.items()}
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            corrs = []
+            for t in range(arrs[ids[i]].shape[0]):
+                x, y = arrs[ids[i]][t], arrs[ids[j]][t]
+                m = np.isfinite(x) & np.isfinite(y)
+                if m.sum() >= 8:
+                    r = pd.Series(x[m]).rank().corr(pd.Series(y[m]).rank())
+                    if np.isfinite(r):
+                        corrs.append(r)
+            if corrs:
+                M[i, j] = M[j, i] = float(np.mean(corrs))
+    return ids, M
+
+
+# ---------- candidate definitions ----------
+def vwap_dev_20(df, s):
+    vol = df['volume'].replace(0, np.nan)
+    pv = (df['close'] * vol).rolling(20).sum()
+    vv = vol.rolling(20).sum()
+    vwap = pv / vv.replace(0, np.nan)
+    return df['close'] / vwap - 1.0
+
+
+def macd_hist_12_26(df, s):
+    c = df['close']
+    e12 = c.ewm(span=12, adjust=False).mean()
+    e26 = c.ewm(span=26, adjust=False).mean()
+    macd = e12 - e26
+    sig = macd.ewm(span=9, adjust=False).mean()
+    return macd - sig
+
+
+def adx_14(df, s):
+    h, l, c = df['high'], df['low'], df['close']
+    pc = c.shift(1)
+    tr = pd.concat([(h - l), (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
+    up = h.diff()
+    dn = -l.diff()
+    pdm = np.where((up > dn) & (up > 0), up, 0.0)
+    ndm = np.where((dn > up) & (dn > 0), dn, 0.0)
+    atr = tr.ewm(alpha=1 / 14, adjust=False).mean()
+    pdi = 100 * pd.Series(pdm, index=df.index).ewm(alpha=1 / 14, adjust=False).mean() / atr.replace(0, np.nan)
+    ndi = 100 * pd.Series(ndm, index=df.index).ewm(alpha=1 / 14, adjust=False).mean() / atr.replace(0, np.nan)
+    dx = 100 * (pdi - ndi).abs() / (pdi + ndi).replace(0, np.nan)
+    return dx.ewm(alpha=1 / 14, adjust=False).mean()
+
+
+def overnight_skew_20(df, s):
+    on = df['open'] / df['close'].shift(1) - 1.0
+    return on.rolling(20).skew()
+
+
+def max_gap_20(df, s):
+    gap = (df['open'] / df['close'].shift(1) - 1.0).abs()
+    return gap.rolling(20).max()
+
+
+def updown_range_asym_20(df, s):
+    rng = (df['high'] - df['low']) / df['close']
+    up = df['close'] >= df['open']
+    mu = rng[up].rolling(20).mean()
+    md = rng[~up].rolling(20).mean()
+    return (mu / md.replace(0, np.nan)).reindex(df.index)
+
+
+def dxy_cond_mom_20(df, s):
+    if dxy is None:
+        return None
+    mom = df['close'].shift(5) / df['close'].shift(25) - 1.0
+    dm = dxy['close'].shift(5) / dxy['close'].shift(25) - 1.0
+    g = np.sign(dm).reindex(df.index).fillna(0.0)
+    return mom * g
+
+
+def us10y_cond_mom_20(df, s):
+    u = prices['US10Y']['close'].reindex(df.index)
+    mom = df['close'].shift(5) / df['close'].shift(25) - 1.0
+    um = u.shift(5) / u.shift(25) - 1.0
+    g = np.sign(um).reindex(df.index).fillna(0.0)
+    return mom * g
+
+
+def win_rate_40(df, s):
+    pos = (df['close'].pct_change() > 0).astype(float)
+    return pos.rolling(40).mean()
+
+
+def rel_strength_ndx_20(df, s):
+    ndx = prices['NDX']['close'].reindex(df.index)
+    a = df['close'].shift(5) / df['close'].shift(25) - 1.0
+    m = ndx.shift(5) / ndx.shift(25) - 1.0
+    return a - m
+
+
+def intraday_ret_skew_20(df, s):
+    intr = df['close'] / df['open'] - 1.0
+    return intr.rolling(20).skew()
+
+
+def amihud_trend_20_60(df, s):
+    ret = df['close'].pct_change()
+    vol = df['volume'].replace(0, np.nan)
+    illiq = (ret.abs() / vol)
+    a20 = illiq.rolling(20).mean()
+    a60 = illiq.rolling(60).mean()
+    return a20 / a60.replace(0, np.nan)
+
+
+candidates = {
+    'vwap_dev_20': vwap_dev_20,
+    'macd_hist_12_26': macd_hist_12_26,
+    'adx_14': adx_14,
+    'overnight_skew_20': overnight_skew_20,
+    'max_gap_20': max_gap_20,
+    'updown_range_asym_20': updown_range_asym_20,
+    'dxy_cond_mom_20': dxy_cond_mom_20,
+    'us10y_cond_mom_20': us10y_cond_mom_20,
+    'win_rate_40': win_rate_40,
+    'rel_strength_ndx_20': rel_strength_ndx_20,
+    'intraday_ret_skew_20': intraday_ret_skew_20,
+    'amihud_trend_20_60': amihud_trend_20_60,
+}
+
+results = {}
+panels = {}
+for fid, fn in candidates.items():
+    panel = factor_to_panel(fn, prices)
+    panels[fid] = panel
+    m = validate_factor(fid, panel, prices)
+    if m is None:
+        print(f"{fid}: INSUFFICIENT DATA (panel {panel.shape})")
+        continue
+    rho, fid_lib = max_lib_corr(panel)
+    m['max_abs_library_correlation'] = rho
+    m['max_corr_library_id'] = fid_lib
+    ok = abs(m['ic']) >= 0.007 and abs(m['icir']) >= 0.084 and rho < 0.5
+    results[fid] = dict(ok=ok, metrics=m)
+    print(f"\n=== {fid} === panel {panel.shape} "
+          f"range {panel.index.min().date()}..{panel.index.max().date()}")
+    print(f"IC={m['ic']:.4f} ICIR={m['icir']:.4f} hit={m['ic_hit_ratio']:.3f} "
+          f"n={m['n_ic_dates']} cov={m['coverage_asset_days']:.3f} "
+          f"ge8={m['coverage_dates_ge8']:.3f} turn={m['turnover_10d_rank']:.2f} "
+          f"maxlibrho={rho:.3f}({fid_lib})")
+    print("decay:", {k: round(v, 4) for k, v in m['decay_ic_by_horizon'].items()})
+    print(f"ADMISSION: |IC|={abs(m['ic']):.4f} {'PASS' if abs(m['ic'])>=0.007 else 'FAIL'} | "
+          f"|ICIR|={abs(m['icir']):.4f} {'PASS' if abs(m['icir'])>=0.084 else 'FAIL'} | "
+          f"rho={rho:.3f} {'PASS' if rho<0.5 else 'FAIL'} -> {'PASS' if ok else 'FAIL'}")
+
+print("\n=== candidate-candidate mean daily cross-sectional Spearman rho ===")
+ids, M = cand_corr(panels)
+hdr = "        " + " ".join(f"{i[:10]:>10}" for i in ids)
+print(hdr)
+for i, idi in enumerate(ids):
+    row = " ".join(f"{M[i, j]:10.2f}" if np.isfinite(M[i, j]) else f"{'-':>10}" for j in range(len(ids)))
+    print(f"{idi[:10]:>8} {row}")
+
+json.dump({k: v for k, v in results.items()},
+          open('scripts/miner_3_20260730_results_round9.json', 'w'), indent=1, default=str)
+print("\nsaved scripts/miner_3_20260730_results_round9.json")
