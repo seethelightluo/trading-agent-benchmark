@@ -147,13 +147,17 @@ for i in range(len(pn)):
         rho[tuple(sorted((pn[i], pn[j])))] = r
         print(f"  rho {pn[i]:15s} | {pn[j]:15s} = {r:+.3f}")
 
-# greedy diverse selection: sort by |ICIR| desc, accept if max rho vs selected < 0.5
-order = sorted(passers, key=lambda k: -abs(passers[k]["ic"][1]["icir"]))
+# curated diverse selection: passers with pairwise rho<0.5 AND positive 2026 YTD IC1
+# (avoid persisting currently-decaying factors into the live library)
+cand_2026_pos = [nm for nm in passers if F.fast_ic(
+    passers[nm]["panel"].reindex(idx[idx >= pd.Timestamp("2026-01-01")]),
+    fwd[1].reindex(idx[idx >= pd.Timestamp("2026-01-01")]))["ic"] > 0]
+print(f"\npassers with positive 2026 YTD IC1: {cand_2026_pos}")
 selected = []
-for nm in order:
+for nm in sorted(cand_2026_pos, key=lambda k: -abs(passers[k]["ic"][1]["icir"])):
     if all(abs(rho[tuple(sorted((nm, s)))]) < 0.50 for s in selected):
         selected.append(nm)
-print(f"\nDiverse selection (pairwise rho<0.5): {selected}")
+print(f"Diverse selection (pairwise rho<0.5, 2026-positive): {selected}")
 
 # deep validation for selected: by-year IC1
 extra = {}
@@ -183,6 +187,10 @@ def make_artifact(panel):
 
 
 META = {
+    "rev1_pk": {"name": "Parkinson vol-scaled 1d reversal",
+                "expr": "-ln(close_t/close_{t-1}) / sqrt(mean(ln(high/low)^2, 20) / (4*ln2))",
+                "dep": ["close", "high", "low"], "params": {"nd": 1, "vol_window": 20},
+                "tags": ["mean-reversion", "volatility", "ohlc"]},
     "rev1_gk": {"name": "Garman-Klass vol-scaled 1d reversal",
                 "expr": "-ln(close_t/close_{t-1}) / sqrt(mean(0.5*ln(open_t/close_{t-1})^2 + (2*ln2-1)*ln(close_t/open_t)^2, 20))",
                 "dep": ["open", "close", "high", "low"], "params": {"nd": 1, "vol_window": 20},

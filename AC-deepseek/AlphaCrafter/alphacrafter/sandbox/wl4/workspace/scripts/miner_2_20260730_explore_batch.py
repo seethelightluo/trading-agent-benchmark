@@ -109,15 +109,15 @@ cand["mom_accel_10x60"] = (close / close.shift(10) - 1.0) - (close / close.shift
 d = close.diff(); up = d.clip(lower=0.0).rolling(14).mean(); dn = (-d.clip(upper=0.0)).rolling(14).mean()
 cand["rsi_14"] = 100.0 - 100.0 / (1.0 + up / dn)
 # 10 DXY beta conditional
-cand["dxy_beta_cond_60x20"] = rolling_beta(ret, macro["DXY"].pct_change(), 60) * (macro["DXY"] / macro["DXY"].shift(20) - 1.0)
+cand["dxy_beta_cond_60x20"] = rolling_beta(ret, macro["DXY"].pct_change(), 60).mul(macro["DXY"] / macro["DXY"].shift(20) - 1.0, axis=0)
 # 11 US10Y beta conditional
-cand["us10y_beta_cond_60x20"] = rolling_beta(ret, close["US10Y"].pct_change(), 60) * (close["US10Y"] / close["US10Y"].shift(20) - 1.0)
+cand["us10y_beta_cond_60x20"] = rolling_beta(ret, close["US10Y"].pct_change(), 60).mul(close["US10Y"] / close["US10Y"].shift(20) - 1.0, axis=0)
 # 12 USDCNY beta conditional
-cand["cny_beta_cond_60x20"] = rolling_beta(ret, macro["USDCNY"].pct_change(), 60) * (macro["USDCNY"] / macro["USDCNY"].shift(20) - 1.0)
+cand["cny_beta_cond_60x20"] = rolling_beta(ret, macro["USDCNY"].pct_change(), 60).mul(macro["USDCNY"] / macro["USDCNY"].shift(20) - 1.0, axis=0)
 # 13 XAU beta conditional
-cand["xau_beta_cond_60x20"] = rolling_beta(ret, close["XAU"].pct_change(), 60) * (close["XAU"] / close["XAU"].shift(20) - 1.0)
+cand["xau_beta_cond_60x20"] = rolling_beta(ret, close["XAU"].pct_change(), 60).mul(close["XAU"] / close["XAU"].shift(20) - 1.0, axis=0)
 # 14 BTC beta conditional
-cand["btc_beta_cond_60x20"] = rolling_beta(ret, close["BTC"].pct_change(), 60) * (close["BTC"] / close["BTC"].shift(20) - 1.0)
+cand["btc_beta_cond_60x20"] = rolling_beta(ret, close["BTC"].pct_change(), 60).mul(close["BTC"] / close["BTC"].shift(20) - 1.0, axis=0)
 # 15 10d avg intraday range
 cand["hl_range_10"] = ((high - low) / close).rolling(10).mean()
 
@@ -126,7 +126,7 @@ lib = {}
 lib["mom_10d_skip5"] = close.shift(5) / close.shift(15) - 1.0
 lib["mom_120d_skip5"] = close.shift(5) / close.shift(125) - 1.0
 vix_ret = macro["VIX"].pct_change()
-lib["vix_beta_cond_60x20"] = -rolling_beta(ret, vix_ret, 60) * (macro["VIX"] / macro["VIX"].shift(20) - 1.0)
+lib["vix_beta_cond_60x20"] = -rolling_beta(ret, vix_ret, 60).mul(macro["VIX"] / macro["VIX"].shift(20) - 1.0, axis=0)
 lib["vol_of_vol20x60"] = ret.rolling(20).std().rolling(60).std()
 
 horizons = [1, 2, 3, 5, 10, 20]
