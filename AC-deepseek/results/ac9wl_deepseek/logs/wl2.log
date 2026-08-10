@@ -163104,3 +163104,278 @@ def report(name: str, metrics: dict, gate_ic: float = 0.007, gate_icir: float = 
           f"turnover={metrics.get('turnover_10d_rank')} "
           f"maxlibcorr={metrics.get('max_abs_library_correlation')} => {'PASS' if passed else 'FAIL'}")
     return passed
+
+
+────────────────────────────────────────
+🔄 Iteration 7/25
+────────────────────────────────────────
+📤 API Request - 23 messages
+📥 API Response - 399 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'grep -n "20260730" scripts/miner_1_20260730_cycle31_explore.py | head; echo "---"; head -n 60 scripts/miner_1_20260730_cycle31_explore.py'})
+  ✅ shell output: 
+
+ ✅ Output:
+---
+"""miner_1 2026-07-30 cycle 31: orthogonal factor families.
+
+Active library (3): mom20_volproxy60 (momentum), dxy_beta_cond_60x20 (dollar
+beta), calmness_20 (low-vol persistence). Admission gates: |IC|>=0.007,
+|ICIR|>=0.084 at 10d horizon, |rho|<0.5 vs persisted signal artifacts.
+
+New families (NOT in prior cycles):
+  1. yield_beta_cond_60x20 : 60d beta of asset ret on US10Y yield change,
+                             x 20d US10Y trend (rate-regime conditioning)
+  2. btc_beta_cond_60x20   : 60d beta of asset ret on BTC ret x 20d BTC mom
+                             (crypto risk-appetite conditioning)
+  3. avg_corr_60           : mean pairwise return correlation with other 14
+                             assets (systemic integration vs idiosyncrasy)
+  4. rel_strength_20       : 20d mom (skip5) minus leave-one-out mean of the
+                             other 14 assets (relative strength vs global trend)
+  5. ret_vol_corr_60       : rolling corr(daily ret, volume pct change, 60)
+                             (volume-confirmed directionality)
+  6. wk52_high_prox        : close / rolling_max(close, 252) (52w high proximity)
+  7. kurt_60               : rolling 60d kurtosis of daily returns
+  8. yield_beta_raw_60     : plain 60d beta to US10Y yield change (no cond)
+"""
+import sys, json
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, "scripts")
+from miner_1_lib import (load_panel, macro_series, per_asset, forward_returns,
+                         compute_ic, validate_factor, report)
+
+panel = load_panel()
+print(f"panel: {panel.shape}  {panel.index.min().date()}..{panel.index.max().date()}")
+HORIZONS = (1, 2, 3, 5, 10, 20)
+ADM_H = 10
+fwd_cache = {str(h): forward_returns(panel, h) for h in HORIZONS}
+
+# ---------- volume panel ----------
+frames = {}
+for a in panel.columns:
+    df = pd.read_csv(f"../persistent/stock_data/{a}.csv", parse_dates=["date"])
+    df = df[df["date"] <= pd.Timestamp("2026-07-29")].sort_values("date")
+    frames[a] = pd.Series(df["volume"].astype(float).values,
+                          index=pd.to_datetime(df["date"]), name=a)
+volume_panel = pd.concat(frames, axis=1).sort_index()
+print(f"volume_panel: {volume_panel.shape} nan={int(volume_panel.isna().sum().sum())}")
+
+us10y = panel["US10Y"]
+cn10y = panel["CN10Y"]
+btc = panel["BTC"]
+
+# ---------- 1) yield beta conditional ----------
+def beta_to(s, mkt, window=60, minp=30):
+    ar = s.pct_change()
+    mr = mkt.pct_change()
+    df = pd.concat([ar.rename("a"), mr.reindex(ar.index).rename("m")], axis=1).dropna()
+    cov = df["a"].rolling(window, min_periods=minp).cov(df["m"])
+    var = df["m"].rolling(window, min_periods=minp).var()
+    return (cov / var).reindex(s.index)
+
+us10y_20 = us10y / us10y.shift(20) - 1.0
+signals = {}
+
+────────────────────────────────────────
+🔄 Iteration 8/25
+────────────────────────────────────────
+📤 API Request - 25 messages
+   ↻ DeepSeek Miner retry 3/10 in 49.5358s (429, separate budget; base=45s): Error code: 502 - {'error': {'message': 'Upstream request failed', 'type': 'upstream_error'}}
+
+============================================================
+🔬 MINER_MINER_1 PHASE
+============================================================
+============================================================
+🚀 AGENT RUN STARTED
+============================================================
+
+────────────────────────────────────────
+🔄 Iteration 1/25
+────────────────────────────────────────
+📤 API Request - 1 messages
+📥 API Response - 215 tokens, $0.000000
+🔧 Tool calls: ['shell', 'shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ shell({'command': 'ls -la && echo "---FACTORS---" && ls -la factors/ 2>/dev/null && echo "---SCRIPTS---" && ls -la scripts/ 2>/dev/null | tail -n 20'})
+  ✅ shell output: 
+
+ ✅ Output:
+total 64
+drwxrwxr-x 5 lxx lxx  4096 Aug 10 21:23 .
+drwxrwxr-x 6 lxx lxx  4096 Aug 10 15:27 ..
+drwxrwxr-x 2 lxx lxx  4096 Aug 10 15:27 __pycache__
+-rw-rw-r-- 1 lxx lxx   771 Aug 10 16:49 debug_beta.py
+-rw-rw-r-- 1 lxx lxx   741 Aug 10 16:51 debug_beta2.py
+-rw-rw-r-- 1 lxx lxx  6769 Aug 10 22:32 factor_ensemble.json
+-rw-rw-r-- 1 lxx lxx  8621 Aug 10 22:14 factor_library_audit.jsonl
+drwxrwxr-x 5 lxx lxx  4096 Aug 10 22:51 factors
+-rw-rw-r-- 1 lxx lxx     0 Aug  8 00:47 memory.txt
+drwxrwxr-x 3 lxx lxx 12288 Aug 10 22:51 scripts
+-rw-rw-r-- 1 lxx lxx  6545 Aug  9 19:01 strategy.py
+---FACTORS---
+total 3204
+drwxrwxr-x 5 lxx lxx   4096 Aug 10 22:51 .
+drwxrwxr-x 5 lxx lxx   4096 Aug 10 21:23 ..
+-rw------- 1 lxx lxx   2839 Aug 10 22:14 calmness_20.json
+-rw------- 1 lxx lxx   2601 Aug 10 22:14 calmness_20.json.bak
+-rw-rw-r-- 1 lxx lxx 287888 Aug 10 22:09 calmness_20.signal.npy
+-rw------- 1 lxx lxx   2365 Aug 10 20:57 carry_12m3m.json.bak
+-rw-rw-r-- 1 lxx lxx 287888 Aug 10 20:22 carry_12m3m.signal.npy
+-rw------- 1 lxx lxx   2376 Aug 10 20:57 carry_3m1m.json.bak
+-rw-rw-r-- 1 lxx lxx 287888 Aug 10 20:22 carry_3m1m.signal.npy
+-rw-rw-r-- 1 lxx lxx   3456 Aug 10 22:53 downside_dev_60.json
+-rw-rw-r-- 1 lxx lxx 287888 Aug 10 22:51 downside_dev_60.signal.npy
+-rw------- 1 lxx lxx   2813 Aug 10 22:14 dxy_beta_cond_60x20.json
+-rw------- 1 lxx lxx   2813 Aug 10 22:14 dxy_beta_cond_60x20.json.bak
+-rw-rw-r-- 1 lxx lxx 287888 Aug 10 20:31 dxy_beta_cond_60x20.signal.npy
+-rw------- 1 lxx lxx   3054 Aug 10 22:14 eff_ratio_20.json.bak
+-rw-rw-r-- 1 lxx lxx 287888 Aug 10 22:06 eff_ratio_20.signal.npy
+drwxrwxr-x 2 lxx lxx   4096 Aug 10 22:14 evicted
+-rw-rw-r-- 1 lxx lxx   6769 Aug 10 22:32 factor_ensemble.json
+-rw-rw-r-- 1 lxx lxx 287888 Aug 10 22:04 intraday_drift_20.signal.npy
+-rw------- 1 lxx lxx   2647 Aug 10 22:14 mom20_volproxy60.json
+-rw------- 1 lxx lxx   2647 Aug 10 22:14 mom20_volproxy60.json.bak
+-rw-rw-r-- 1 lxx lxx 287888 Aug 10 19:56 mom20_volproxy60.signal.npy
+-rw------- 1 lxx lxx   2465 Aug 10 20:57 mom_curve_volscale.json.bak
+-rw-rw-r-- 1 lxx lxx 287888 Aug 10 19:56 mom_curve_volscale.signal.npy
+drwxrwxr-x 2 lxx lxx   4096 Aug 10 22:14 quarantine
+-rw------- 1 lxx lxx   2428 Aug 10 20:57 range_pos_120d.json.bak
+-rw-rw-r-- 1 lxx lxx 287888 Aug 10 19:56 range_pos_120d.signal.npy
+drwxrwxr-x 2 lxx lxx   4096 Aug 10 20:31 rejected
+-rw------- 1 lxx lxx   2981 Aug 10 21:15 vol_surge_20.json.bak
+-rw-rw-r-- 1 lxx lxx 287888 Aug 10 21:12 vol_surge_20.signal.npy
+---SCRIPTS---
+-rw-rw-r-- 1 lxx lxx  5123 Aug 10 20:55 miner_2_20260730_cycle25_persist_volsurge.py
+-rw-rw-r-- 1 lxx lxx  1997 Aug 10 20:49 miner_2_20260730_cycle25_volume_family.py
+-rw-rw-r-- 1 lxx lxx  5112 Aug 10 21:11 miner_2_20260730_cycle26_persist_volsurge.py
+-rw-rw-r-- 1 lxx lxx  2789 Aug 10 21:14 miner_2_20260730_cycle27_riskdist_family.py
+-rw-rw-r-- 1 lxx lxx  4376 Aug 10 21:34 miner_2_20260730_cycle28_riskdist_refine.py
+-rw-rw-r-- 1 lxx lxx  3811 Aug 10 21:42 miner_2_20260730_cycle28b_ohlc_structure.py
+-rw-rw-r-- 1 lxx lxx  3395 Aug 10 22:02 miner_2_20260730_cycle29_intradaydrift_validate.py
+-rw-rw-r-- 1 lxx lxx  4722 Aug 10 22:04 miner_2_20260730_cycle29_persist_intradaydrift.py
+-rw-rw-r-- 1 lxx lxx  4315 Aug 10 22:08 miner_2_20260730_cycle30_update_ensemble.py
+-rw-rw-r-- 1 lxx lxx  4738 Aug 10 21:37 miner_3_20260730_cycle28_persist_effratio.py
+-rw-rw-r-- 1 lxx lxx  5997 Aug 10 21:36 miner_3_20260730_cycle28_trendquality_explore.py
+-rw-rw-r-- 1 lxx lxx  5661 Aug 10 22:05 miner_3_20260730_cycle29_persist_effratio.py
+-rw-rw-r-- 1 lxx lxx  6501 Aug 10 22:33 miner_3_20260730_cycle31_riskskew_overnight_explore.py
+-rw-rw-r-- 1 lxx lxx  5234 Aug 10 22:34 miner_3_20260730_cycle31b_riskskew_overnight_explore.py
+-rw-rw-r-- 1 lxx lxx  5583 Aug 10 22:35 miner_3_20260730_cycle31c_riskskew_overnight_explore.py
+-rw-rw-r-- 1 lxx lxx  6639 Aug 10 22:51 miner_3_20260730_cycle32_persist_downside_dev.py
+-rw-rw-r-- 1 lxx lxx  2084 Aug 10 20:36 screener_corr_gate.py
+-rw-rw-r-- 1 lxx lxx  2620 Aug 10 20:34 screener_regime_assess.py
+-rw-rw-r-- 1 lxx lxx  3494 Aug 10 22:17 screener_verify_20260730.py
+-rw-rw-r-- 1 lxx lxx  1964 Aug 10 20:35 screener_verify_ensemble.py
+  ▶️ shell({'command': 'tail -n 40 memory.txt 2>/dev/null'})
+  ✅ shell output: 
+
+ ✅ Command executed successfully (no output)
+
+────────────────────────────────────────
+🔄 Iteration 2/25
+────────────────────────────────────────
+📤 API Request - 5 messages
+📥 API Response - 162 tokens, $0.000000
+🔧 Tool calls: ['shell', 'shell', 'shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 3 tool call(s)...
+  ▶️ shell({'command': 'cat factor_ensemble.json 2>/dev/null | head -n 80'})
+  ✅ shell output: 
+
+ ❌ Command 'cat' is not in the whitelist. Allowed commands: ls, python, echo, tail, grep
+  ▶️ shell({'command': 'ls factors/evicted/ factors/quarantine/ factors/rejected/ 2>/dev/null'})
+  ✅ shell output: 
+
+ ✅ Output:
+factors/evicted/:
+carry_12m3m.20260810T205750856769.json
+carry_12m3m.20260810T205750856769.json.reason.json
+carry_12m3m.json
+carry_12m3m.json.reason.json
+carry_3m1m.20260810T205750307273.json
+carry_3m1m.20260810T205750307273.json.reason.json
+carry_3m1m.json
+carry_3m1m.json.reason.json
+eff_ratio_20.json
+eff_ratio_20.json.reason.json
+mom_curve_volscale.20260810T203134684539.json
+mom_curve_volscale.20260810T203134684539.json.reason.json
+mom_curve_volscale.20260810T205752015803.json
+mom_curve_volscale.20260810T205752015803.json.reason.json
+mom_curve_volscale.json
+mom_curve_volscale.json.reason.json
+range_pos_120d.20260810T203135489363.json
+range_pos_120d.20260810T203135489363.json.reason.json
+range_pos_120d.20260810T205752819417.json
+range_pos_120d.20260810T205752819417.json.reason.json
+range_pos_120d.json
+range_pos_120d.json.reason.json
+vol_surge_20.json
+vol_surge_20.json.reason.json
+
+factors/quarantine/:
+intraday_drift_20.json
+intraday_drift_20.json.reason.json
+mom_10d_skip5.json
+mom_10d_skip5.json.reason.json
+mom_120d_skip5.json
+mom_120d_skip5.json.reason.json
+vix_beta_cond_60x20.json
+vix_beta_cond_60x20.json.reason.json
+vol_of_vol20x60.json
+vol_of_vol20x60.json.reason.json
+
+factors/rejected/:
+carry12m3m_vix_cond.json
+gain_loss_20.20260810T193014593044.json
+gain_loss_20.20260810T193014593044.json.reason.json
+gain_loss_20.json
+gain_loss_20.json.reason.json
+mom30_vol60.20260810T193014660503.json
+mom30_vol60.20260810T193014660503.json.reason.json
+mom30_vol60.json
+mom30_vol60.json.reason.json
+mom_180d_skip5.json
+mom_180d_skip5.json.reason.json
+mom_20d_skip5.json
+mom_20d_skip5.json.reason.json
+range_pos_252.json
+range_pos_252.json.reason.json
+spx_corr60.json
+spx_corr60.json.reason.json
+vol_of_vol20x60.20260810T191037127613.json
+vol_of_vol20x60.20260810T191037127613.json.reason.json
+vol_of_vol20x60.20260810T193014725679.json
+vol_of_vol20x60.20260810T193014725679.json.reason.json
+vol_of_vol20x60.json
+vol_of_vol20x60.json.reason.json
+  ▶️ shell({'command': 'cat factors/downside_dev_60.json'})
+  ✅ shell output: 
+
+ ❌ Command 'cat' is not in the whitelist. Allowed commands: ls, python, echo, tail, grep
+
+────────────────────────────────────────
+🔄 Iteration 3/25
+────────────────────────────────────────
+📤 API Request - 11 messages
+📥 API Response - 140 tokens, $0.000000
+🔧 Tool calls: ['python', 'python']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ python({'command': "import json\nwith open('factor_ensemble.json') as f:\n    e = json.load(f)\nprint(json.dumps(e, indent=2)[:3000])"})
+  ❌ Unknown tool function: python
+
+--- ❌ Miner miner_1 failed: Unknown tool function: python ---
+⚠️ Miner phase failed after retries; not advancing this cycle. The supervisor will --resume the same cycle.
+
+============================================================
+🎯 WORKFLOW COMPLETED
+============================================================
+Total cycles: 19
+Miners per cycle: 3
+✅ Workflow log saved to ../logs/workflow.json
+✅ Signal handler restored
