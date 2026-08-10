@@ -111,10 +111,17 @@ def library_corr(factor: pd.DataFrame, panel: pd.DataFrame, libs: dict) -> tuple
     for fid, lf in libs.items():
         cs = []
         for dt in common[-700:]:
+            if dt not in factor.index or dt not in lf.index:
+                continue
             f = factor.loc[dt]
-            g = lf.reindex(f.index)
-            m = f.notna() & g.notna() & np.isfinite(f) & np.isfinite(g)
-            if m.sum() >= MIN_ASSETS:
+            g = lf.loc[dt]
+            if isinstance(f, pd.DataFrame):
+                f = f.iloc[-1]
+            if isinstance(g, pd.DataFrame):
+                g = g.iloc[-1]
+            m = f.notna() & g.notna() & np.isfinite(f.astype(float)) & np.isfinite(g.astype(float))
+            m = m.reindex(f.index).fillna(False)
+            if int(m.sum()) >= MIN_ASSETS:
                 cs.append(spearmanr(f[m], g[m])[0])
         per[fid] = round(float(np.mean(cs)), 4) if cs else None
     valid = [abs(v) for v in per.values() if v is not None]
