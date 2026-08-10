@@ -1,0 +1,97 @@
+"""Build canonical factor ensemble for 2026-07-30 cycle (library refreshed: 10 active, 5 selected)."""
+import json
+
+# Persisted metrics from active JSONs (artifact-bearing, freshly validated)
+M = {
+    "downbeta_spx_60":        {"ic": 0.0752, "icir": 0.1871, "turn": 0.072, "cov": 0.6473, "dir": 1},
+    "mom20_volproxy60":       {"ic": 0.0662, "icir": 0.1890, "turn": 0.200, "cov": 0.7008, "dir": 1},
+    "usdjpy_beta_cond_120x60":{"ic": 0.0456, "icir": 0.1377, "turn": 0.140, "cov": 0.7029, "dir": 1},
+    "dxy_beta_cond_60x20":    {"ic": 0.0395, "icir": 0.1155, "turn": 0.178, "cov": 0.6322, "dir": 1},
+    "calmness_20":            {"ic": 0.0292, "icir": 0.0997, "turn": 0.213, "cov": 0.7196, "dir": 1},
+}
+
+for fid, m in M.items():
+    m["q"] = abs(m["ic"]) * abs(m["icir"])
+
+qsum = sum(m["q"] for m in M.values())
+for fid, m in M.items():
+    m["w"] = m["q"] / qsum
+
+print("=== SELECTED (quality_ic_tilt) ===")
+for fid, m in M.items():
+    print(f"{fid:26s} IC={m['ic']:.4f} ICIR={m['icir']:.4f} q={m['q']:.6f} w={m['w']:.6f} dir={m['dir']}")
+print("weights_sum =", round(sum(m["w"] for m in M.values()), 6))
+
+selected = []
+for fid, m in M.items():
+    selected.append({
+        "factor_id": fid,
+        "weight": round(m["w"], 6),
+        "direction": m["dir"],
+        "ic": m["ic"],
+        "icir": m["icir"],
+        "quality": round(m["q"], 8),
+        "signal_artifact": f"factors/{fid}.signal.npy",
+        "admission_horizon": 10,
+        "last_validated": "2026-07-30",
+        "transform": "cross-sectional rank, then z-score; winsorize 3 sigma",
+        "category": {
+            "downbeta_spx_60": "Risk (downside beta to SPX, crisis-beta premium)",
+            "mom20_volproxy60": "Momentum (vol-damped)",
+            "usdjpy_beta_cond_120x60": "Macro-Conditional (USDJPY carry-risk beta)",
+            "dxy_beta_cond_60x20": "Macro-Conditional (DXY beta)",
+            "calmness_20": "Low-Risk (quiet-regime persistence)",
+        }[fid],
+        "suitability": {
+            "downbeta_spx_60": "high q (0.01407, #1) - top full-sample quality; crisis-beta premium is regime-relevant in a risk-off tape (VIX 23.8, +50.7%/40d); CAVEAT: recent decay (2025-26 IC -0.0189, last250 IC -0.0471) - monitor; lowest turnover (0.072)",
+            "mom20_volproxy60": "high - incumbent primary driver (IC 0.0662, ICIR 0.189); vol-damping + skip-5 suits elevated vol and explosive rotation; 10d cadence matches admission horizon",
+            "usdjpy_beta_cond_120x60": "medium-high - JPY carry-risk sleeve, strongest recent regime splits (2025-26 IC 0.0875/ICIR 0.303); low turnover (0.140); diversifies DXY-beta (full rho 0.102, last60 0.497 - near gate, flagged)",
+            "dxy_beta_cond_60x20": "medium-high - orthogonal DXY hedge sleeve (full rho vs mom20 0.061); DXY flat/soft mutes the conditioning term this cycle",
+            "calmness_20": "medium - defensive low-vol tilt, strongest in 2026 split (IC 0.1040/ICIR 0.3172); diversifies momentum (as-consumed rho vs mom20 0.23 full / 0.28 last60)",
+        }[fid],
+    })
+
+ensemble = {
+    "schema_version": 1,
+    "method": "quality_ic_tilt",
+    "updated_at": "2026-07-30",
+    "cycle": "2026-07-30",
+    "note": "REFRESHED within cycle after library expansion (10 active JSONs; previous 3-factor ensemble superseded). Weights = q/sum(q), q=|IC|*|ICIR|, direction=sign(IC). Selection gates: active JSON + recoverable signal artifact + last_validated 2026-07-30 + turnover vs 10d cadence + pairwise |rho|<0.5 on as-consumed transformed signals.",
+    "universe": "15-instrument tradable cross-asset benchmark",
+    "selection_rule": "q = |IC| * |ICIR|, weight = q / sum(q), direction = sign(IC); max 10 factors; artifact-availability gate; turnover vs 10d cadence gate; pairwise |rho| < 0.5 as-consumed gate",
+    "market_assessment": {
+        "trend": "Sideways-to-Bear (risk-off rotation, not a uniform bear)",
+        "trend_strength": "Moderate - sharp sector rotation (SOX -20.9%, 000688.SH -11.5% over 20d vs WTI +22.0%, HSI +6.5%, COPPER +2.4%, US10Y +2.9%); indices net range-bound (SPX -3.9%, NDX -3.4%, 000300.SH -3.1%, N225 -3.1% over 20d); breadth above 60d MA 7/15",
+        "risk_level": "High - INTENSIFYING: VIX closed 23.76 on 2026-07-29 (+42% in 8 sessions from 16.7 on 07-17; +50.7% over 40d; 07-28 single-session +4.70); 20d realized vol (ann): ETH 78%, 000688.SH 59%, WTI 53%, SOX 50%, NDX 26%, SPX 16%; median 21.7%",
+        "volatility_regime": "Elevated - VIX 23.76 (+44.5% in 20d, +29.9% in 60d); broad cross-asset vol expansion",
+        "correlation_regime": "Moderate (mean pairwise |20d-return corr| = 0.34) with HIGH cross-sectional dispersion (annualized CS dispersion 28.2%) - cross-sectional ranking remains informative",
+        "liquidity_condition": "Tightening - VIX spike with DXY flat (99.9, -1.45% in 20d) and gold down (XAU -3.5% in 20d) indicates liquidity/positioning-driven de-risking, not flight-to-safety",
+        "assessment_date": "data through 2026-07-29 (previous completed trading day)"
+    },
+    "selected_factors": selected,
+    "weights_sum": round(sum(m["w"] for m in M.values()), 6),
+    "risk_notes": [
+        "ACTIVE LIBRARY = 10 JSONs (was 3): calmness_20, downbeta_spx_60, dxy_beta_cond_60x20, lagbeta_spx_60, mom20_volproxy60, mom_10d_skip5, mom_120d_skip5, usdjpy_beta_cond_120x60, vix_beta_cond_60x20, vol_of_vol20x60 (plus factor_ensemble.json). Miners admitted 7 new/readmitted factors at 2026-08-11T01:20-01:21.",
+        "EXCLUDED - no signal artifact & stale validation & excessive turnover (NOT consumable downstream): mom_10d_skip5 (artifact None, last_validated 2026-07-16, turn 4.094), mom_120d_skip5 (None, 07-16, 1.920), vix_beta_cond_60x20 (None, 07-16, 3.345), vol_of_vol20x60 (None, 07-16, 2.069). Per quarantine precedent (intraday_drift_20: 'no recoverable signal artifact'), these should NOT be consumed; recommend Miner re-quarantine or provide artifacts + re-validate for 2026-07-30. turn_10d_rank values >1 indicate >1x book turnover per 10d - incompatible with decision cadence regardless.",
+        "EXCLUDED - redundancy: lagbeta_spx_60 dropped vs downbeta_spx_60 (as-consumed |rho| full 0.278 / last250 0.625 / last60 0.574 > 0.5 recent windows; lower q 0.00338; recent raw-IC sign flip last250 +0.0773 conflicts with expected direction -1).",
+        "INVALID mirror overwritten: factors/factor_ensemble.json had been replaced by a 7-factor ensemble containing non-admitted artifact-only factors (max_consec_gain_20, max_consec_loss_20, days_since_high_60 - signal.npy present but NO active JSON). Canonical 5-factor ensemble re-mirrored.",
+        "vol_price_corr_60 EVICTED at 2026-08-11T01:20 (abs rho 0.573 vs mom20_volproxy60, 0.571 vs usdjpy_beta_cond_120x60 > 0.5 gate; q 0.00615). Do not reintroduce.",
+        "Concentration: top-2 (downbeta_spx_60 34.9% + mom20_volproxy60 31.0%) = 65.9% - reduced vs prior 2-factor 73.3%/3-factor 62.6% single-factor peak, but still meaningful; downstream portfolio should keep per-asset risk caps tight.",
+        "Selected 5 verified THIS cycle on as-consumed transformed signals (neutral-fill -> CS rank -> z-score -> winsorize 3sigma): max |rho| = 0.2306 (mom20 vs calmness, full). All full-window pairs < 0.5. Watch: usdjpy_vs_dxy last60 +0.4970 (near gate), calmness_vs_usdjpy last60 +0.3781, mom20_vs_calmness last60 +0.2776 - all below gate but elevated.",
+        "Regime-suitability flags: downbeta_spx_60 top weight carries recent decay (last250 IC -0.0471, 2025-26 IC -0.0189) - crisis-beta premium historically works in risk-off, but live monitoring required; first live feedback (memory.txt) will drive demotion if it fails. calmness_20 is the strongest recent performer (2026 IC 0.1040/ICIR 0.3172) at only 7.2% weight - pure q tilt favors full-sample quality.",
+        "Signal coverage on final date (2026-07-29): 15/15 assets non-NaN for all five selected factors - ensemble fully usable for the next allocation.",
+        "Turnover: all five selected factors turn_10d_rank <= 0.213 - compatible with 10d cadence; no excessive-turnover flags.",
+        "memory.txt empty (online start 2026-07-16; no live trade records yet) - no feedback-driven demotion this cycle.",
+        "Orphan/artifact-only signals with no active JSON (not selectable): max_consec_gain_20, max_consec_loss_20, days_since_high_60, downside_dev_60, gain_loss_20, eff_ratio_20, intraday_drift_20 (quarantined), vol_surge_20 (evicted) - recommend Miner cleanup or admission."
+    ],
+}
+
+with open("factor_ensemble.json", "w") as f:
+    json.dump(ensemble, f, indent=2, ensure_ascii=False)
+with open("factors/factor_ensemble.json", "w") as f:
+    json.dump(ensemble, f, indent=2, ensure_ascii=False)
+
+print("\nWROTE factor_ensemble.json + factors/factor_ensemble.json (identical)")
+print("selected:", [s["factor_id"] for s in selected])
+print("weights:", [s["weight"] for s in selected])
+print("sum:", round(sum(s["weight"] for s in selected), 6))

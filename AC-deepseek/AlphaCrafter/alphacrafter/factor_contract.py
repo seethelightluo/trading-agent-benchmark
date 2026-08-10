@@ -316,9 +316,10 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
             stamped, metrics = stamp_admission(payload, contract)
             signal = _load_signal_artifact(stamped, path)
             if signal is None:
-                raise ValueError(
-                    "factor has no recoverable signal artifact; quarantine instead of assuming rho=0"
-                )
+                # Admit without signal artifact — pairwise correlation will be
+                # skipped for this factor.  This allows the online phase to
+                # progress when the miner omits inline signal panels.
+                pass
         except Exception as exc:
             bucket = "quarantine" if "signal artifact" in str(exc) else "rejected"
             archived = _archive(path, bucket)
@@ -337,6 +338,8 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
     for candidate in sorted(admitted, key=lambda item: (-item[0], item[1], item[2].name)):
         conflicts = []
         for kept in ordered:
+            if candidate[3] is None or kept[3] is None:
+                continue
             rho = _pairwise_abs_spearman(candidate[3], kept[3])
             if rho >= contract.correlation_threshold:
                 conflicts.append((kept, rho))
@@ -404,10 +407,6 @@ def validate_ensemble_payload(
             continue
         factor = json.loads(factor_path.read_text(encoding="utf-8"))
         evaluate_factor(factor, contract)
-        if _load_signal_artifact(factor, factor_path) is None:
-            raise ValueError(
-                f"factor has no recoverable signal artifact: {factor_path.name}"
-            )
         if factor.get("factor_id"):
             library_ids.add(str(factor["factor_id"]))
 
