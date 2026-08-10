@@ -200,7 +200,7 @@ def load_library_signals(panel: pd.DataFrame) -> dict:
     beta_panel = pd.DataFrame(beta_parts, index=panel.index)
     vix_close = macro_series("VIX")
     vix_20 = vix_close / vix_close.shift(20) - 1.0
-    sig["vix_beta_cond_60x20"] = -beta_panel * vix_20.reindex(beta_panel.index)
+    sig["vix_beta_cond_60x20"] = -beta_panel.mul(vix_20.reindex(beta_panel.index), axis=0)
     return sig
 
 
