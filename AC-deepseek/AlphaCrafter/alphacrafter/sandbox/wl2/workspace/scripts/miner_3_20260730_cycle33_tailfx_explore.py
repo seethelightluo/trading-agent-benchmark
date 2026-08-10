@@ -169,12 +169,15 @@ def candle_structure(mode, w=20, minp=12):
     return pd.DataFrame(out, index=panel.index)
 
 
-def vol_price_corr(s, vol_s, w=60, minp=30):
-    """Rolling corr(volume, |daily return|): volume-volatility feedback strength."""
-    ar = s.pct_change().abs()
-    df = pd.concat([ar.rename("a"), vol_s.rename("v")], axis=1).dropna()
-    c = df["a"].rolling(w, min_periods=minp).corr(df["v"])
-    return c.reindex(panel.index)
+def vol_price_corr_panel(w=60, minp=30):
+    """Rolling corr(volume, |daily return|) per asset: volume-volatility feedback."""
+    out = {}
+    for a in TRADABLES:
+        df = OHLC[a].dropna()
+        ar = df["close"].pct_change().abs()
+        c = ar.rolling(w, min_periods=minp).corr(df["volume"])
+        out[a] = c.reindex(panel.index)
+    return pd.DataFrame(out, index=panel.index)
 
 
 def crash_speed_60(s, w=60, minp=40):
@@ -223,8 +226,7 @@ cands["lower_shadow_20"] = candle_structure("lower_shadow")
 cands["upper_shadow_20"] = candle_structure("upper_shadow")
 
 # F. Volume feedback
-vol_panel = pd.DataFrame({a: OHLC[a]["volume"] for a in TRADABLES}, index=panel.index)
-cands["vol_price_corr_60"] = per_asset(panel, vol_price_corr, vol_panel)
+cands["vol_price_corr_60"] = vol_price_corr_panel()
 
 print("\n=== VALIDATION (admission horizon=10d) ===")
 results = {}

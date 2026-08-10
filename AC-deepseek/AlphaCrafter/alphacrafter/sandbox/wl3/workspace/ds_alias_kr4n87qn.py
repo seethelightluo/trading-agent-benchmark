@@ -1,0 +1,5 @@
+src = open('scripts/factor_common.py').read()
+i = src.find('def signal_matrix')
+print(src[i:i+900])
+i2 = src.find('WATCHLIST')
+print(src[max(0,i2-200):i2+200])

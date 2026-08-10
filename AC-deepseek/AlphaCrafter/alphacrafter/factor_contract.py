@@ -197,9 +197,18 @@ def _load_signal_artifact(payload: dict, factor_path: Path) -> np.ndarray | None
 
 
 def _pairwise_abs_spearman(left: np.ndarray, right: np.ndarray) -> float:
-    """Compute mean cross-sectional absolute Spearman rho over common rows."""
-    if left.shape != right.shape:
-        raise ValueError(f"signal shapes differ: {left.shape} vs {right.shape}")
+    """Compute mean cross-sectional absolute Spearman rho over common rows.
+
+    When signal panels have different row counts (e.g. seed factors computed
+    on full history vs miner factors on visible window only), align by taking
+    the last N rows of each where N = min(left rows, right rows).
+    """
+    if left.shape[1] != right.shape[1]:
+        raise ValueError(f"signal column count differs: {left.shape[1]} vs {right.shape[1]}")
+    if left.shape[0] != right.shape[0]:
+        n = min(left.shape[0], right.shape[0])
+        left = left[-n:]
+        right = right[-n:]
     values: list[float] = []
     for row_left, row_right in zip(left, right):
         finite = np.isfinite(row_left) & np.isfinite(row_right)
