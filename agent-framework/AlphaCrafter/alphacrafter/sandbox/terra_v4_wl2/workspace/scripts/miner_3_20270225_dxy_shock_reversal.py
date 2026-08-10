@@ -1,26 +1,20 @@
 import pandas as pd,numpy as np
-from alphacrafter.sim.utils import get_stock_daily_data,get_index_daily_data
 U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
-def g(s):
- for fn in (get_index_daily_data,get_stock_daily_data):
-  try:
-   x=fn(s,days=5000)
-   if x is not None:return x
-  except Exception: pass
-px=pd.DataFrame({s:g(s).set_index('date')['close'] for s in U}).sort_index(); r=np.log(px).diff(); fr={h:px.shift(-h)/px-1 for h in [1,5,10]}
-d=g('DXY').set_index('date')['close'].reindex(px.index).ffill(); shock=(np.log(d).diff(5)>np.log(d).diff(5).rolling(252,min_periods=126).quantile(.75)).shift(1)
-f=(-r.rolling(3).sum()).where(shock); f=f.sub(f.median(axis=1),axis=0)
-s=f.stack().rename('signal').reset_index();s.columns=['date','symbol','signal'];s.to_csv('../persistent/factor_signals_miner_3_20270225_dxy_shock_reversal.csv',index=False)
-print('active',int(shock.sum()),'coverage',f.notna().sum().sum()/(len(U)*len(f)))
-for h in [1,5,10]:
- a=[];ns=[]
- for dt in f.index:
-  z=pd.concat([f.loc[dt],fr[h].loc[dt]],axis=1).dropna()
-  if len(z)>=8 and z.iloc[:,0].nunique()>1:a.append(z.iloc[:,0].corr(z.iloc[:,1],method='spearman'));ns.append(len(z))
- a=np.asarray(a);print(h,len(a),np.mean(ns) if ns else 0,np.mean(a) if len(a) else np.nan,np.mean(a)/np.std(a,ddof=1) if len(a)>1 else np.nan,np.mean(a>0) if len(a) else np.nan)
-for label,lo,hi in [('2020-22','2020','2022-12-31'),('2023-24','2023','2024-12-31'),('2025-26','2025','2026-12-31'),('2027','2027','2027-02-25')]:
- a=[]
- for dt in f.loc[lo:hi].index:
-  z=pd.concat([f.loc[dt],fr[1].loc[dt]],axis=1).dropna()
-  if len(z)>=8 and z.iloc[:,0].nunique()>1:a.append(z.iloc[:,0].corr(z.iloc[:,1],method='spearman'))
- a=np.asarray(a);print(label,len(a),np.mean(a) if len(a) else np.nan,np.mean(a)/np.std(a,ddof=1) if len(a)>1 else np.nan)
+def rd(s,macro=False):
+ p='../persistent/index_data/' if macro else '../persistent/stock_data/'
+ x=pd.read_csv(p+s+'.csv',parse_dates=['date']).sort_values('date').set_index('date'); return x.close
+px=pd.concat({s:rd(s) for s in U},axis=1).sort_index(); r=px.pct_change();
+# DXY-conditioned reversal: use only yesterday's DXY shock to scale 3d cross-sectional reversal
+m=rd('DXY',True).reindex(px.index).ffill(); shock=m.pct_change().rolling(3).sum().shift(1)
+# stronger reversal after dollar shocks, with smooth positive scale
+scale=(1+10*shock.abs()).clip(upper=3)
+f=-r.rolling(3).sum().mul(scale,axis=0); f=f.sub(f.median(axis=1),axis=0)
+rows=[]
+for d in f.index:
+ z=pd.concat([f.loc[d],(px.shift(-1)/px-1).loc[d]],axis=1).dropna()
+ if len(z)>=8 and z.iloc[:,0].nunique()>1: rows.append((d,z.iloc[:,0].corr(z.iloc[:,1],method='spearman'),len(z)))
+x=pd.DataFrame(rows,columns=['date','ic','n']); print('dates',len(x),'avgN',x.n.mean(),'IC',x.ic.mean(),'ICIR',x.ic.mean()/x.ic.std(ddof=1),'hit',(x.ic>0).mean(),'coverage',x.n.mean()/15)
+for lo,hi in [('2020','2022'),('2023','2024'),('2025','2026'),('2026-07','2027-02-25')]:
+ q=x.set_index('date').loc[lo:hi].ic; print(lo,len(q),q.mean(),q.mean()/q.std(ddof=1))
+out=f.stack().rename('signal').reset_index();out.columns=['date','asset','signal'];out.to_csv('../persistent/factor_signals_miner_3_20270225_dxy_shock_reversal.csv',index=False)
+print('turnover',f.rank(axis=1,pct=True).diff().abs().mean(axis=1).mean())

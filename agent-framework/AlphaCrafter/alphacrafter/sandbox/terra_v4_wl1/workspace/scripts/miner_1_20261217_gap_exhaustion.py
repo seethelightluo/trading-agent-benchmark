@@ -1,18 +1,20 @@
-import pandas as pd,numpy as np
+import pandas as pd, numpy as np
 from scipy.stats import spearmanr
-U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
-cut=pd.Timestamp('2026-12-17'); base='../persistent/stock_data'
-D={s:pd.read_csv(f'{base}/{s}.csv',parse_dates=['date']).set_index('date').sort_index().loc[:cut] for s in U}
-p=pd.DataFrame({s:d.close for s,d in D.items()}).sort_index(); o=pd.DataFrame({s:d.open for s,d in D.items()}).reindex(p.index)
-r=p.pct_change(); gap=o/p.shift(1)-1
-# interpretable gap-exhaustion reversal: fade the recent mean overnight gap
-for w in [1,3,5]:
- f=-gap.rolling(w,min_periods=w).mean(); rows=[]
- for i in range(len(p)-1):
-  q=pd.concat([f.iloc[i].rename('f'),r.iloc[i+1].rename('y')],axis=1).dropna()
-  if len(q)>=8: rows.append((p.index[i],spearmanr(q.f,q.y).statistic,len(q)))
- a=pd.DataFrame(rows,columns=['date','ic','n']); x=a.ic
- print('WINDOW',w,'DATES',len(x),'AVG_N',round(a.n.mean(),2),'COVERAGE',round(a.n.mean()/15,4),'IC',round(x.mean(),6),'ICIR',round(x.mean()/x.std(ddof=1),6),'HIT',round((x>0).mean(),4),'TURN',round(f.rank(axis=1,pct=True).diff().abs().mean().mean(),6))
- for lo,hi in [(2020,2022),(2023,2024),(2025,2026)]:
-  z=x[(pd.to_datetime(a.date).dt.year>=lo)&(pd.to_datetime(a.date).dt.year<=hi)]; print('REGIME',lo,hi,'N',len(z),'IC',round(z.mean(),6),'ICIR',round(z.mean()/z.std(ddof=1),6) if len(z)>1 else None)
- print('DECAY',[(h, round(np.nanmean([spearmanr(pd.concat([f.iloc[i].rename('f'),(p.shift(-h).div(p)-1).iloc[i].rename('y')],axis=1).dropna().f, pd.concat([f.iloc[i].rename('f'),(p.shift(-h).div(p)-1).iloc[i].rename('y')],axis=1).dropna().y).statistic for i in range(len(p)-h) if len(pd.concat([f.iloc[i].rename('f'),(p.shift(-h).div(p)-1).iloc[i].rename('y')],axis=1).dropna())>=8]),6)) for h in [1,5,10]])
+END=pd.Timestamp('2026-12-17'); syms=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+rows=[]
+for s in syms:
+ d=pd.read_csv(f'../persistent/stock_data/{s}.csv',parse_dates=['date']).sort_values('date');d=d[d.date<=END]
+ prev=d.close.shift(1); gap=d.open/prev-1; intr=d.close/d.open-1
+ # overnight gap exhaustion: fade the opening gap, scaled by recent gap volatility
+ gv=gap.rolling(20,min_periods=10).std(); f=-gap/gv.replace(0,np.nan)
+ rows.append(pd.DataFrame({'date':d.date,'symbol':s,'f':f,'y':d.close.shift(-1)/d.close-1,'y5':d.close.shift(-5)/d.close-1}))
+x=pd.concat(rows,ignore_index=True)
+def calc(z,col='y'):
+ a=[];ns=[]
+ for dt,g in z.groupby('date'):
+  g=g.dropna(subset=['f',col]);
+  if len(g)>=8:a.append(spearmanr(g.f,g[col]).statistic);ns.append(len(g))
+ a=np.array(a);return len(a),np.mean(ns),np.mean(a),np.mean(a)/np.std(a,ddof=1),(a>0).mean()
+print('universe',len(syms),'rows',len(x),'daily',calc(x),'5day',calc(x,'y5'))
+for lo,hi,n in [('2020','2022','20-22'),('2023','2024','23-24'),('2025','2026','25-26')]:print(n,calc(x[(x.date>=lo)&(x.date<=hi)]))
+v=x.dropna(subset=['f']); print('coverage',len(v)/len(x));v[['date','symbol','f']].to_csv('scripts/miner_1_20261217_gap_exhaustion_signal.csv',index=False)

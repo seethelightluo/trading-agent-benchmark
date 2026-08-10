@@ -1,25 +1,33 @@
-import pandas as pd, numpy as np, os
-from scipy.stats import spearmanr
+import pandas as pd, numpy as np
+from alphacrafter.sim.utils import get_stock_daily_data,get_index_daily_data
 U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
-P='../persistent/stock_data'; ds={}
-for s in U:
- d=pd.read_csv(f'{P}/{s}.csv',parse_dates=['date']).set_index('date'); ds[s]=d.close.astype(float)
-px=pd.concat(ds,axis=1).sort_index(); rets=px.pct_change()
-# trend consistency: signed fraction of positive daily returns, centered, times magnitude of 20d return
-cons=rets.rolling(20).mean()/rets.rolling(20).std() # interpretable consistency / noise
-# alternative only one idea: consistency of direction
-fac=rets.gt(0).rolling(20).mean()-0.5
-# use direction consistency; forward returns
-for h in [1,3,5,10]:
- fwd=px.shift(-h)/px-1; rows=[]
- for dt in fac.index:
-  z=pd.concat([fac.loc[dt],fwd.loc[dt]],axis=1).dropna()
-  if len(z)>=8:
-   rows.append((dt,spearmanr(z.iloc[:,0],z.iloc[:,1]).statistic,len(z)))
- a=np.array([x[1] for x in rows]); dates=pd.to_datetime([x[0] for x in rows])
- print('H',h,'dates',len(a),'avgN',np.mean([x[2] for x in rows]),'IC',a.mean(),'ICIR',a.mean()/a.std(ddof=1),'hit',(a>0).mean())
- for lo,hi in [(2020,2022),(2023,2024),(2025,2026),(2026,2027)]:
-  q=a[(dates.year>=lo)&(dates.year<=hi)]; print(' regime',lo,hi,len(q),q.mean() if len(q) else np.nan,q.mean()/q.std(ddof=1) if len(q)>1 else np.nan)
-print('coverage',fac.notna().sum().sum()/(fac.shape[0]*fac.shape[1]))
-# artifact long format
-out=fac.stack().rename('signal').reset_index();out.columns=['date','symbol','signal'];out.to_csv('../persistent/factor_signals_miner_1_20270225_trend_consistency.csv',index=False)
+def get(s):
+ for fn in (get_index_daily_data,get_stock_daily_data):
+  try:
+   x=fn(s,days=5000)
+   if x is not None:return x
+  except Exception: pass
+px=pd.DataFrame({s:get(s).set_index('date')['close'] for s in U}).sort_index(); r=px.pct_change()
+# Trend consistency: medium return rewarded only when 5/20/60d directions agree, scaled by 20d volatility.
+mom=px.pct_change(20); signs=(pd.concat([px.pct_change(5),px.pct_change(20),px.pct_change(60)],axis=1).apply(np.sign).sum(axis=1))
+# per asset consistency is sign agreement score, not cross section aggregate
+m5=px.pct_change(5);m20=px.pct_change(20);m60=px.pct_change(60)
+cons=(np.sign(m5)+np.sign(m20)+np.sign(m60))/3
+vol=r.rolling(20).std(); f=mom/vol*cons
+f=f.sub(f.median(axis=1),axis=0)
+for h in [1,5,10]:
+ fr=px.shift(-h)/px-1; a=[]; ns=[]
+ for dt in f.index:
+  z=pd.concat([f.loc[dt],fr.loc[dt]],axis=1).dropna()
+  if len(z)>=8 and z.iloc[:,0].nunique()>1:a.append(z.iloc[:,0].corr(z.iloc[:,1],method='spearman'));ns.append(len(z))
+ a=np.array(a); print('H',h,'dates',len(a),'avg_n',np.mean(ns),'IC',np.mean(a),'ICIR',np.mean(a)/np.std(a,ddof=1),'hit',np.mean(a>0))
+for lo,hi in [('2020','2022-12-31'),('2023','2024-12-31'),('2025','2026-12-31'),('2027','2027-02-25')]:
+ a=[]
+ fr=px.shift(-5)/px-1
+ for dt in f.index:
+  if str(dt)>=lo and str(dt)<=hi:
+   z=pd.concat([f.loc[dt],fr.loc[dt]],axis=1).dropna()
+   if len(z)>=8 and z.iloc[:,0].nunique()>1:a.append(z.iloc[:,0].corr(z.iloc[:,1],method='spearman'))
+ print('REG',lo,len(a),np.mean(a) if a else np.nan,np.mean(a)/np.std(a,ddof=1) if len(a)>1 else np.nan)
+out=f.stack().rename('signal').reset_index();out.columns=['date','symbol','signal'];out.to_csv('../persistent/factor_signals_miner_1_20270225_trend_consistency.csv',index=False)
+print('coverage',f.notna().mean().mean(),'dates',len(f),'instruments',len(U))

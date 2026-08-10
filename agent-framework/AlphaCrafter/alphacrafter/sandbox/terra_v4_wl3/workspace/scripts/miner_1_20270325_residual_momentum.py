@@ -1,24 +1,28 @@
-import pandas as pd, numpy as np, glob
+import pandas as pd, numpy as np, glob, os
 from scipy.stats import spearmanr
-U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
-d={}
-for s in U:
- f='../persistent/stock_data/'+s+'.csv'; x=pd.read_csv(f,parse_dates=['date']).set_index('date').sort_index(); d[s]=x
-prices=pd.DataFrame({s:x.close for s,x in d.items()}); rets=prices.pct_change()
-# residual, volatility-normalized medium-term momentum; all inputs through t, predicts t+1
-mom=prices.pct_change(20); vol=rets.rolling(20).std()*np.sqrt(252)
-fac=(mom.sub(mom.median(axis=1),axis=0)).div(vol.replace(0,np.nan))
-rows=[]
-for t in fac.index:
- f=fac.loc[t]; y=rets.shift(-1).loc[t]
- ok=f.notna()&y.notna()
- if ok.sum()>=8:
-  rows.append([t,ok.sum(),spearmanr(f[ok],y[ok]).statistic]+[spearmanr(f[ok],rets.shift(-h).loc[t][ok]).statistic if (rets.shift(-h).loc[t][ok].notna().sum()>=8) else np.nan for h in [5,10]])
-r=pd.DataFrame(rows,columns=['date','n','ic1','ic5','ic10']).set_index('date')
-for c in ['ic1','ic5','ic10']:
- z=r[c].dropna(); print(c,'dates',len(z),'avgN',r.loc[z.index,'n'].mean(),'IC',z.mean(),'ICIR',z.mean()/z.std(ddof=1),'hit',(z>0).mean())
-print('coverage',fac.notna().sum(axis=1).mean()/15,'turnover', (fac.rank(axis=1,pct=True).diff().abs().mean(axis=1).dropna().mean()))
-for a,b in [('2020','2022'),('2023','2024'),('2025','2027')]:
- z=r.loc[a:b,'ic1'].dropna(); print(a,b,len(z),z.mean(),z.mean()/z.std(ddof=1) if len(z)>1 else np.nan)
-# artifact
-out=fac.stack().rename('signal').reset_index(); out.columns=['date','symbol','signal']; out.to_csv('scripts/miner_1_20270325_residual_momentum_signal.csv',index=False)
+cut=pd.Timestamp('2027-03-24'); C={}
+for p in glob.glob('../persistent/stock_data/*.csv'):
+    a=os.path.basename(p)[:-4]; d=pd.read_csv(p,parse_dates=['date']).sort_values('date').set_index('date')
+    C[a]=d.close[d.index<=cut]
+close=pd.DataFrame(C).sort_index(); ret=close.pct_change()
+# Beta-neutral medium-term momentum: 20d return unexplained by the equal-weight tradable benchmark.
+bench=ret.mean(axis=1)
+var=bench.rolling(60,min_periods=40).var()
+cov=ret.apply(lambda x: x.rolling(60,min_periods=40).cov(bench))
+beta=cov.div(var.replace(0,np.nan),axis=0)
+resid=ret.sub(beta.mul(bench,axis=0),axis=0)
+fac=resid.rolling(20,min_periods=15).sum()
+fac=fac.replace([np.inf,-np.inf],np.nan); fac.to_csv('scripts/miner_1_20270325_residual_momentum_signal.csv')
+def ev(h):
+ y=close.pct_change(h).shift(-h); vals=[]; ns=[]; dates=[]
+ for dt in fac.index:
+  x=pd.concat([fac.loc[dt],y.loc[dt]],axis=1).dropna()
+  if len(x)>=8 and x.iloc[:,0].nunique()>1 and x.iloc[:,1].nunique()>1:
+   vals.append(spearmanr(x.iloc[:,0],x.iloc[:,1]).statistic); ns.append(len(x)); dates.append(dt)
+ s=pd.Series(vals,index=dates); return s,ns
+print('assets',len(C),'rows',len(fac))
+for h in [1,5,10]:
+ s,n=ev(h); print('H',h,'dates',len(s),'avgN',round(np.mean(n),2),'IC %.7f ICIR %.7f hit %.4f'%(s.mean(),s.mean()/s.std(ddof=1),(s>0).mean()))
+ for lo,hi in [('2020','2022-12-31'),('2023','2024-12-31'),('2025','2027-03-24')]:
+  q=s[(s.index>=lo)&(s.index<=hi)]; print('regime',lo,len(q),'IC %.7f ICIR %.7f'%(q.mean(),q.mean()/q.std(ddof=1)))
+print('coverage',fac.notna().sum(axis=1).mean()/len(C),'turnover',fac.rank(axis=1,pct=True).diff().abs().mean().mean())

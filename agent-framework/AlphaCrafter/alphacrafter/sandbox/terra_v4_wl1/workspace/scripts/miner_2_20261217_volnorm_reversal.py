@@ -1,16 +1,22 @@
-import numpy as np,pandas as pd
-U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; cut=pd.Timestamp('2026-12-16')
-P=pd.DataFrame({s:pd.read_csv(f'../persistent/stock_data/{s}.csv',parse_dates=['date']).drop_duplicates('date').set_index('date').sort_index()['close'] for s in U}).sort_index().loc[:cut]
-r=P.pct_change(fill_method=None); vol=r.rolling(20,min_periods=15).std().shift(1)
-# Volatility-normalized three-day reversal, lagged so signal is known before next return.
-f=-r.rolling(3,min_periods=3).sum().shift(1)/vol
+import pandas as pd,numpy as np
+from scipy.stats import spearmanr
+END=pd.Timestamp('2026-12-17'); syms=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; rows=[]
+for s in syms:
+ d=pd.read_csv(f'../persistent/stock_data/{s}.csv',parse_dates=['date']).sort_values('date'); d=d[d.date<=END].copy(); ret=d.close.pct_change(); vol=ret.rolling(20).std()
+ # lagged short reversal scaled by contemporaneous-to-signal volatility; higher means prior loss per unit risk
+ d['factor']=(-ret/vol).shift(1)
+ for h in [1,5,10]: d[f'y{h}']=d.close.shift(-h)/d.close-1
+ rows.append(d[['date','factor','y1','y5','y10']].assign(symbol=s))
+x=pd.concat(rows); print('rows',len(x),'symbols',x.symbol.nunique())
 for h in [1,5,10]:
- y=P.shift(-h).div(P)-1; out=[]
- for d in P.index:
-  q=pd.concat([f.loc[d].rename('f'),y.loc[d].rename('y')],axis=1).replace([np.inf,-np.inf],np.nan).dropna()
-  if len(q)>=8: out.append((d,q.f.corr(q.y),len(q)))
- a=pd.DataFrame(out,columns=['date','ic','n']).set_index('date'); ic=a.ic
- print('H',h,'dates',len(ic),'avgN',round(a.n.mean(),2),'IC',round(ic.mean(),6),'ICIR',round(ic.mean()/ic.std(ddof=1),6),'hit',round((ic>0).mean(),4))
- if h==1: print('years',[(int(y),round(g.mean(),6),round(g.mean()/g.std(ddof=1),6),len(g)) for y,g in ic.groupby(ic.index.year)])
-f.to_csv('scripts/miner_2_20261217_volnorm_reversal_signal.csv',index_label='date')
-print('coverage',round(f.notna().sum().sum()/f.size,4),'turnover',round(f.rank(axis=1,pct=True).diff().abs().mean().mean(),5),'assets',len(U),'rows',len(P))
+ a=[]; ns=[]
+ for dt,g in x.groupby('date'):
+  g=g.dropna(subset=['factor',f'y{h}'])
+  if len(g)>=8 and g.factor.nunique()>=3: a.append(spearmanr(g.factor,g[f'y{h}']).statistic); ns.append(len(g))
+ a=np.array(a); print('H',h,'dates',len(a),'avgN',round(np.mean(ns),2),'IC',round(a.mean(),6),'ICIR',round(a.mean()/a.std(ddof=1),6),'hit',round((a>0).mean(),4))
+print('coverage',round(x.factor.notna().mean(),4)); print('turnover',round(x.pivot(index='date',columns='symbol',values='factor').rank(axis=1,pct=True).diff().abs().mean(axis=1).mean(),4)); print('period',x.date.min().date(),x.date.max().date())
+obs=[]
+for dt,g in x.groupby('date'):
+ g=g.dropna(subset=['factor','y1'])
+ if len(g)>=8 and g.factor.nunique()>=3: obs.append((dt,spearmanr(g.factor,g.y1).statistic))
+o=pd.DataFrame(obs,columns=['date','ic']); print(o.assign(reg=pd.cut(o.date,[pd.Timestamp('2019-12-31'),pd.Timestamp('2022-12-31'),pd.Timestamp('2024-12-31'),END],labels=['2020-22','2023-24','2025-26'])).groupby('reg',observed=True).ic.agg(['mean','count']).round(5).to_string())
