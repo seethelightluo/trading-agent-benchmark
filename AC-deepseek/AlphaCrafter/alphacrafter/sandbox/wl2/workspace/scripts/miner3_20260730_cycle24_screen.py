@@ -1,13 +1,9 @@
-"""miner_3 cycle 24 screen v2: new orthogonal factor families (NaN-robust).
+"""miner_3 cycle 24 screen v3: new orthogonal factor families (NaN-robust).
 
-Fixes from v1:
-- rolling apply with corrcoef broken on mixed calendars -> use min_periods /
-  shift-based NaN-robust definitions (same convention as prior cycles).
-- macro-conditional candidates called as lambdas (dict evaluated them eagerly).
-
-Families not covered by library: trend efficiency, drawdown depth, return
-autocorrelation (lag-1 product proxy), skewness, lottery/upside risk,
-USDJPY macro-conditional beta, VIX-conditioned momentum, Bollinger bandwidth.
+Fixes from v2: panel is dict from build_panel -> cast to DataFrame.
+Candidates: trend efficiency, drawdown depth, lag-1 autocorrelation proxy,
+60d skew, lottery/upside risk, Bollinger bandwidth, relative strength,
+USDJPY macro-conditional beta, VIX-conditioned momentum.
 """
 import sys, json
 sys.path.insert(0, 'scripts')
@@ -17,8 +13,7 @@ from miner3_lib import (build_panel, forward_returns, spearman_ic,
                         mean_rank_turnover, max_abs_library_correlation,
                         ADMISSION_HORIZON, HORIZONS, VISIBLE)
 
-panel = build_panel()
-RET = 'pct_change'
+panel = pd.DataFrame(build_panel())
 ret = panel.pct_change()
 
 def kaufman_eff(win):
