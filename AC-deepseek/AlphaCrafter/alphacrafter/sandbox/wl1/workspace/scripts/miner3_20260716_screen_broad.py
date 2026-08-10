@@ -137,10 +137,12 @@ for win in (30, 60, 120):
     cands[f"beta_cny_{win}"] = b_cny
     # USD trend tilt: when USD trends down, favor assets with negative DXY beta
     dxy_trend = np.sign(dxy_r.rolling(win).mean())
-    cands[f"usd_tilt_{win}"] = -b_dxy * dxy_trend
+    # NOTE: DataFrame * Series aligns Series index vs DataFrame COLUMNS (outer join)
+    # -> 15 symbol cols + N date cols. Must broadcast row-wise with axis=0.
+    cands[f"usd_tilt_{win}"] = -b_dxy.mul(dxy_trend, axis=0)
     # VIX level tilt: risk-on in low VIX regime
     vix_hi = (VIX > VIX.rolling(252).median()).astype(float)
-    cands[f"risk_off_tilt_{win}"] = -b_vix * vix_hi
+    cands[f"risk_off_tilt_{win}"] = -b_vix.mul(vix_hi, axis=0)
 
 res = [run(n, p) for n, p in cands.items()]
 print(f"\nscreen done {time.time()-t0:.1f}s | {len(res)} candidates | {sum(r['passed'] for r in res)} PASSED gate")
