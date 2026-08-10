@@ -160,7 +160,8 @@ vol_z = zscore_win(V.to_numpy(dtype=float), 120, 40)
 cands["vol_cond_rev1"] = (-LRET * (vol_z > 0.5).astype(float)).to_numpy(dtype=float)
 
 # J. macro-conditioned intraday reversal (VIX high regime), z-scored
-vix = panel["macro"]["VIX"]
+# NOTE: macro df has only 1697 rows (subset of dates) -> reindex onto full panel index first
+vix = panel["macro"]["VIX"].reindex(idx)
 vix_z = (vix - vix.rolling(120).mean()) / (vix.rolling(120).std() + 1e-12)
 intra_rev = (1.0 - C / O)
 cands["rev_intra_x_vixhi"] = zscore_win((intra_rev * (vix_z > 0.0).astype(float)).to_numpy(dtype=float), 120, 40)
