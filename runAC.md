@@ -365,3 +365,31 @@ account、workflow 和 code/contract fingerprint，再做 1 block smoke；不得
 `terra_v4_wl2`、`terra_v4_wl3` 三个独立 session；旧 `ac_luna_3wl` 与失败的 v2/v3
 只保留为历史证据，不 resume。三条 WL 的首个 10 日 seed block 已完成，账户均为
 15 个 fractional positions、cash=0、`portfolio_contract_version=ac-worldline-v2-migration-gate`。
+
+## 10. 每周期窗口强制推进（safety advance，2026-08-11）
+
+背景：因子契约隔离、screener 文本跳过等原生问题暂不修改，但窗口（10 交易日 step）
+必须每周期推进，任何模块的报错/跳过都不能让日期卡住。
+
+规则（两个 AC 版本 `agent-framework/AlphaCrafter` 与 `AC-deepseek/AlphaCrafter` 同步）：
+
+1. 每个 cycle 结束时 `main.py` 读取 `persistent/date.json` 的 `current_date` 与 cycle
+   开始时的快照对比；若 trader 已推进则无事发生。
+2. 若未推进（trader skip / 失败 / 抛异常）：
+   - 优先用现有 `workspace/strategy.py` 执行一次 `step(10)`（`AC_CADENCE_DAYS=10` 强制），
+     调仓与否仍由 proposal/gate（3bp 预期收益门槛）决定；
+   - 若 strategy 缺失或执行报错，则写入确定性 hold 策略（target=当前权重、
+     forecast=0 → gate 永不执行，纯 mark-to-market 推进），原文件备份为
+     `strategy.py.safety.bak`，再执行一次 `step(10)`；
+   - 在 `logs/workflow.json` 追加 `safety_step` 记录，并在 `memory.txt` 追加一行说明。
+3. 模块失败不再终止周期：miner 重试耗尽后继续（记录 degraded），screener/trader
+   抛异常被捕获并继续；`_should_terminate` 只响应 stop / interrupt /
+   `simulation_complete`，不再因单模块 `success=False` 中断整个 run。
+4. resume 语义：含成功 `safety_step` 的 cycle 视为已完成，恢复时从下一 cycle 继续，
+   不会把已推进的窗口重复跑一遍；历史（旧）workflow 无 safety_step 时按原判定。
+5. miner/screener/trader 仍各自 ≤15 轮（`run_config.yaml` 的 `max_iterations`），
+   跑满或出错都自动进入下一阶段/下一周期，不允许"赖着不走"。
+
+验收口径：任一周期的 `date.json.current_date` 在该周期结束后必须前进 10 个交易日
+（除非 `simulation_complete` 或 stop event）；无 ensemble、无有效策略时持仓不变、
+无成本发生。
