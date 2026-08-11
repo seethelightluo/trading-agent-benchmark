@@ -104,7 +104,7 @@ for w in (60, 120):
 # time under water (days since last rolling-max, logged)
 def _tu(c):
     rmax = c.rolling(120).max()
-    tu = (c.rolling(120).apply(lambda x: len(x) - 1 - int(np.argmax(x.values)), raw=True))
+    tu = (c.rolling(120).apply(lambda x: len(x) - 1 - int(np.argmax(x)), raw=True))
     return tu
 cands["time_under_water_120"] = pd.DataFrame({s: roll(close[s], _tu) for s in WATCH}, index=idx)
 

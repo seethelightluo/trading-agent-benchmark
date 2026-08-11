@@ -1,10 +1,18 @@
-"""Trader strategy v1 - Screener 7-factor quality_ic_tilt ensemble (reversal regime).
+"""Trader strategy v2 - Screener 7-factor ensemble with trend overlay.
 
 Cross-sectional rank composite over the 15-name tradable panel. Fully invested,
 non-negative weights summing to 1, no cash sleeve. One atomic rebalance per
 10-trading-day block (first day only) via rebalance_to_weights with aligned
 forecast returns so the gate (gross edge > one-way turnover * 3bp) can decide.
-Bear regime adds a modest defensive tilt (XAU/US10Y/CN10Y).
+
+v2 changes (2026-10-08):
+  - Trend overlay: 25% of composite from a clean 10d momentum rank (no 5-day
+    skip), because mom_10d_skip5 is stale for fast reversals (it missed the
+    ETH crash and kept BTC underweighted while it ran).
+  - Trend guard: assets with 10d return < -1% get weight penalty x0.8,
+    < -4% get x0.5 (persistence filter for falling knives).
+  - Tighter CAP_W 0.14 -> 0.12 for dispersion control.
+  - Defensive set reduced to US10Y/CN10Y (XAU demoted; failed as backstop).
 """
 import json
 import math
@@ -15,8 +23,9 @@ from alphacrafter.sim.utils import (get_account_dict, get_stock_daily_data,
 ONLINE_START = "2026-07-16"
 DATE_FILE = "../persistent/date.json"
 DATA_DAYS = 70
-DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
-CAP_W = 0.14
+DEFENSIVE = {"US10Y", "CN10Y"}          # v2: XAU demoted
+CAP_W = 0.12                            # v2: tightened from 0.14
+TREND_W = 0.25                          # v2: trend overlay share
 
 
 def _load_ensemble():
@@ -102,14 +111,28 @@ def _ranks(values, assets):
 def _scores(frames, assets):
     score = {a: 0.0 for a in assets}
     used = 0
+    wsum = sum(w for _, w, _ in FACTORS)
     for fid, w, direction in FACTORS:
         vals = _factor_values(frames, fid)
         if sum(1 for v in vals.values() if v is not None) < 8:
             continue
         r = _ranks(vals, assets)
         for a in assets:
-            score[a] += w * (r[a] if direction > 0 else 1.0 - r[a])
+            score[a] += (w / wsum) * (r[a] if direction > 0 else 1.0 - r[a])
         used += 1
+    # v2 trend overlay: clean 10d momentum rank (no skip)
+    mom = {}
+    for a in assets:
+        df = frames.get(a)
+        if df is not None and len(df) >= 15:
+            c = df["close"].astype(float)
+            v = float(np.log(c.iloc[-1] / c.iloc[-11]))
+            mom[a] = v if math.isfinite(v) else None
+        else:
+            mom[a] = None
+    r10 = _ranks(mom, assets)
+    for a in assets:
+        score[a] = (1.0 - TREND_W) * score[a] + TREND_W * r10[a]
     return score, used
 
 
@@ -125,13 +148,24 @@ def _regime(frames, assets):
     return "bull" if m > 0.015 else ("bear" if m < -0.015 else "side")
 
 
-def _weights(scores, assets, regime):
+def _weights(scores, assets, regime, frames):
     order = sorted(assets, key=lambda a: (scores[a], a))
     n = len(assets)
     raw = {}
     for i, a in enumerate(order):
         r = i / max(1, n - 1)
         raw[a] = 0.02 + 0.10 * r  # rank-linear 2%..12% pre-normalization
+    # v2 trend guard: penalize assets in active downtrends (10d persistence)
+    for a in assets:
+        df = frames.get(a)
+        if df is None or len(df) < 12:
+            continue
+        r10 = float(np.log(df["close"].astype(float).iloc[-1] /
+                           df["close"].astype(float).iloc[-11]))
+        if r10 < -0.04:
+            raw[a] *= 0.5
+        elif r10 < -0.01:
+            raw[a] *= 0.8
     if regime == "bear":
         tilt = 0.045
         defs = [a for a in DEFENSIVE if a in assets]
@@ -191,7 +225,7 @@ def strategy_hook():
         rebalance_to_weights(w)
         return
     regime = _regime(frames, assets)
-    w = _weights(scores, assets, regime)
+    w = _weights(scores, assets, regime, frames)
     f = _forecasts(scores, assets)
     rebalance_to_weights(
         w,
