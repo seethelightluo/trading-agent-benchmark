@@ -1,149 +1,143 @@
-"""miner_2 2026-07-30 batch-3 screen (fixed: load .npy signal artifacts for rho audit)."""
-import sys
+"""miner_2 exploration: screen novel factor candidates (batch 3) + gate-style rho audit for batch-1 winners.
+
+Batch3 ideas:
+ 1. us10y_beta_60          : rolling 60d beta of asset ret to US10Y ret (untapped US yield beta)
+ 2. updown_vol_asym_60     : 60d downside-vol / upside-vol ratio (fixed implementation)
+ 3. vol_beta_60            : beta of asset 20d realized vol to SPX 20d realized vol (vol co-movement)
+ 4. xsec_beta_60           : rolling 60d beta to breadth (longer window variant)
+ 5. breadth_mom_20         : 20d asset return minus cross-sectional mean 20d return (relative strength)
+ 6. skew_60                : rolling 60d skewness of daily returns
+ 7. corr_xau_20            : rolling 20d corr of asset ret with XAU ret (safe-haven linkage)
+ 8. maxdd_recovery_60      : 60d max drawdown depth residual vs 60d vol (risk-adjusted drawdown)
+"""
+import sys, json
 sys.path.insert(0, 'scripts')
-import json
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from factor_common import (load_prices, load_index, WATCHLIST, canonical_grid,
-                           factor_to_panel, forward_returns, build_library_panels)
-import miner_2_20260730_screen_fast as scr
+import factor_common as fc
 
-prices = load_prices(days=2000)
-grid = canonical_grid(prices)
-xau_close = prices['XAU']['close'] if 'XAU' in prices else None
-spx_close = prices['SPX']['close'] if 'SPX' in prices else None
+prices = fc.load_prices(days=2000)
 
-# ---- library for correlation audit: recompute 4 canonical + all persisted *.npy artifacts ----
-lib_mat = {}
-for fid, lp in build_library_panels(prices).items():
-    lib_mat[fid] = lp.reindex(grid)[WATCHLIST].values.astype(float)
-for f in sorted(Path('factors').glob('*_signal.npy')):
-    fid = f.name.replace('_signal.npy', '')
+lib_ids = ['cn10y_beta_60','copper_gold_beta_20','dd_duration_120_resid','down_beta_60',
+           'dxy_beta_cond_60x20','eurusd_beta_cond_60x20','hilo_pos_60','hs300_beta_60',
+           'intraday_ret_skew_20','mom_accel_60_120','sign_persist_20','spx_beta_60',
+           'streak_60','vix_beta_cond_60x20','vol_adj_mom_20_60','vol_of_vol20x60']
+lib_mats = {}
+for fid in lib_ids:
+    p = f'factors/{fid}_signal.npy'
     try:
-        arr = np.load(f)
-        if arr.shape == (len(grid), 15):
-            lib_mat[fid] = arr.astype(float)
-    except Exception as exc:
-        print(f"skip artifact {f.name}: {exc}")
-print(f"library for rho audit ({len(lib_mat)}): {sorted(lib_mat)}")
+        lib_mats[fid] = np.load(p)
+    except Exception:
+        pass
+grid = fc.canonical_grid(prices)
 
-
-def max_rho(fac):
-    best, best_id = 0.0, None
-    for fid_l, lm in lib_mat.items():
-        c = np.array(scr.spearman_rows(fac, lm))
-        c = c[np.isfinite(c)]
-        if len(c):
-            r = float(np.mean(c))
+def max_rho(panel):
+    m = fc.signal_matrix(panel, grid)
+    best = 0.0; best_id = None; allr = {}
+    for fid, lm in lib_mats.items():
+        if lm.shape != m.shape:
+            continue
+        corrs = []
+        for i in range(len(grid)):
+            x, y = m[i], lm[i]
+            ok = np.isfinite(x) & np.isfinite(y)
+            if ok.sum() >= 8:
+                r = pd.Series(x[ok]).rank().corr(pd.Series(y[ok]).rank())
+                if np.isfinite(r):
+                    corrs.append(r)
+        if corrs:
+            r = float(np.mean(corrs))
+            allr[fid] = r
             if abs(r) > best:
-                best, best_id = abs(r), fid_l
-    return best, best_id
+                best = abs(r); best_id = fid
+    return best, best_id, allr
 
+# ---------- 1: US10Y beta 60 ----------
+def f_us10y_beta(df, s):
+    r = df['close'].pct_change(); ur = prices['US10Y']['close'].pct_change()
+    z = pd.concat([r.rename('r'), ur.rename('u')], axis=1).dropna()
+    b = z['r'].rolling(60).cov(z['u']) / z['u'].rolling(60).var()
+    return b
 
-def f_close_loc_20(df, s):
-    rng = (df['high'] - df['low']).replace(0, np.nan)
-    return ((df['close'] - df['open']) / rng).rolling(20).mean()
-
-
-def f_lower_shadow_20(df, s):
-    rng = (df['high'] - df['low']).replace(0, np.nan)
-    return ((df['close'] - df['low']) / rng).rolling(20).mean()
-
-
-def f_upper_shadow_20(df, s):
-    rng = (df['high'] - df['low']).replace(0, np.nan)
-    return ((df['high'] - df['close']) / rng).rolling(20).mean()
-
-
-def f_gap_20(df, s):
-    gap = df['open'] / df['close'].shift(1) - 1.0
-    return gap.rolling(20).mean()
-
-
-def f_vol_price_corr_60(df, s):
+# ---------- 2: down/up vol asym ----------
+def f_ud_vol(df, s):
     r = df['close'].pct_change()
-    v = df['volume']
-    z = pd.concat([r.rename('r'), v.rename('v')], axis=1).replace([np.inf, -np.inf], np.nan)
-    return z['r'].rolling(60).corr(z['v'])
+    dn = r.clip(upper=0).rolling(60, min_periods=20).std()
+    up = r.clip(lower=0).rolling(60, min_periods=20).std()
+    return dn / up
 
+# ---------- 3: vol beta to SPX vol ----------
+spx_vol = prices['SPX']['close'].pct_change().rolling(20).std().sort_index()
+def f_vol_beta(df, s):
+    v = df['close'].pct_change().rolling(20).std()
+    z = pd.concat([v.rename('v'), spx_vol.rename('sv')], axis=1).dropna()
+    b = z['v'].rolling(60).cov(z['sv']) / z['sv'].rolling(60).var()
+    return b
 
-def f_gold_beta_60(df, s):
-    if xau_close is None:
-        return None
+# ---------- 4: xsec beta 60 ----------
+xret = pd.DataFrame({s: d['close'].pct_change() for s, d in prices.items()}).sort_index()
+breadth = xret.mean(axis=1)
+def f_xsec_beta60(df, s):
     r = df['close'].pct_change()
-    rr = xau_close.pct_change()
-    z = pd.concat([r.rename('a'), rr.rename('b')], axis=1).dropna()
-    return (z['a'].rolling(60).cov(z['b']) / z['b'].rolling(60).var().replace(0, np.nan)).reindex(z.index)
+    z = pd.concat([r.rename('r'), breadth.rename('b')], axis=1).dropna()
+    b = z['r'].rolling(60).cov(z['b']) / z['b'].rolling(60).var()
+    return b
 
+# ---------- 5: breadth-relative momentum ----------
+breadth_ret20 = xret.rolling(20).mean().mean(axis=1)
+def f_breadth_mom(df, s):
+    r20 = df['close'] / df['close'].shift(20) - 1.0
+    return r20 - breadth_ret20.reindex(df.index)
 
-def f_mom_accel_20_60(df, s):
-    close = df['close']
-    m20 = close.shift(5) / close.shift(25) - 1.0
-    m60 = close.shift(5) / close.shift(65) - 1.0
-    return m20 - m60
+# ---------- 6: skew 60 ----------
+def f_skew60(df, s):
+    return df['close'].pct_change().rolling(60, min_periods=30).skew()
 
-
-def f_mdd_63(df, s):
-    roll_max = df['close'].rolling(63, min_periods=30).max()
-    return df['close'] / roll_max - 1.0
-
-
-def f_downside_beta_60(df, s):
-    if spx_close is None:
-        return None
+# ---------- 7: corr with XAU ----------
+xau_ret = prices['XAU']['close'].pct_change().sort_index()
+def f_corr_xau(df, s):
     r = df['close'].pct_change()
-    rr = spx_close.pct_change()
-    z = pd.concat([r.rename('a'), rr.rename('b')], axis=1).dropna()
-    neg = z['b'] < 0
-    a = z.loc[neg, 'a']
-    b = z.loc[neg, 'b']
-    cov = a.rolling(60, min_periods=15).cov(b)
-    var = b.rolling(60, min_periods=15).var()
-    return (cov / var.replace(0, np.nan)).reindex(z.index)
+    z = pd.concat([r.rename('r'), xau_ret.rename('x')], axis=1).dropna()
+    return z['r'].rolling(20).corr(z['x'])
 
+# ---------- 8: drawdown depth risk-adjusted ----------
+def f_dd_risk(df, s):
+    c = df['close']
+    roll_max = c.rolling(60, min_periods=20).max()
+    dd = c / roll_max - 1.0
+    v = df['close'].pct_change().rolling(60, min_periods=30).std()
+    return dd / v
 
-def f_rv_gap_5_20(df, s):
-    r = df['close'].pct_change()
-    return r.rolling(5).std() / r.rolling(20).std().replace(0, np.nan) - 1.0
+cands = {
+    'us10y_beta_60': f_us10y_beta,
+    'updown_vol_asym_60': f_ud_vol,
+    'vol_beta_60': f_vol_beta,
+    'xsec_beta_60': f_xsec_beta60,
+    'breadth_mom_20': f_breadth_mom,
+    'skew_60': f_skew60,
+    'corr_xau_20': f_corr_xau,
+    'dd_risk_60': f_dd_risk,
+}
 
-
-def f_vwap_dist_20(df, s):
-    close = df['close']
-    v = df['volume'].replace(0, np.nan)
-    vwap = (close * v).rolling(20).sum() / v.rolling(20).sum()
-    return close / vwap - 1.0
-
-
-CANDIDATES = [
-    ("close_loc_20", f_close_loc_20),
-    ("lower_shadow_20", f_lower_shadow_20),
-    ("upper_shadow_20", f_upper_shadow_20),
-    ("gap_20", f_gap_20),
-    ("vol_price_corr_60", f_vol_price_corr_60),
-    ("gold_beta_60", f_gold_beta_60),
-    ("mom_accel_20_60", f_mom_accel_20_60),
-    ("mdd_63", f_mdd_63),
-    ("downside_beta_60", f_downside_beta_60),
-    ("rv_gap_5_20", f_rv_gap_5_20),
-    ("vwap_dist_20", f_vwap_dist_20),
-]
-
-for fid, fn in CANDIDATES:
+results = {}
+for fid, fn in cands.items():
     try:
-        panel = factor_to_panel(fn, prices)
-        m = scr.evaluate_fast(fid, panel)
-    except Exception as exc:
-        print(f"{fid:22s} ERROR {exc}")
-        continue
-    if m is None:
-        print(f"{fid:22s} INSUFFICIENT")
-        continue
-    fac = panel.reindex(grid)[WATCHLIST].values.astype(float)
-    rho, rho_id = max_rho(fac)
-    ok = abs(m['ic']) >= 0.007 and abs(m['icir']) >= 0.084
-    print(f"{fid:22s} IC={m['ic']:+.4f} ICIR={m['icir']:+.4f} hit={m['ic_hit_ratio']:.3f} "
-          f"n={m['n_ic_dates']:5d} cov={m['coverage_asset_days']:.2f} ge8={m['coverage_dates_ge8']:.2f} "
-          f"turn={m['turnover_10d_rank']:.2f} rho={rho:.2f}({rho_id}) -> {'PASS' if ok else 'FAIL'}")
-    d = m['decay_ic_by_horizon']
-    print(f"{'':22s} decay " + " ".join(f"h{h}:{d[str(h)]:+.4f}" for h in [1, 3, 5, 10, 20]))
+        panel = fc.factor_to_panel(fn, prices)
+        m = fc.validate_factor(fid, panel, prices)
+        if m is None:
+            print(f"{fid}: INSUFFICIENT DATA"); continue
+        rho, rid, allr = max_rho(panel)
+        m['max_abs_library_correlation'] = rho
+        m['max_corr_library_id'] = rid
+        results[fid] = m
+        print(f"\n=== {fid} === panel {panel.shape}")
+        print(f"  IC={m['ic']:.4f} ICIR={m['icir']:.4f} hit={m['ic_hit_ratio']:.3f} n={m['n_ic_dates']} cov={m['coverage_asset_days']:.3f} ge8={m['coverage_dates_ge8']:.3f} turn={m['turnover_10d_rank']:.2f}")
+        print(f"  max_rho={rho:.3f} vs {rid}")
+        ok = abs(m['ic']) >= 0.007 and abs(m['icir']) >= 0.084
+        print(f"  ADMISSION {'PASS' if ok else 'FAIL'}  rho_ok={rho < 0.5}")
+    except Exception as e:
+        print(f"{fid}: ERROR {e}")
+
+json.dump({k: {kk: vv for kk, vv in v.items() if kk != 'decay_ic_by_horizon'} for k, v in results.items()},
+          open('scripts/miner_2_20260730_screen_batch3.json', 'w'), indent=1, default=str)
+print("\nSaved screening results.")

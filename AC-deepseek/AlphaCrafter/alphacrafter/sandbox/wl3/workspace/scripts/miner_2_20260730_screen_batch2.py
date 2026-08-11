@@ -1,184 +1,150 @@
-"""miner_2 2026-07-30 batch-2 screen: 14 new factor ideas on the 15-asset universe.
+"""miner_2 exploration: screen novel factor candidates (batch 2).
 
-Library correlation is computed against the 5 EFFECTIVE persisted factor
-artifacts (factors/*_signal.npy on the canonical grid) plus legacy panels,
-so rho estimates match what the deterministic gate will see.
-
-Run: python scripts/miner_2_20260730_screen_batch2.py [start] [end]
+Ideas (novel vs current 16-factor library):
+ 1. days_since_60d_high  : age since last 60d high (fresh-high recency)
+ 2. gain_loss_ratio_60   : mean(up rets)/|mean(down rets)| over 60d (asymmetric payoff)
+ 3. vol_percentile_252   : 20d realized vol percentile rank within trailing 252d (regime-relative vol)
+ 4. parkinson_vr_20_60   : Parkinson(high-low) vol ratio 20d/60d (intraday vol term structure)
+ 5. max_dd_20            : max drawdown over trailing 20d (downside depth)
+ 6. serial_corr_5        : autocorrelation of daily returns at lag 5 (weekly echo)
+ 7. crypto_beta_20       : rolling 20d beta of asset ret to crypto (BTC+ETH avg) ret
+ 8. wti_gold_beta_20     : rolling 20d beta of asset ret to (WTI - XAU) ret spread
 """
-import sys
+import sys, json
 sys.path.insert(0, 'scripts')
-import json
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from factor_common import (load_prices, load_index, WATCHLIST, VAL_START, VAL_END,
-                           canonical_grid, factor_to_panel, forward_returns)
-import miner_2_20260730_screen_fast as scr
+import factor_common as fc
 
-prices = load_prices(days=2000)
-grid = canonical_grid(prices)
-usdjpy = load_index('USDJPY', prices=prices)
-eurusd = load_index('EURUSD', prices=prices)
-spx_close = prices['SPX']['close'] if 'SPX' in prices else None
-btc_close = prices['BTC']['close'] if 'BTC' in prices else None
-us10y_close = prices['US10Y']['close'] if 'US10Y' in prices else None
+prices = fc.load_prices(days=2000)
 
-# --- library matrix: 5 persisted effective artifacts (canonical grid, WATCHLIST order) ---
-lib_mat = {}
-for f in sorted(Path('factors').glob('*_signal.npy')):
-    fid = f.name.replace('_signal.npy', '')
-    arr = np.load(f)
-    if arr.shape == (len(grid), 15):
-        lib_mat[fid] = arr
-print(f"library artifacts for correlation: {list(lib_mat.keys())}")
-print(f"grid: {len(grid)} dates ({grid.min().date()}..{grid.max().date()}), assets: {len(WATCHLIST)}")
+lib_ids = ['cn10y_beta_60','copper_gold_beta_20','dd_duration_120_resid','down_beta_60',
+           'dxy_beta_cond_60x20','eurusd_beta_cond_60x20','hilo_pos_60','hs300_beta_60',
+           'intraday_ret_skew_20','mom_accel_60_120','sign_persist_20','spx_beta_60',
+           'streak_60','vix_beta_cond_60x20','vol_adj_mom_20_60','vol_of_vol20x60']
+lib_mats = {}
+for fid in lib_ids:
+    p = f'factors/{fid}_signal.npy'
+    try:
+        lib_mats[fid] = np.load(p)
+    except Exception:
+        pass
+grid = fc.canonical_grid(prices)
 
-
-def rolling_beta(r_asset, r_ref, window):
-    z = pd.concat([r_asset.rename('a'), r_ref.rename('b')], axis=1).dropna()
-    b = z['a'].rolling(window).cov(z['b']) / z['b'].rolling(window).var().replace(0, np.nan)
-    return b.reindex(z.index)
-
-
-def f_usdjpy_beta_cond_60x20(df, s):
-    if usdjpy is None:
-        return None
-    r = df['close'].pct_change()
-    rr = usdjpy['close'].pct_change()
-    b = rolling_beta(r, rr, 60)
-    move = usdjpy['close'] / usdjpy['close'].shift(20) - 1.0
-    return (b * move).reindex(r.index)
-
-
-def f_eurusd_beta_cond_60x20(df, s):
-    if eurusd is None:
-        return None
-    r = df['close'].pct_change()
-    rr = eurusd['close'].pct_change()
-    b = rolling_beta(r, rr, 60)
-    move = eurusd['close'] / eurusd['close'].shift(20) - 1.0
-    return (b * move).reindex(r.index)
-
-
-def f_spx_beta_60(df, s):
-    if spx_close is None:
-        return None
-    r = df['close'].pct_change()
-    rr = spx_close.pct_change()
-    return rolling_beta(r, rr, 60)
-
-
-def f_vol_level_20(df, s):
-    vol = df['close'].pct_change().rolling(20).std()
-    return -np.log(vol.replace(0, np.nan))
-
-
-def f_range_vol_20(df, s):
-    rng = (df['high'] - df['low']) / df['close'].replace(0, np.nan)
-    return -rng.rolling(20).mean()
-
-
-def f_parkinson_vol_term_20_60(df, s):
-    hl = np.log(df['high'] / df['low'].replace(0, np.nan))
-    park = (hl ** 2).rolling(20).mean() / (4 * np.log(2))
-    p20 = np.sqrt(park)
-    park60 = (hl ** 2).rolling(60).mean() / (4 * np.log(2))
-    p60 = np.sqrt(park60)
-    return (p20 / p60.replace(0, np.nan) - 1.0)
-
-
-def f_volume_trend_20_60(df, s):
-    v = df['volume']
-    return v.rolling(20).mean() / v.rolling(60).mean().replace(0, np.nan) - 1.0
-
-
-def f_obv_slope_20(df, s):
-    r = df['close'].pct_change()
-    obv = (np.sign(r) * df['volume']).cumsum()
-    flow = obv - obv.shift(20)
-    scale = (r.abs() * df['volume']).rolling(20).sum()
-    return (flow / scale.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
-
-
-def f_amihud_20(df, s):
-    r = df['close'].pct_change().abs()
-    illiq = (r / df['volume'].replace(0, np.nan)).rolling(20).mean()
-    return np.log(illiq.replace(0, np.nan))
-
-
-def f_kurtosis_60d(df, s):
-    return df['close'].pct_change().rolling(60).kurt()
-
-
-def f_mom_consistency_60(df, s):
-    r = df['close'].pct_change()
-    pos = (r > 0).astype(float).rolling(60).mean()
-    return pos - 0.5
-
-
-def f_pullback_in_trend_60x5(df, s):
-    close = df['close']
-    mom60 = close / close.shift(60) - 1.0
-    ret5 = close / close.shift(5) - 1.0
-    return np.sign(mom60) * (-ret5)
-
-
-def f_beta_us10y_60(df, s):
-    if us10y_close is None:
-        return None
-    r = df['close'].pct_change()
-    rr = us10y_close.pct_change()
-    return rolling_beta(r, rr, 60)
-
-
-def f_btc_beta_60(df, s):
-    if btc_close is None:
-        return None
-    r = df['close'].pct_change()
-    rr = btc_close.pct_change()
-    return rolling_beta(r, rr, 60)
-
-
-CANDIDATES = [
-    ("usdjpy_beta_cond_60x20", f_usdjpy_beta_cond_60x20),
-    ("eurusd_beta_cond_60x20", f_eurusd_beta_cond_60x20),
-    ("spx_beta_60", f_spx_beta_60),
-    ("vol_level_20", f_vol_level_20),
-    ("range_vol_20", f_range_vol_20),
-    ("parkinson_vol_term_20_60", f_parkinson_vol_term_20_60),
-    ("volume_trend_20_60", f_volume_trend_20_60),
-    ("obv_slope_20", f_obv_slope_20),
-    ("amihud_20", f_amihud_20),
-    ("kurtosis_60d", f_kurtosis_60d),
-    ("mom_consistency_60", f_mom_consistency_60),
-    ("pullback_in_trend_60x5", f_pullback_in_trend_60x5),
-    ("beta_us10y_60", f_beta_us10y_60),
-    ("btc_beta_60", f_btc_beta_60),
-]
-
-
-def main():
-    start = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-    end = int(sys.argv[2]) if len(sys.argv) > 2 else len(CANDIDATES)
-    for fid, fn in CANDIDATES[start:end]:
-        try:
-            panel = factor_to_panel(fn, prices)
-            m = scr.evaluate_fast(fid, panel)
-        except Exception as exc:
-            print(f"{fid:28s} ERROR {exc}")
+def max_rho(panel):
+    m = fc.signal_matrix(panel, grid)
+    best = 0.0; best_id = None; allr = {}
+    for fid, lm in lib_mats.items():
+        if lm.shape != m.shape:
             continue
+        corrs = []
+        for i in range(len(grid)):
+            x, y = m[i], lm[i]
+            ok = np.isfinite(x) & np.isfinite(y)
+            if ok.sum() >= 8:
+                r = pd.Series(x[ok]).rank().corr(pd.Series(y[ok]).rank())
+                if np.isfinite(r):
+                    corrs.append(r)
+        if corrs:
+            r = float(np.mean(corrs))
+            allr[fid] = r
+            if abs(r) > best:
+                best = abs(r); best_id = fid
+    return best, best_id, allr
+
+# ---------- 1: days since 60d high ----------
+def f_age_high(df, s):
+    hi = df['close'].rolling(60).max()
+    age = pd.Series(index=df.index, dtype=float)
+    # count days since close last equaled rolling 60d high
+    hit = (df['close'] >= hi)
+    last_hit = hit.groupby((~hit).cumsum()).cumcount()
+    # simpler: for each date, days since last date where close==rolling max
+    recent_highs = df['close'].where(hit)
+    days_since = (df.index - recent_highs.ffill()).days
+    return days_since
+
+# ---------- 2: gain/loss ratio 60d ----------
+def f_gl_ratio(df, s):
+    r = df['close'].pct_change()
+    up = r.where(r > 0).rolling(60).mean()
+    dn = r.where(r < 0).rolling(60).mean()
+    return up / dn.abs()
+
+# ---------- 3: vol percentile 252 ----------
+def f_vol_pct(df, s):
+    v = df['close'].pct_change().rolling(20).std()
+    pct = v.rolling(252).rank(pct=True)
+    return pct
+
+# ---------- 4: Parkinson vol ratio 20/60 ----------
+def f_park_vr(df, s):
+    hl = np.log(df['high'] / df['low'])
+    pv = np.sqrt(hl**2 / (4 * np.log(2)))
+    s20 = pv.rolling(20).mean()
+    s60 = pv.rolling(60).mean()
+    return s20 / s60
+
+# ---------- 5: max drawdown 20 ----------
+def f_maxdd(df, s):
+    c = df['close']
+    roll_max = c.rolling(20, min_periods=5).max()
+    dd = c / roll_max - 1.0
+    return dd
+
+# ---------- 6: serial correlation lag 5 ----------
+def f_serial5(df, s):
+    r = df['close'].pct_change()
+    a = r.rolling(60).corr(r.shift(5))
+    return a
+
+# ---------- 7: crypto beta 20 ----------
+crypto = pd.DataFrame({s: prices[s]['close'].pct_change() for s in ['BTC', 'ETH']}).mean(axis=1).sort_index()
+def f_crypto_beta(df, s):
+    r = df['close'].pct_change()
+    z = pd.concat([r.rename('r'), crypto.rename('c')], axis=1).dropna()
+    b = z['r'].rolling(20).cov(z['c']) / z['c'].rolling(20).var()
+    return b
+
+# ---------- 8: WTI-Gold beta 20 ----------
+def f_wti_gold(df, s):
+    r = df['close'].pct_change()
+    w = prices['WTI']['close'].pct_change(); g = prices['XAU']['close'].pct_change()
+    spread = (w - g)
+    z = pd.concat([r.rename('r'), spread.rename('s')], axis=1).dropna()
+    b = z['r'].rolling(20).cov(z['s']) / z['s'].rolling(20).var()
+    return b
+
+cands = {
+    'days_since_high_60': f_age_high,
+    'gain_loss_ratio_60': f_gl_ratio,
+    'vol_percentile_252': f_vol_pct,
+    'parkinson_vr_20_60': f_park_vr,
+    'max_dd_20': f_maxdd,
+    'serial_corr_5': f_serial5,
+    'crypto_beta_20': f_crypto_beta,
+    'wti_gold_beta_20': f_wti_gold,
+}
+
+results = {}
+for fid, fn in cands.items():
+    try:
+        panel = fc.factor_to_panel(fn, prices)
+        m = fc.validate_factor(fid, panel, prices)
         if m is None:
-            print(f"{fid:28s} INSUFFICIENT")
-            continue
+            print(f"{fid}: INSUFFICIENT DATA"); continue
+        rho, rid, allr = max_rho(panel)
+        m['max_abs_library_correlation'] = rho
+        m['max_corr_library_id'] = rid
+        results[fid] = m
+        print(f"\n=== {fid} === panel {panel.shape}")
+        print(f"  IC={m['ic']:.4f} ICIR={m['icir']:.4f} hit={m['ic_hit_ratio']:.3f} n={m['n_ic_dates']} cov={m['coverage_asset_days']:.3f} ge8={m['coverage_dates_ge8']:.3f} turn={m['turnover_10d_rank']:.2f}")
+        print(f"  max_rho={rho:.3f} vs {rid}")
         ok = abs(m['ic']) >= 0.007 and abs(m['icir']) >= 0.084
-        print(f"{fid:28s} IC={m['ic']:+.4f} ICIR={m['icir']:+.4f} hit={m['ic_hit_ratio']:.3f} "
-              f"n={m['n_ic_dates']:5d} cov={m['coverage_asset_days']:.2f} ge8={m['coverage_dates_ge8']:.2f} "
-              f"turn={m['turnover_10d_rank']:.2f} rho_lib={m['max_abs_library_correlation']:.2f} "
-              f"vs {m['max_corr_library_id']} -> {'PASS' if ok else 'FAIL'}")
-        d = m['decay_ic_by_horizon']
-        print(f"{'':28s} decay " + " ".join(f"h{h}:{d[str(h)]:+.4f}" for h in [1, 3, 5, 10, 20]))
+        print(f"  ADMISSION {'PASS' if ok else 'FAIL'}  rho_ok={rho < 0.5}")
+    except Exception as e:
+        print(f"{fid}: ERROR {e}")
 
-
-if __name__ == '__main__':
-    main()
+json.dump({k: {kk: vv for kk, vv in v.items() if kk != 'decay_ic_by_horizon'} for k, v in results.items()},
+          open('scripts/miner_2_20260730_screen_batch2.json', 'w'), indent=1, default=str)
+print("\nSaved screening results.")

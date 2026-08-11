@@ -1,0 +1,1 @@
+import sys; sys.path.insert(0, 'scripts'); print(open('scripts/miner_3_20260813_lib.py').read()[:3500])

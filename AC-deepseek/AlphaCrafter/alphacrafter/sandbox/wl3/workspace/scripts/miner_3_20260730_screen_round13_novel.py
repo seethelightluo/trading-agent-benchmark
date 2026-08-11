@@ -1,9 +1,16 @@
-"""Round-13 screen: variant + novel factor batch (batch 2).
+"""Round 13: fresh novel factor candidates for the 16-factor library.
 
-Motivation from round 12: MFI/CCI passed IC/ICIR gates but rho>0.5 vs hilo_pos_60.
-Test shorter/longer windows to break the range-position correlation, plus novel
-directions: short-term reversal (classic cross-sectional), gold-haven correlation,
-relative momentum vs XAU, and 20d upside/downside vol asymmetry.
+Ideas (single-idea constructs, none previously screened in this repo):
+ 1. hurst_vr_100       - variance-ratio Hurst proxy (long-memory trend persistence)
+ 2. entropy_sign_20    - 1 - normalized Shannon entropy of return signs (directional balance)
+ 3. kurt_20            - excess kurtosis of daily returns (tail risk)
+ 4. autocorr_ret_20    - lag-1 autocorrelation of daily returns (magnitude-weighted persistence)
+ 5. up_capture_60      - upside beta vs equal-weight market (positive market days only)
+ 6. conviction_20      - |20d return| / 20d realized vol (trend signal-to-noise)
+ 7. gap_freq_20        - frequency of large overnight gaps over 20d (gap risk activity)
+ 8. rs_vs_gold_20      - 20d momentum minus XAU 20d momentum (risk-on/off relative strength)
+ 9. herfindahl_ret_20  - return concentration: HHI of |daily ret| shares over 20d
+10. downside_dev_ratio_20_60 - short/long downside semi-deviation ratio (tail acceleration)
 """
 import sys, json, glob
 import numpy as np
@@ -15,12 +22,18 @@ from factor_common import (WATCHLIST, load_prices, load_index, canonical_grid,
                            forward_returns, rank_ic_series)
 
 np.seterr(all='ignore')
+
 prices = load_prices(days=2500)
 grid = canonical_grid(prices)
-print(f"prices {len(prices)} assets; canonical grid {len(grid)} dates "
-      f"({grid.min().date()}..{grid.max().date()})", flush=True)
+print(f"prices loaded: {len(prices)} assets; canonical grid {len(grid)} dates "
+      f"({grid.min().date()}..{grid.max().date()})")
 
-# ---------- library artifacts (EFFECTIVE json + .npy; recompute missing) ----------
+# equal-weight market return panel (for upside-capture)
+ret_panel = pd.DataFrame({s: prices[s]['close'].pct_change() for s in WATCHLIST})
+mkt_ret = ret_panel.mean(axis=1)
+mkt_ret.name = 'MKT'
+
+# ---------- library artifacts (real signal matrices) ----------
 lib = {}
 for f in sorted(glob.glob('factors/*.json')):
     try:
@@ -29,178 +42,140 @@ for f in sorted(glob.glob('factors/*.json')):
             art = d.get('signal_artifact')
             if art and Path('factors', art).exists():
                 lib[d['factor_id']] = np.load(Path('factors', art))
-            else:
-                lib[d['factor_id']] = None
     except Exception as e:
         print("lib skip", f, e)
+print(f"library artifacts loaded: {len(lib)} -> {sorted(lib)}")
 
 
-def f_hilo60(df, s):
-    hi = df['high'].rolling(60).max(); lo = df['low'].rolling(60).min()
-    return (df['close'] - lo) / (hi - lo).replace(0, np.nan)
-
-
-def f_vixbeta(df, s, vix=None):
-    if vix is None: return None
-    r = df['close'].pct_change(); vr = vix['close'].pct_change()
-    z = pd.concat([r.rename('r'), vr.rename('v')], axis=1).dropna()
-    b = z['r'].rolling(60).cov(z['v']) / z['v'].rolling(60).var()
-    return (-b * (vix['close'] / vix['close'].shift(20) - 1.0)).reindex(z.index)
-
-
-def f_vov(df, s):
-    return df['close'].pct_change().rolling(20).std().rolling(60).std()
-
-
-vix = load_index('VIX', prices=prices)
-for fid, fn in [('hilo_pos_60', f_hilo60), ('vol_of_vol20x60', f_vov)]:
-    if lib.get(fid) is None:
-        lib[fid] = signal_matrix(factor_to_panel(fn, prices), grid)
-if lib.get('vix_beta_cond_60x20') is None:
-    lib['vix_beta_cond_60x20'] = signal_matrix(
-        factor_to_panel(lambda df, s: f_vixbeta(df, s, vix), prices), grid)
-print(f"library artifacts: {len(lib)}", flush=True)
-
-MIN_V = 8
-
-
-def rank_rows(M):
-    T, n = M.shape
-    R = np.full_like(M, np.nan)
-    for t in range(T):
-        v = M[t]
-        m = np.isfinite(v)
-        if m.sum() >= MIN_V:
-            idx = np.where(m)[0]
-            R[t, idx] = v[idx].argsort().argsort().astype(float)
-    return R
-
-
-def row_spearman(RA, RB):
-    m = np.isfinite(RA) & np.isfinite(RB)
-    A = np.where(m, RA, np.nan)
-    B = np.where(m, RB, np.nan)
-    cnt = m.sum(axis=1)
-    with np.errstate(invalid='ignore', divide='ignore'):
-        Ac = A - np.nanmean(A, axis=1, keepdims=True)
-        Bc = B - np.nanmean(B, axis=1, keepdims=True)
-        num = np.nansum(Ac * Bc, axis=1)
-        den = np.sqrt(np.nansum(Ac * Ac, axis=1) * np.nansum(Bc * Bc, axis=1))
-        rho = num / den
-    rho[~((cnt >= MIN_V) & (den > 0))] = np.nan
-    return rho
-
-
-def max_lib_corr(mat):
-    Rc = rank_rows(mat)
+def max_lib_corr(panel):
+    arr = signal_matrix(panel, grid)
     best, best_id = 0.0, None
     for fid, la in lib.items():
-        if la is None:
+        arr_use = arr if la.shape[0] >= arr.shape[0] else arr[-la.shape[0]:]
+        n = min(arr_use.shape[0], la.shape[0])
+        if n < 60:
             continue
-        Rl = rank_rows(la)
-        rho = row_spearman(Rc, Rl)
-        r = float(np.nanmean(rho)) if np.isfinite(rho).any() else 0.0
-        if abs(r) > best:
-            best, best_id = abs(r), fid
+        x, y = arr_use[-n:], la[-n:]
+        corrs = []
+        for i in range(n):
+            a, b = x[i], y[i]
+            m = np.isfinite(a) & np.isfinite(b)
+            if m.sum() >= 8:
+                r = pd.Series(a[m]).rank().corr(pd.Series(b[m]).rank())
+                if np.isfinite(r):
+                    corrs.append(r)
+        if corrs:
+            r = float(np.mean(corrs))
+            if abs(r) > best:
+                best, best_id = abs(r), fid
     return best, best_id
 
 
-# ---------- candidates ----------
-def make_mfi(w):
-    def mfi_w(df, s):
-        tp = (df['high'] + df['low'] + df['close']) / 3.0
-        mf = tp * df['volume'].astype(float)
-        d = tp.diff()
-        pos = mf.where(d > 0, 0.0).rolling(w).sum()
-        neg = mf.where(d < 0, 0.0).rolling(w).sum()
-        ratio = pos / neg.replace(0, np.nan)
-        return 100.0 - 100.0 / (1.0 + ratio)
-    return mfi_w
-
-
-def make_cci(w):
-    def cci_w(df, s):
-        tp = (df['high'] + df['low'] + df['close']) / 3.0
-        sma = tp.rolling(w).mean()
-        md = (tp - sma).abs().rolling(w).mean().replace(0, np.nan)
-        return (tp - sma) / (0.015 * md)
-    return cci_w
-
-
-def rev_5(df, s):
-    return -(df['close'].shift(1) / df['close'].shift(6) - 1.0)
-
-
-def rev_5_vol(df, s):
-    c = df['close']
-    r5 = -(c.shift(1) / c.shift(6) - 1.0)
-    vol20 = c.pct_change().rolling(20).std()
-    return r5 / vol20.replace(0, np.nan)
-
-
-_xau_ret = None
-
-
-def _get_xau_ret():
-    global _xau_ret
-    if _xau_ret is None:
-        _xau_ret = prices['XAU']['close'].pct_change()
-    return _xau_ret
-
-
-def corr_xau_60(df, s):
-    xr = _get_xau_ret()
+# ---------- candidate factor functions ----------
+def hurst_vr_100(df, s):
+    """Variance-ratio Hurst: H = 0.5*ln(VR(10))/ln(10) + 0.5 over 100d window."""
     r = df['close'].pct_change()
-    z = pd.concat([r.rename('r'), xr.rename('x')], axis=1)
-    return z['r'].rolling(60).corr(z['x'])
+    w = 100
+    v1 = r.rolling(w).var()
+    r10 = r.rolling(10).sum()
+    v10 = r10.rolling(w).var()
+    vr = v10 / (10.0 * v1.replace(0, np.nan))
+    h = 0.5 * np.log(vr) / np.log(10.0) + 0.5
+    return h.clip(0.0, 1.0)
 
 
-def rel_mom_xau_20(df, s):
-    c = df['close']
-    xau = prices['XAU']['close']
-    mom_a = c.shift(1) / c.shift(21) - 1.0
-    mom_x = xau.shift(1) / xau.shift(21) - 1.0
-    return (mom_a - mom_x).reindex(c.index)
+def entropy_sign_20(df, s):
+    pos = (df['close'].pct_change() > 0).astype(float)
+    n_up = pos.rolling(20).sum()
+    p = n_up / 20.0
+    ent = -(p * np.log(p) + (1 - p) * np.log(1 - p)) / np.log(2.0)
+    return (1.0 - ent).clip(0.0, 1.0)
 
 
-def updown_vol_ratio_20(df, s):
+def kurt_20(df, s):
+    return df['close'].pct_change().rolling(20).kurt()
+
+
+def autocorr_ret_20(df, s):
     r = df['close'].pct_change()
-    up = r[r > 0].rolling(20).std()
-    dn = r[r < 0].rolling(20).std()
-    return up / dn.replace(0, np.nan)
+    return r.rolling(20).corr(r.shift(1))
+
+
+def up_capture_60(df, s):
+    r = df['close'].pct_change()
+    m = mkt_ret.reindex(df.index)
+    z = pd.concat([r.rename('r'), m.rename('m')], axis=1)
+    up = z[z['m'] > 0]
+    cov = up['r'].rolling(60).cov(up['m'])
+    var = up['m'].rolling(60).var()
+    return (cov / var.replace(0, np.nan)).reindex(z.index)
+
+
+def conviction_20(df, s):
+    r = df['close'].pct_change()
+    mom20 = df['close'] / df['close'].shift(20) - 1.0
+    vol20 = r.rolling(20).std() * np.sqrt(20)
+    return (mom20 / vol20.replace(0, np.nan)).abs()
+
+
+def gap_freq_20(df, s):
+    pc = df['close'].shift(1)
+    gap = df['open'] / pc - 1.0
+    tr = pd.concat([(df['high'] - df['low']),
+                    (df['high'] - pc).abs(),
+                    (df['low'] - pc).abs()], axis=1).max(axis=1)
+    atr14 = tr.rolling(14).mean()
+    big = (gap.abs() > 0.5 * atr14).astype(float)
+    return big.rolling(20).mean()
+
+
+def rs_vs_gold_20(df, s):
+    gold = prices['XAU']['close'].reindex(df.index)
+    a = df['close'].shift(5) / df['close'].shift(25) - 1.0
+    g = gold.shift(5) / gold.shift(25) - 1.0
+    return a - g
+
+
+def herfindahl_ret_20(df, s):
+    r = df['close'].pct_change().abs()
+    w = r.rolling(20).sum()
+    share = r / w.replace(0, np.nan)
+    return (share ** 2).rolling(20).mean()
+
+
+def downside_dev_ratio_20_60(df, s):
+    r = df['close'].pct_change()
+    neg = r.clip(upper=0.0)
+    dd20 = (neg ** 2).rolling(20).mean().apply(np.sqrt)
+    dd60 = (neg ** 2).rolling(60).mean().apply(np.sqrt)
+    return dd20 / dd60.replace(0, np.nan)
 
 
 candidates = {
-    'mfi_7': dict(fn=make_mfi(7), name='Money Flow Index 7d',
-                  expr='100-100/(1+MF_pos7/MF_neg7)', deps=['high', 'low', 'close', 'volume'], direction=1),
-    'mfi_21': dict(fn=make_mfi(21), name='Money Flow Index 21d',
-                   expr='100-100/(1+MF_pos21/MF_neg21)', deps=['high', 'low', 'close', 'volume'], direction=1),
-    'cci_7': dict(fn=make_cci(7), name='Commodity Channel Index 7d',
-                  expr='(TP-SMA(TP,7))/(0.015*mean(|TP-SMA|,7))', deps=['high', 'low', 'close'], direction=1),
-    'rev_5': dict(fn=rev_5, name='5d reversal',
-                  expr='-(close.shift(1)/close.shift(6)-1)', deps=['close'], direction=1),
-    'rev_5_vol': dict(fn=rev_5_vol, name='5d reversal / 20d vol',
-                      expr='-mom5/STD20(ret)', deps=['close'], direction=1),
-    'corr_xau_60': dict(fn=corr_xau_60, name='60d corr with XAU returns',
-                        expr='corr(r_asset, r_XAU, 60)', deps=['close', 'XAU'], direction=1),
-    'rel_mom_xau_20': dict(fn=rel_mom_xau_20, name='20d rel momentum vs XAU',
-                           expr='mom20_asset - mom20_XAU', deps=['close', 'XAU'], direction=1),
-    'updown_vol_ratio_20': dict(fn=updown_vol_ratio_20, name='Up/down vol ratio 20d',
-                                expr='STD(ret|ret>0,20)/STD(ret|ret<0,20)', deps=['close'], direction=1),
+    'hurst_vr_100': hurst_vr_100,
+    'entropy_sign_20': entropy_sign_20,
+    'kurt_20': kurt_20,
+    'autocorr_ret_20': autocorr_ret_20,
+    'up_capture_60': up_capture_60,
+    'conviction_20': conviction_20,
+    'gap_freq_20': gap_freq_20,
+    'rs_vs_gold_20': rs_vs_gold_20,
+    'herfindahl_ret_20': herfindahl_ret_20,
+    'downside_dev_ratio_20_60': downside_dev_ratio_20_60,
 }
 
 results = {}
-for fid, cfg in candidates.items():
-    panel = factor_to_panel(cfg['fn'], prices)
+for fid, fn in candidates.items():
+    panel = factor_to_panel(fn, prices)
     m = validate_factor(fid, panel, prices)
     if m is None:
         print(f"{fid}: INSUFFICIENT -> skip", flush=True)
         results[fid] = {'ok': False, 'metrics': {'error': 'insufficient'}}
         continue
-    mat = signal_matrix(panel, grid)
-    rho, lib_id = max_lib_corr(mat)
+    rho, lib_id = max_lib_corr(panel)
     m['max_abs_library_correlation'] = rho
     m['max_corr_library_id'] = lib_id
+    # recent 1y IC (timeliness / drift)
     ic_s = rank_ic_series(panel, forward_returns(prices, 10))
     ic_s = ic_s[(ic_s.index >= pd.Timestamp('2025-07-15')) & (ic_s.index <= pd.Timestamp('2026-07-15'))]
     if len(ic_s) > 30:
