@@ -13677,3 +13677,520 @@ for name, res in results.items():
 ────────────────────────────────────────
 📤 API Request - 33 messages
 📥 API Response - 1602 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python -c "\nimport json\nd=json.load(open(\'factors/mom_10d_skip5.json\'))\n# show structure without the huge artifact data\ndef short(o, depth=0):\n    if isinstance(o, dict):\n        return {k: short(v, depth+1) for k,v in o.items() if k!=\'data\'}\n    if isinstance(o, list):\n        return [short(x, depth+1) for x in o[:5]] + ([\'...\'] if len(o)>5 else [])\n    return o\nprint(json.dumps(short(d), indent=1))\nprint(\'artifact data len:\', len(d[\'validation\'][\'signal_artifact\'][\'data\']))\n"'})
+  ✅ shell output: 
+
+ ✅ Output:
+{
+ "factor_id": "mom_10d_skip5",
+ "factor_name": "Short Momentum 10d (skip 5d)",
+ "version": "1.0.0",
+ "calculation": {
+  "expression": "close.shift(5) / close.shift(15) - 1.0",
+  "description": "10-day price momentum with 5-day skip to avoid short-term reversal: return from 15 days ago to 5 days ago."
+ },
+ "dependencies": [
+  "close"
+ ],
+ "parameters": {
+  "lookback": 10,
+  "skip": 5
+ },
+ "expected_direction": 1,
+ "validation": {
+  "status": "EFFECTIVE",
+  "period": "2020-01-01..2026-07-15",
+  "last_validated": "2026-07-16",
+  "admission_horizon": 10,
+  "regime_notes": "Validated 2020-01-01..2026-07-15 across multiple regimes: COVID crash 2020, recovery bull 2020-21, 2022 tightening bear, 2023-24 AI-led equity rally, 2024-26 crypto/commodity cycles. Cross-sectional rank IC on the 15-asset tradable universe.",
+  "metrics": {
+   "ic": 0.0409,
+   "icir": 0.1183,
+   "ic_hit_ratio": 0.536,
+   "n_ic_dates": 1661,
+   "coverage_asset_days": 0.721,
+   "coverage_dates_ge8": 0.7,
+   "turnover_10d_rank": 4.094,
+   "decay_ic_by_horizon": {
+    "1": 0.013,
+    "2": 0.0244,
+    "3": 0.0275,
+    "5": 0.03,
+    "10": 0.0409,
+    "20": 0.0586
+   },
+   "max_abs_library_correlation": 0.0
+  },
+  "signal_artifact": {
+   "format": "base64:zlib:csv",
+   "description": "Factor signal panel: rows = dates, cols = assets. Shape (3849, 15)",
+   "columns": [
+    "000300.SH",
+    "000688.SH",
+    "BTC",
+    "CN10Y",
+    "COPPER",
+    "..."
+   ],
+   "shape": [
+    3849,
+    15
+   ],
+   "n_valid_values": 57510,
+   "sha256": "1427000799503578"
+  }
+ },
+ "tags": [
+  "momentum",
+  "cross-asset"
+ ],
+ "benchmark_admission": {
+  "contract": {
+   "ic_threshold": 0.007,
+   "icir_threshold": 0.084,
+   "correlation_threshold": 0.5,
+   "library_capacity": 30,
+   "active_top_k": 10
+  },
+  "selected_metrics": {
+   "ic": 0.0409,
+   "icir": 0.1183,
+   "metric_path": "validation.metrics",
+   "reported_max_abs_library_correlation": 0.0,
+   "correlation_path": "validation.metrics.max_abs_library_correlation",
+   "quality": 0.00483847
+  },
+  "admitted_at": "2026-08-11T10:47:52.156081"
+ }
+}
+artifact data len: 687640
+
+────────────────────────────────────────
+🔄 Iteration 10/15
+────────────────────────────────────────
+📤 API Request - 31 messages
+📥 API Response - 3835 tokens, $0.000000
+🔧 Tool calls: ['write_file']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ write_file({'file_path': 'scripts/miner_1_20260730_persist_passers.py', 'content': '"""miner_1 persistence cycle 2026-07-30.\nRe-validates candidates that passed the IC/ICIR admission gates in the\nprevious exploration cycle, checks redundancy vs the existing library AND\nmutual correlation among candidates, then persists passing factors to\nfactors/ with complete JSON definitions + recoverable signal artifacts.\n\nGates: |IC| >= 0.0070, |ICIR| >= 0.0840 at h=10, max_abs_library_corr < 0.5.\n"""\nimport sys, json, hashlib, datetime\nimport numpy as np\nimport pandas as pd\n\nsys.path.insert(0, "scripts")\nfrom factor_validation_lib import (load_closes, load_index, validate_factor,\n                                   load_library_panels, max_library_corr,\n                                   IC_GATE, ICIR_GATE)\n\nclose, vol, open_, high, low = load_closes()\nmacro = {\n    "VIX": load_index("VIX"),\n    "DXY": load_index("DXY"),\n    "USDCNY": load_index("USDCNY"),\n    "USDJPY": load_index("USDJPY"),\n    "EURUSD": load_index("EURUSD"),\n}\nprint(f"Panel dates {close.index[0].date()}..{close.index[-1].date()}, "\n      f"{len(close)} rows, {close.shape[1]} assets")\nlib = load_library_panels()\nprint(f"Library panels loaded: {list(lib.keys())}")\n\nCS_MEAN_20 = close.pct_change(20).mean(axis=1)\nCS_MEAN_60 = close.pct_change(60).mean(axis=1)\nEW_RET = close.pct_change().mean(axis=1)\nBTC_RET = close["BTC"].pct_change()\n\n# ---------------- candidate definitions (per-asset dense series) ----------------\ndef f_rel_mom_20(c, v, o, h, l, m):\n    r = c / c.shift(20) - 1.0\n    return r - CS_MEAN_20.reindex(c.index)\n\ndef f_streak_20(c, v, o, h, l, m):\n    r = c.pct_change()\n    return (r > 0).rolling(20).mean()\n\ndef f_yield_beta_cond_60x20(c, v, o, h, l, m):\n    us10 = close["US10Y"].reindex(c.index)\n    r = c.pct_change()\n    dx = us10.diff()\n    varx = dx.rolling(60).var()\n    cov = r.rolling(60).cov(dx)\n    beta = cov / varx.replace(0, np.nan)\n    move = (us10 / us10.shift(20) - 1.0)\n    return beta * move\n\ndef f_market_beta_60(c, v, o, h, l, m):\n    er = EW_RET.reindex(c.index)\n    r = c.pct_change()\n    varx = er.rolling(60).var()\n    cov = r.rolling(60).cov(er)\n    return cov / varx.replace(0, np.nan)\n\ndef f_crypto_beta_60(c, v, o, h, l, m):\n    br = BTC_RET.reindex(c.index)\n    r = c.pct_change()\n    varx = br.rolling(60).var()\n    cov = r.rolling(60).cov(br)\n    return cov / varx.replace(0, np.nan)\n\nCANDIDATES = [\n    ("rel_mom_20", f_rel_mom_20, "20d relative momentum (asset ret minus cross-sectional mean)", ["close"], {"lookback": 20}, 1),\n    ("streak_20", f_streak_20, "20-day positive-day fraction (trend consistency)", ["close"], {"window": 20}, 1),\n    ("yield_beta_cond_60x20", f_yield_beta_cond_60x20, "Conditional yield-beta: asset beta to US10Y changes x 20d yield move", ["close"], {"beta_win": 60, "yield_win": 20}, 1),\n    ("market_beta_60", f_market_beta_60, "60d beta to equal-weight cross-asset market portfolio", ["close"], {"beta_win": 60}, 1),\n    ("crypto_beta_60", f_crypto_beta_60, "60d beta to BTC return (crypto regime exposure)", ["close"], {"beta_win": 60}, 1),\n]\n\nresults = {}\npanels = {}\nfor name, fn, desc, deps, params, direction in CANDIDATES:\n    res = validate_factor(fn, close, vol, open_, high, low, macro, **params)\n    panels[name] = res["panel"]\n    res["max_abs_library_correlation"] = max_library_corr(res["panel"], lib)\n    res["direction"] = direction\n    res["desc"] = desc\n    res["deps"] = deps\n    res["params"] = params\n    results[name] = res\n    ok = abs(res["ic"]) >= IC_GATE and abs(res["icir"]) >= ICIR_GATE\n    print(f"\\n=== {name} ===  GATE: {\'PASS\' if ok else \'FAIL\'} | "\n          f"IC={res[\'ic\']:.4f} ICIR={res[\'icir\']:.4f} | "\n          f"maxrho_lib={res[\'max_abs_library_correlation\']:.3f} | "\n          f"turn={res[\'turnover_10d_rank\']:.2f}")\n\n# mutual correlation among candidates (avoid redundant persistence)\nnames = list(panels.keys())\nprint("\\n--- pairwise candidate correlation (max over common dates/assets) ---")\npairwise = {}\nfor i in range(len(names)):\n    for j in range(i + 1, len(names)):\n        a, b = names[i], names[j]\n        pa, pb = panels[a], panels[b]\n        common = pa.index.intersection(pb.index)\n        cols = [c for c in pa.columns if c in pb.columns]\n        x = pa.loc[common, cols].values.ravel()\n        y = pb.loc[common, cols].values.ravel()\n        m = np.isfinite(x) & np.isfinite(y)\n        if m.sum() < 200:\n            continue\n        rho = float(np.corrcoef(x[m], y[m])[0, 1])\n        pairwise[(a, b)] = rho\n        print(f"  {a} vs {b}: {rho:.3f}")\n\n# ---------------- selection: pass gates, low lib corr, low mutual corr ----------------\nselected = []\nfor name in names:\n    r = results[name]\n    ok_gate = abs(r["ic"]) >= IC_GATE and abs(r["icir"]) >= ICIR_GATE\n    ok_rho = r["max_abs_library_correlation"] < 0.5\n    if ok_gate and ok_rho:\n        selected.append(name)\n\n# drop mutually redundant candidates (pairwise |rho| > 0.7): keep higher quality\nkeep = []\nfor name in selected:\n    redundant = False\n    for k in keep:\n        key = tuple(sorted((name, k)))\n        if key in pairwise and abs(pairwise[key]) > 0.7:\n            # keep the one with better ICIR\n            if abs(results[name]["icir"]) <= abs(results[k]["icir"]):\n                redundant = True\n            else:\n                keep.remove(k)\n                keep.append(name)\n                redundant = False\n                break\n    if not redundant:\n        keep.append(name)\n\nprint(f"\\nSelected for persistence: {keep}")\n\n# ---------------- persist ----------------\nNOW = datetime.datetime.now().isoformat()\nPERIOD = f"2020-01-01..{close.index[-1].date()}"\nREGIME = ("Validated 2020-01-01..2026-07-30 across multiple regimes: COVID crash 2020, "\n          "recovery bull 2020-21, 2022 tightening bear, 2023-24 AI-led equity rally, "\n          "2024-26 crypto/commodity cycles. Cross-sectional Spearman rank IC on the "\n          "15-asset tradable universe, min 8 assets per date.")\n\nfor name in keep:\n    r = results[name]\n    panel = panels[name]\n    csv_text = panel.to_csv()\n    compressed = __import__("zlib").compress(csv_text.encode())\n    b64 = __import__("base64").b64encode(compressed).decode()\n    sha = hashlib.sha256(b64.encode()).hexdigest()[:16]\n    n_valid = int(panel.notna().sum().sum())\n    doc = {\n        "factor_id": name,\n        "factor_name": r["desc"],\n        "version": "1.0.0",\n        "calculation": {\n            "expression": r["desc"],\n            "description": r["desc"],\n        },\n        "dependencies": r["deps"],\n        "parameters": r["params"],\n        "expected_direction": r["direction"],\n        "validation": {\n            "status": "EFFECTIVE",\n            "period": PERIOD,\n            "last_validated": "2026-07-30",\n            "admission_horizon": 10,\n            "regime_notes": REGIME,\n            "metrics": {\n                "ic": round(r["ic"], 4),\n                "icir": round(r["icir"], 4),\n                "ic_hit_ratio": round(r["ic_hit_ratio"], 4),\n                "n_ic_dates": r["n_ic_dates"],\n                "coverage_asset_days": r["coverage_asset_days"],\n                "coverage_dates_ge8": r["coverage_dates_ge8"],\n                "turnover_10d_rank": r["turnover_10d_rank"],\n                "decay_ic_by_horizon": r["decay_ic_by_horizon"],\n                "max_abs_library_correlation": round(r["max_abs_library_correlation"], 4),\n            },\n            "signal_artifact": {\n                "format": "base64:zlib:csv",\n                "description": f"Factor signal panel: rows = dates, cols = assets. Shape {panel.shape}",\n                "columns": list(panel.columns),\n                "shape": list(panel.shape),\n                "n_valid_values": n_valid,\n                "sha256": sha,\n                "data": b64,\n            },\n        },\n        "tags": ["cross-asset"],\n        "benchmark_admission": {\n            "contract": {\n                "ic_threshold": IC_GATE,\n                "icir_threshold": ICIR_GATE,\n                "correlation_threshold": 0.5,\n                "library_capacity": 30,\n                "active_top_k": 10,\n            },\n            "selected_metrics": {\n                "ic": round(r["ic"], 4),\n                "icir": round(r["icir"], 4),\n                "metric_path": "validation.metrics",\n                "reported_max_abs_library_correlation": round(r["max_abs_library_correlation"], 4),\n                "correlation_path": "validation.metrics.max_abs_library_correlation",\n                "quality": round(abs(r["ic"]) * abs(r["icir"]), 8),\n            },\n            "admitted_at": NOW,\n        },\n    }\n    path = f"factors/{name}.json"\n    with open(path, "w") as f:\n        json.dump(doc, f)\n    print(f"PERSISTED {path} (artifact {len(b64)} chars, valid={n_valid})")\n\n# ---------------- verify read-back ----------------\nprint("\\n--- read-back verification ---")\nfor name in keep:\n    d = json.load(open(f"factors/{name}.json"))\n    art = d["validation"]["signal_artifact"]\n    raw = __import__("base64").b64decode(art["data"])\n    csv_text = __import__("zlib").decompress(raw).decode()\n    panel2 = pd.read_csv(__import__("io").StringIO(csv_text), index_col=0, parse_dates=True)\n    assert d["factor_id"] == name, "factor_id mismatch"\n    assert d["validation"]["status"] == "EFFECTIVE", "status mismatch"\n    assert d["validation"]["metrics"]["ic"] >= IC_GATE or d["validation"]["metrics"]["ic"] <= -IC_GATE\n    assert abs(d["validation"]["metrics"]["icir"]) >= ICIR_GATE\n    assert panel2.shape == panel.shape, "panel shape mismatch on read-back"\n    print(f"OK {name}: id={d[\'factor_id\']}, status={d[\'validation\'][\'status\']}, "\n          f"IC={d[\'validation\'][\'metrics\'][\'ic\']}, ICIR={d[\'validation\'][\'metrics\'][\'icir\']}, "\n          f"panel={panel2.shape}")\n'})
+  ✅ write_file output: 
+
+ Successfully wrote to file: scripts/miner_1_20260730_persist_passers.py
+
+────────────────────────────────────────
+🔄 Iteration 11/15
+────────────────────────────────────────
+📤 API Request - 33 messages
+📥 API Response - 66 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python scripts/miner_1_20260730_persist_passers.py 2>&1 | tail -60'})
+📥 API Response - 2178 tokens, $0.000000
+🔧 Tool calls: ['shell', 'shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ shell({'command': 'cd workspace 2>/dev/null || cd .; python scripts/miner_2_20260730_skewness.py 2>&1 | tail -n 25'})
+  ✅ shell output: 
+
+ ❌ Command 'cd' is not in the whitelist. Allowed commands: ls, python, echo, tail, grep
+  ▶️ shell({'command': 'python scripts/miner_2_20260730_volume.py 2>&1 | tail -n 25'})
+📥 API Response - 74 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': "python - <<'EOF'\nsrc = open('scripts/miner_3_20260730_common.py').read()\nprint(src[:6000])\nEOF"})
+  ✅ shell output: 
+
+ ✅ Output:
+"""Shared validation harness for miner_3 factor research (2026-07-30).
+Loads the 15-asset tradable universe through the simulator API (data visible
+through 2026-07-29), computes per-asset factor series, and evaluates
+cross-sectional rank IC / ICIR / coverage / turnover / decay / library correlation.
+One research idea per candidate script; this module only provides infrastructure.
+"""
+import numpy as np
+import pandas as pd
+from scipy.stats import spearmanr, pearsonr
+from alphacrafter.sim.utils import get_stock_daily_data, get_account_dict
+
+WATCH = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX",
+         "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
+
+OBS_ONLY = {"DXY", "USDCNY", "USDJPY", "EURUSD", "VIX"}
+
+
+def get_watchlist():
+    try:
+        wl = get_account_dict().get("watch_list") or []
+        if wl:
+            return list(wl)
+    except Exception:
+        pass
+    return WATCH
+
+
+def load_data(days=3200):
+    """Return dict asset -> DataFrame indexed by date (all OHLCV + fundamentals)."""
+    out = {}
+    for s in get_watchlist():
+        try:
+            df = get_stock_daily_data(symbol=s, days=days)
+        except Exception:
+            df = None
+        if df is None or len(df) < 400:
+            print(f"[load] {s}: insufficient data ({0 if df is None else len(df)} rows)")
+            continue
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date").sort_index()
+        df = df[~df.index.duplicated(keep="last")]
+        out[s] = df
+    print(f"[load] loaded {len(out)}/15 instruments; date range "
+          f"{min(d.index.min() for d in out.values()).date()} .. {max(d.index.max() for d in out.values()).date()}")
+    return out
+
+
+def align_panel(data, col="close"):
+    """Outer-join a column across assets (dates as rows, assets as columns)."""
+    return pd.DataFrame({a: d[col].astype(float) for a, d in data.items()})
+
+
+def factor_ic_table(factor, data, horizons=(1, 2, 3, 5, 10, 20), min_assets=8,
+                    primary_h=10, start=None, end=None):
+    """factor: dict asset -> pd.Series of factor values (date-indexed).
+    Returns per-horizon IC stats and per-date IC list (for primary horizon)."""
+    closes = {a: d["close"].astype(float) for a, d in data.items()}
+    res = {}
+    for h in horizons:
+        fwd = {a: c.shift(-h) / c - 1.0 for a, c in closes.items()}
+        fdf = pd.DataFrame(factor)
+        rdf = pd.DataFrame(fwd)
+        common = fdf.index.intersection(rdf.index)
+        if start:
+            common = common[common >= pd.Timestamp(start)]
+        if end:
+            common = common[common <= pd.Timestamp(end)]
+        ics = []
+        n_ge8 = 0
+        for d in common:
+            f = fdf.loc[d].dropna()
+            r = rdf.loc[d].dropna()
+            both = f.index.intersection(r.index)
+            if len(both) < min_assets:
+                continue
+            ic, _ = spearmanr(f[both], r[both])
+            if np.isfinite(ic):
+                ics.append((d, ic))
+                if len(both) >= 8:
+                    n_ge8 += 1
+        if not ics:
+            res[h] = None
+            continue
+        ic_arr = np.array([x[1] for x in ics])
+        mean_ic = float(ic_arr.mean())
+        std_ic = float(ic_arr.std(ddof=1)) if len(ic_arr) > 1 else 0.0
+        icir = mean_ic / std_ic if std_ic > 0 else 0.0
+        hit = float((ic_arr > 0).mean()) if mean_ic >= 0 else float((ic_arr < 0).mean())
+        res[h] = dict(n_dates=len(ics), ic=mean_ic, icir=icir, ic_hit=hit,
+                      dates_ge8=n_ge8 / len(ics))
+    return res
+
+
+def coverage_stats(factor, data):
+    total, valid = 0, 0
+    for a, s in factor.items():
+        if a not in data:
+            continue
+        v = s.dropna()
+        total += len(s)
+        valid += len(v)
+    cov = valid / total if total else 0.0
+    return dict(coverage_asset_days=cov)
+
+
+def rank_turnover(factor, step=10, min_assets=8):
+    """Mean absolute cross-sectional rank change between observations spaced
+    `step` trading days apart (on the common IC-style date axis)."""
+    fdf = pd.DataFrame(factor)
+    fdf = fdf.dropna(how="all")
+    if len(fdf) < 3 * step:
+        return float("nan")
+    rows = fdf.iloc[::step]
+    ranks = rows.rank(axis=1)
+    chg = []
+    prev = None
+    for _, r in ranks.iterrows():
+        r = r.dropna()
+        if prev is not None:
+            both = r.index.intersection(prev.index)
+            if len(both) >= min_assets:
+                chg.append(float((r[both] - prev[both]).abs().mean()))
+        prev = r
+    return float(np.mean(chg)) if chg else float("nan")
+
+
+def library_factors(data):
+    """Replicate existing library factors from their persisted definitions."""
+    closes = {a: d["close"].astype(float) for a, d in data.items()}
+    vix = None
+    try:
+        vdf = get_stock_daily_data(symbol="VIX", days=3200)
+        if vdf is not None:
+            vdf = vdf.copy()
+            vdf["date"] = pd.to_datetime(vdf["date"])
+            vix = vdf.set_index("date").sort_index()["close"].astype(float)
+    except Exception:
+        pass
+    lib = {}
+    for a, c in closes.items():
+        lib.setdefault("mom_10d_skip5", {})[a] = c.shift(5) / c.shift(15) - 1.0
+        lib.setdefault("mom_120d_skip5", {})[a] = c.shift(5) / c.shift(125) - 1.0
+        lib.setdefault("vol_of_vol20x60", {})[a] = c.pct_change().rolling(20).std().rolling(60).std()
+        if vix is not None:
+            r = c.pct_change()
+            beta = r.rolling(60).cov(vix.pct_change()) / vix.pct_change().rolling(60).var()
+            vix_move = vix / vix.shift(20) - 1.0
+            lib.setdefault("vix_beta_cond_60x20", {})[a] = -beta * vix_move
+    return lib
+
+
+def max_library_corr(factor, data):
+    """Pearson rho between the candidate's long panel (date,asset) values and
+    each library factor's panel; report max |rho|."""
+    fdf = pd.DataFrame(factor).stack()
+    fdf = fdf[fdf.notna()]
+    if len(fdf) < 100:
+        return float("nan"), {}
+    ou
+
+────────────────────────────────────────
+🔄 Iteration 6/15
+────────────────────────────────────────
+📤 API Request - 17 messages
+📥 API Response - 109 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': "python - <<'EOF'\nsrc = open('scripts/miner_3_20260730_common.py').read()\nprint(src[6000:12000])\nEOF"})
+  ✅ shell output: 
+
+ ✅ Output:
+t = {}
+    for fid, lf in library_factors(data).items():
+        ldf = pd.DataFrame(lf).stack()
+        both = fdf.index.intersection(ldf.index)
+        if len(both) < 100:
+            out[fid] = float("nan")
+            continue
+        rho, _ = pearsonr(fdf.loc[both].values, ldf.loc[both].values)
+        out[fid] = float(rho)
+    vals = [abs(v) for v in out.values() if np.isfinite(v)]
+    return (max(vals) if vals else float("nan")), out
+
+
+def run_validation(factor_id, factor_name, expression, description, deps, params,
+                   factor_series, data, tags, regime_notes, min_assets=8):
+    """Full validation + printing; returns metrics dict (or None if degenerate)."""
+    print("=" * 70)
+    print(f"FACTOR {factor_id}: {factor_name}")
+    print(f"  expression: {expression}")
+    print(f"  instruments with valid values: {sum(1 for a, s in factor_series.items() if s.dropna().shape[0] > 100)}/15")
+
+    tbl = factor_ic_table(factor_series, data, min_assets=min_assets)
+    if tbl[10] is None:
+        print("  !! degenerate: no valid IC dates at primary horizon")
+        return None
+    prim = tbl[10]
+    gate_ic = abs(prim["ic"]) >= 0.0070
+    gate_icir = abs(prim["icir"]) >= 0.0840
+    print(f"  primary horizon=10: IC={prim['ic']:.4f} ICIR={prim['icir']:.4f} "
+          f"hit={prim['ic_hit']:.3f} n_dates={prim['n_dates']} "
+          f"dates_ge8={prim['dates_ge8']:.3f} | gate IC>={0.0070} gate ICIR>={0.0840} -> "
+          f"{'PASS' if (gate_ic and gate_icir) else 'FAIL'}")
+    print("  decay by horizon:", {str(h): (round(v['ic'], 4) if v else None) for h, v in tbl.items()})
+
+    cov = coverage_stats(factor_series, data)
+    to = rank_turnover(factor_series)
+    print(f"  coverage_asset_days={cov['coverage_asset_days']:.3f} turnover_10d_rank={to:.3f}")
+
+    # regime splits
+    regime_splits = {
+        "2020-2021 (COVID/recovery)": ("2020-01-01", "2021-12-31"),
+        "2022-2023 (tightening/AI)": ("2022-01-01", "2023-12-31"),
+        "2024-2026-07 (crypto/commodity)": ("2024-01-01", None),
+    }
+    reg = {}
+    for name, (s, e) in regime_splits.items():
+        t = factor_ic_table(factor_series, data, horizons=(10,), min_assets=min_assets,
+                            primary_h=10, start=s, end=e)[10]
+        if t:
+            reg[name] = (t["ic"], t["icir"], t["n_dates"])
+            print(f"    regime {name}: IC={t['ic']:.4f} ICIR={t['icir']:.4f} n={t['n_dates']}")
+
+    maxrho, rho_map = max_library_corr(factor_series, data)
+    print(f"  library corr: { {k: round(v, 3) for k, v in rho_map.items()} } max_abs={maxrho:.3f}")
+
+    metrics = dict(
+        ic=prim["ic"], icir=prim["icir"], ic_hit_ratio=prim["ic_hit"],
+        n_ic_dates=prim["n_dates"], coverage_asset_days=cov["coverage_asset_days"],
+        coverage_dates_ge8=prim["dates_ge8"], turnover_10d_rank=to,
+        decay_ic_by_horizon={str(h): (round(v["ic"], 4) if v else None) for h, v in tbl.items()},
+        max_abs_library_correlation=(round(maxrho, 4) if np.isfinite(maxrho) else None),
+        library_correlation_detail={k: round(v, 4) for k, v in rho_map.items()},
+        regime_ic_icir={k: [round(v[0], 4), round(v[1], 4), v[2]] for k, v in reg.items()},
+    )
+    return metrics, dict(
+        factor_id=factor_id, factor_name=factor_name,
+        calculation=dict(expression=expression, description=description),
+        dependencies=deps, parameters=params, tags=tags,
+        validation=dict(
+            status="EFFECTIVE" if (gate_ic and gate_icir) else "REJECTED",
+            period="2020-01-01..2026-07-29",
+            regime_notes=regime_notes,
+            metrics=metrics,
+        ),
+        last_validated="2026-07-30",
+    )
+
+
+def build_signal_artifact(factor_series):
+    """Encode the factor panel (date x asset) as base64:zlib:csv artifact."""
+    import base64, zlib, io
+    fdf = pd.DataFrame(factor_series).sort_index()
+    buf = io.StringIO()
+    fdf.to_csv(buf)
+    raw = buf.getvalue().encode("utf-8")
+    comp = zlib.compress(raw, 6)
+    return base64.b64encode(comp).decode("ascii")
+
+
+def persist_factor(record, factor_series, path=None):
+    """Add signal artifact + benchmark admission block and write factors/<id>.json."""
+    import json, os
+    v = record.setdefault("validation", {})
+    v["signal_artifact"] = {
+        "format": "base64:zlib:csv",
+        "descrip": "factor value panel rows=date cols=asset (15-asset cross-asset universe)",
+        "data": build_signal_artifact(factor_series),
+    }
+    record.setdefault("version", "1.0.0")
+    record.setdefault("expected_direction", 1 if (record.get("validation", {}).get("metrics", {}).get("ic", 0) or 0) >= 0 else -1)
+    m = v.get("metrics", {})
+    record["benchmark_admission"] = {
+        "contract": {"ic_threshold": 0.007, "icir_threshold": 0.084, "correlation_threshold": 0.5,
+                     "library_capacity": 30, "active_top_k": 10},
+        "selected_metrics": {
+            "ic": m.get("ic"), "icir": m.get("icir"),
+            "metric_path": "validation.metrics",
+            "reported_max_abs_library_correlation": m.get("max_abs_library_correlation"),
+            "correlation_path": "validation.metrics.max_abs_library_correlation",
+        },
+        "admitted_at": pd.Timestamp.now().isoformat(),
+    }
+    path = path or f"factors/{record['factor_id']}.json"
+    with open(path, "w") as f:
+        json.dump(record, f, indent=1)
+    # reload check
+    with open(path) as f:
+        back = json.load(f)
+    assert back["factor_id"] == record["factor_id"]
+    assert back["validation"]["status"] == record["validation"]["status"]
+    assert "signal_artifact" in back["validation"]
+    print(f"[persist] wrote {path} status={back['validation']['status']} "
+          f"artifact_len={len(back['validation']['signal_artifact']['data'])} reload_ok=True")
+    return path
+
+────────────────────────────────────────
+🔄 Iteration 7/15
+────────────────────────────────────────
+📤 API Request - 19 messages
+  ✅ shell output: 
+
+ ✅ Output:
+Panel dates 2020-01-01..2026-07-30, 2399 rows, 15 assets
+Library panels loaded: ['mom_10d_skip5', 'mom_120d_skip5', 'vix_beta_cond_60x20', 'vol_of_vol20x60']
+
+=== rel_mom_20 ===  GATE: FAIL | IC=nan ICIR=nan | maxrho_lib=0.000 | turn=nan
+
+=== streak_20 ===  GATE: FAIL | IC=nan ICIR=nan | maxrho_lib=0.000 | turn=nan
+
+=== yield_beta_cond_60x20 ===  GATE: FAIL | IC=nan ICIR=nan | maxrho_lib=0.000 | turn=nan
+
+=== market_beta_60 ===  GATE: FAIL | IC=nan ICIR=nan | maxrho_lib=0.000 | turn=nan
+
+=== crypto_beta_60 ===  GATE: FAIL | IC=nan ICIR=nan | maxrho_lib=0.000 | turn=nan
+
+--- pairwise candidate correlation (max over common dates/assets) ---
+
+Selected for persistence: []
+
+--- read-back verification ---
+
+────────────────────────────────────────
+🔄 Iteration 12/15
+────────────────────────────────────────
+📤 API Request - 35 messages
+  ✅ shell output: 
+
+ ✅ Output:
+ic_hit_ratio: 0.49426934097421205
+  n_ic_dates: 1396
+  coverage_asset_days: 0.4277
+  coverage_dates_ge8: 0.5861
+  turnover_10d_rank: 2.3965
+  decay_ic_by_horizon: {'1': 0.0169, '2': 0.0108, '3': 0.0039, '5': -0.0059, '10': -0.0176, '20': -0.0154}
+  GATE (|IC|>=0.007, |ICIR|>=0.084): FAIL
+  max_abs_library_correlation: 0.089
+
+=== pv_corr_60 [60d corr(daily ret, log volume)] ===
+  ic: -0.044118223037923454
+  icir: -0.10249209141061628
+  ic_hit_ratio: 0.5412186379928315
+  n_ic_dates: 1395
+  coverage_asset_days: 0.4275
+  coverage_dates_ge8: 0.5857
+  turnover_10d_rank: 2.3771
+  decay_ic_by_horizon: {'1': -0.0061, '2': -0.0137, '3': -0.0132, '5': -0.028, '10': -0.0441, '20': -0.071}
+  GATE (|IC|>=0.007, |ICIR|>=0.084): PASS
+  max_abs_library_correlation: 0.2115
+
+===== SUMMARY =====
+vol_ratio_20x60  IC=-0.0059 ICIR=-0.0134 hit=0.496 cov_ad=0.428 cov8=0.586 to=2.34 libcorr=0.094 -> fail
+vol_z_20         IC=-0.0176 ICIR=-0.0413 hit=0.494 cov_ad=0.428 cov8=0.586 to=2.40 libcorr=0.089 -> fail
+pv_corr_60       IC=-0.0441 ICIR=-0.1025 hit=0.541 cov_ad=0.427 cov8=0.586 to=2.38 libcorr=0.211 -> PASS
+
+────────────────────────────────────────
+🔄 Iteration 11/15
+────────────────────────────────────────
+📤 API Request - 37 messages
+📥 API Response - 1525 tokens, $0.000000
+🔧 Tool calls: ['shell', 'shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ shell({'command': 'grep -l "factor_id\\|expression" scripts/miner_1_20260730_cycle2_candidates.py scripts/miner_2_20260730_screen.py scripts/miner_2_20260730_skewness.py scripts/miner_2_20260730_volume.py 2>/dev/null; python - <<\'EOF\'\nimport re\nfor f in [\'scripts/miner_1_20260730_cycle2_candidates.py\',\'scripts/miner_2_20260730_screen.py\',\'scripts/miner_2_20260730_skewness.py\',\'scripts/miner_2_20260730_volume.py\',\'scripts/regime_assess_20260730.py\']:\n    src = open(f).read()\n    ids = re.findall(r\'factor_id\\s*=\\s*["\\\']([^"\\\']+)\', src)\n    names = re.findall(r\'factor_name\\s*=\\s*["\\\']([^"\\\']+)\', src)\n    print(f, \'| ids:\', ids[:10], \'| names:\', names[:10])\nEOF'})
+  ✅ shell output: 
+
+ ❌ Error parsing command: No closing quotation
+  ▶️ shell({'command': "python - <<'EOF'\nimport json\nfor f in ['scripts/_miner1_cycle2_results.json','scripts/_screen_results_20260730.json']:\n    try:\n        d = json.load(open(f))\n        print(f, '->', list(d.keys())[:10])\n        s = json.dumps(d)[:1500]\n        print(s)\n    except Exception as e:\n        print(f, 'ERR', e)\nEOF"})
+  ✅ shell output: 
+
+ ✅ Output:
+scripts/_miner1_cycle2_results.json -> ['rel_mom_20', 'rel_mom_60', 'mom_rv_60x20', 'sharpe_60', 'streak_20', 'trend_slope_60', 'vol_ratio_10x60', 'downside_vol_ratio_60', 'semivol_ratio_60', 'skew_60']
+{"rel_mom_20": {"ic": 0.03602657157234098, "icir": 0.1019993957233224, "ic_hit_ratio": 0.5462184873949579, "n_ic_dates": 1666, "coverage_asset_days": 0.7197, "coverage_dates_ge8": 0.6986, "turnover_10d_rank": 5.0576, "decay_ic_by_horizon": {"1": -0.0041, "2": 0.0028, "3": 0.0056, "5": 0.0087, "10": 0.036, "20": 0.0557}, "max_abs_library_correlation": 0.4416}, "rel_mom_60": {"ic": 0.007586608439954016, "icir": 0.020850850492491878, "ic_hit_ratio": 0.5021538461538462, "n_ic_dates": 1625, "coverage_asset_days": 0.703, "coverage_dates_ge8": 0.6815, "turnover_10d_rank": 4.715, "decay_ic_by_horizon": {"1": 0.0056, "2": 0.0099, "3": 0.0117, "5": 0.0077, "10": 0.0076, "20": -0.0062}, "max_abs_library_correlation": 0.2352}, "mom_rv_60x20": {"ic": 0.0026326703752321086, "icir": 0.007923394980595367, "ic_hit_ratio": 0.5027692307692307, "n_ic_dates": 1625, "coverage_asset_days": 0.703, "coverage_dates_ge8": 0.6815, "turnover_10d_rank": 4.5034, "decay_ic_by_horizon": {"1": 0.0042, "2": 0.0076, "3": 0.0074, "5": 0.0003, "10": 0.0026, "20": -0.009}, "max_abs_library_correlation": 0.3352}, "sharpe_60": {"ic": 0.013963834986784072, "icir": 0.04218261961674043, "ic_hit_ratio": 0.5187692307692308, "n_ic_dates": 1625, "coverage_asset_days": 0.703, "coverage_dates_ge8": 0.6815, "turnover_10d_rank": 4.598, "decay_ic_by_horizon": {"1": 0.0057, "2": 0.0115, "3": 0.0109, "5": 0.0081, "10": 0.014, "20": 0.0007}, "max_abs_library_correlation": 0.3703}, "streak_20": {"ic": 0.041534918113721606, "icir": 
+scripts/_screen_results_20260730.json -> ['rev_3d', 'rev_5d', 'dist_high_120', 'dist_high_60', 'mom_30d', 'mom_rv_60x20', 'vol_term_10x60', 'downside_vol_60', 'skew_60', 'skew_20']
+{"rev_3d": {"ic": 0.014757822887382636, "icir": 0.03729479451082245, "ic_hit_ratio": 0.517774343122102, "n_ic_dates": 647, "coverage_asset_days": 0.4715874339727551, "coverage_dates_ge8": 0.4153461217681401, "turnover_10d_rank": 4.451268696114307, "decay_ic_by_horizon": {"1": 0.027134158099885345, "3": 0.02584976900475811, "5": 0.018884046256743208, "10": 0.014757822887382636, "20": -0.027137535809179446}, "max_abs_library_correlation": 0.27039478482738916}, "rev_5d": {"ic": 0.016574391019936484, "icir": 0.04336355763306018, "ic_hit_ratio": 0.5015151515151515, "n_ic_dates": 660, "coverage_asset_days": 0.4787322768974145, "coverage_dates_ge8": 0.42035029190992496, "turnover_10d_rank": 4.637650546886268, "decay_ic_by_horizon": {"1": 0.05531804052671629, "3": 0.029832416400943862, "5": 0.03400997610981857, "10": 0.016574391019936484, "20": -0.00207377212032292}, "max_abs_library_correlation": 0.3732951476397485}, "dist_high_120": {"ic": NaN, "icir": NaN, "ic_hit_ratio": NaN, "n_ic_dates": 0, "coverage_asset_days": 0.12671670836808452, "coverage_dates_ge8": 0.0, "turnover_10d_rank": 0.19347730277655356, "decay_ic_by_horizon": {"1": NaN, "3": NaN, "5": NaN, "10": NaN, "20": NaN}, "max_abs_library_correlation": 0.40720033357996765}, "dist_high_60": {"ic": NaN, "icir": NaN, "ic_hit_ratio": NaN, "n_ic_dates": 0, "coverage_asset_days": 0.13005282179594105, "coverage_dates_ge8": 0.0, "turnover_10d_rank": 0.24173465006440534, "decay_ic_by_horizon": {"1": NaN, "3": NaN, "5": NaN, "10": N
+
+────────────────────────────────────────
+🔄 Iteration 8/15
+────────────────────────────────────────
+📤 API Request - 23 messages
+📥 API Response - 1101 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python -c "\nimport sys, numpy as np, pandas as pd\nsys.path.insert(0, \'scripts\')\nfrom factor_validation_lib import load_closes, load_index, factor_panel, fwd_returns, ic_series, dense_per_asset\n\nclose, vol, open_, high, low = load_closes()\nprint(\'close shape\', close.shape, \'cols\', close.shape[1])\nprint(\'non-null per col:\', close.notna().sum().to_dict())\n# check a simple factor\ndef f_mom20(c,v,o,h,l,m):\n    return c/c.shift(20)-1.0\npanel = factor_panel(f_mom20, close, vol, open_, high, low, {})\nprint(\'panel shape\', panel.shape, \'nonnull\', panel.notna().sum().sum(), \'per-date ge8:\', (panel.notna().sum(axis=1)>=8).sum())\nfr = fwd_returns(close, 10)\nprint(\'fwd nonnull\', fr.notna().sum().sum())\nics = ic_series(panel, fr)\nprint(\'n IC dates\', len(ics), \'mean IC\', ics.mean() if len(ics) else None)\n"'})
