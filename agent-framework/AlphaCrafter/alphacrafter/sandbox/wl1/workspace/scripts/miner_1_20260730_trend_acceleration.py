@@ -1,37 +1,21 @@
 import numpy as np, pandas as pd
-from alphacrafter.sim.utils import get_index_daily_data
-
-SYMS=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
-
-def main():
-    px={}
-    for s in SYMS:
-        d=get_index_daily_data(s, days=1800)
-        if d is not None and len(d):
-            x=d[['date','close']].copy(); x['date']=pd.to_datetime(x.date); px[s]=x.set_index('date').close
-    close=pd.DataFrame(px).sort_index().ffill()
-    r5=close.pct_change(5); r20=close.pct_change(20)
-    # trend acceleration: recent 5d return versus average weekly pace over prior 20d
-    f=r5-r20/4
-    f=f.replace([np.inf,-np.inf],np.nan)
-    fw=close.pct_change().shift(-1)
-    ics=[]; cov=[]; dates=[]
-    for dt in f.index:
-        z=pd.concat([f.loc[dt],fw.loc[dt]],axis=1).dropna()
-        if len(z)>=8:
-            ics.append(z.iloc[:,0].corr(z.iloc[:,1],method='spearman')); cov.append(len(z)/len(SYMS)); dates.append(dt)
-    a=pd.Series(ics,index=pd.to_datetime(dates)).dropna()
-    mean=a.mean(); sd=a.std(ddof=1); icir=mean/sd*np.sqrt(252) if sd else np.nan
-    # turnover of cross-sectional ranks, adjacent valid dates
-    ranks=f.rank(axis=1,pct=True); turns=[]
-    for i in range(1,len(ranks)):
-        q=pd.concat([ranks.iloc[i-1],ranks.iloc[i]],axis=1).dropna()
-        if len(q)>=8: turns.append(np.mean(np.abs(q.iloc[:,1]-q.iloc[:,0])))
-    print({'dates':len(a),'instruments':len(SYMS),'start':str(a.index.min().date()),'end':str(a.index.max().date()),'IC':mean,'ICIR':icir,'hit':float((a>0).mean()),'coverage':float(np.mean(cov)),'rank_turnover':float(np.mean(turns)),'decay_5d':float(pd.concat([f,close.pct_change(5).shift(-5)],axis=1).dropna().groupby(level=0).apply(lambda x: np.nan).mean()) if False else 'see below'})
-    for h in [1,5,10]:
-        rr=close.pct_change(h).shift(-h); vals=[]
-        for dt in f.index:
-            z=pd.concat([f.loc[dt],rr.loc[dt]],axis=1).dropna()
-            if len(z)>=8: vals.append(z.iloc[:,0].corr(z.iloc[:,1],method='spearman'))
-        print('decay',h,float(pd.Series(vals).dropna().mean()),len(vals))
-if __name__=='__main__': main()
+from scipy.stats import spearmanr
+SYMS=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; cut=pd.Timestamp('2026-07-15')
+p={s:pd.read_csv('../persistent/stock_data/'+s+'.csv',parse_dates=['date']).query('date<=@cut').set_index('date').close.astype(float) for s in SYMS}
+f={s:p[s].pct_change(5)-p[s].pct_change(20)/4 for s in SYMS}
+for h in [1,5,10]:
+ out=[]; ns=[]
+ for d in sorted(set().union(*[x.index for x in p.values()])):
+  vals=[]; ys=[]
+  for s in SYMS:
+   if d not in p[s].index or pd.isna(f[s].get(d,np.nan)): continue
+   ix=p[s].index.get_loc(d)
+   if ix+h>=len(p[s]): continue
+   vals.append(f[s].loc[d]); ys.append(p[s].iloc[ix+h]/p[s].iloc[ix]-1)
+  if len(vals)>=8 and len(set(vals))>1: out.append(spearmanr(vals,ys).statistic); ns.append(len(vals))
+ a=np.array(out); print('horizon',h,'dates',len(a),'avgN',round(np.mean(ns),2),'coverage',round(np.mean(ns)/15,4),'IC',round(a.mean(),6),'ICIR',round(a.mean()/a.std(ddof=1),6),'hit',round(np.mean(a>0),4))
+r=pd.DataFrame(f).rank(axis=1,pct=True); t=[]
+for i in range(1,len(r)):
+ z=r.iloc[[i-1,i]].T.dropna()
+ if len(z)>=8:t.append(np.mean(abs(z.iloc[:,1]-z.iloc[:,0])))
+print('turnover',round(float(np.mean(t)),6),'turnover_obs',len(t))
