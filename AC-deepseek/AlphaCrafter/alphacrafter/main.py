@@ -974,7 +974,7 @@ def strategy_hook():
                 with open("memory.txt", "a", encoding="utf-8") as fh:
                     fh.write(
                         f"{str(result.get('date', ''))[:10]} safety advance: "
-                        f"trader skipped/failed; holdings unchanged; window advanced\n"
+                        f"trader did not advance the window; holdings unchanged; window advanced\n"
                     )
             except Exception as exc:
                 print(f"⚠️ memory.txt append failed: {exc}")
