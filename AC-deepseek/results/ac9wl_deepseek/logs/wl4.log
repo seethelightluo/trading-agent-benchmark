@@ -23392,3 +23392,1720 @@ dn_mkt_beta_60d metrics: {'ic': 0.0554, 'icir': 0.1404, 'ic_hit_ratio': 0.55, 'n
 ────────────────────────────────────────
 🔄 Iteration 2/15
 ────────────────────────────────────────
+📤 API Request - 5 messages
+📥 API Response - 154 tokens, $0.000000
+🔧 Tool calls: ['shell', 'shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ shell({'command': 'sed -n 1,60p scripts/factor_research_lib.py'})
+  ✅ shell output: 
+
+ ❌ Command 'sed' is not in the whitelist. Allowed commands: ls, python, echo, tail, grep
+  ▶️ shell({'command': 'sed -n 121,200p scripts/factor_research_lib.py'})
+  ✅ shell output: 
+
+ ❌ Command 'sed' is not in the whitelist. Allowed commands: ls, python, echo, tail, grep
+
+────────────────────────────────────────
+🔄 Iteration 3/15
+────────────────────────────────────────
+📤 API Request - 9 messages
+📥 API Response - 164 tokens, $0.000000
+🔧 Tool calls: ['shell', 'shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ shell({'command': 'python -c "\nsrc = open(\'scripts/factor_research_lib.py\').read()\nlines = src.splitlines()\nfor i in range(0, 60):\n    print(i+1, lines[i])\n"'})
+  ✅ shell output: 
+
+ ✅ Output:
+1 """Shared factor research library for miner_1.
+2 
+3 Loads the 15-asset tradable universe + macro signals through the previous
+4 completed trading day (no lookahead), computes factor panels, forward returns,
+5 rank-IC metrics, and correlation vs existing library factors.
+6 """
+7 from __future__ import annotations
+8 
+9 import json
+10 import math
+11 from pathlib import Path
+12 
+13 import numpy as np
+14 import pandas as pd
+15 from alphacrafter.sim.utils import get_stock_daily_data, get_index_daily_data
+16 
+17 TRADABLE = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX",
+18             "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
+19 MACRO = ["VIX", "DXY", "USDCNY", "USDJPY", "EURUSD"]
+20 LIB_DIR = Path("factors")
+21 
+22 
+23 def load_panels(days: int = 3000):
+24     """Return {asset: DataFrame} for tradable + macro, full history to last completed day."""
+25     panels = {}
+26     for s in TRADABLE:
+27         df = get_stock_daily_data(symbol=s, days=days)
+28         if df is not None and len(df) > 60:
+29             df = df.copy()
+30             df["date"] = pd.to_datetime(df["date"])
+31             df = df.set_index("date").sort_index()
+32             panels[s] = df
+33     for s in MACRO:
+34         df = get_index_daily_data(symbol=s, days=days)
+35         if df is not None and len(df) > 60:
+36             df = df.copy()
+37             df["date"] = pd.to_datetime(df["date"])
+38             df = df.set_index("date").sort_index()
+39             panels[s] = df
+40     return panels
+41 
+42 
+43 def close_panel(panels, assets=None):
+44     assets = assets or TRADABLE
+45     return pd.concat(
+46         {a: panels[a]["close"].astype(float) for a in assets if a in panels},
+47         axis=1,
+48     ).sort_index()
+49 
+50 
+51 def ret_panel(panels, assets=None):
+52     c = close_panel(panels, assets)
+53     return c.pct_change()
+54 
+55 
+56 def forward_returns(closes, horizon: int):
+57     """Forward h-day return computed from closes: close[t+h]/close[t]-1."""
+58     return closes.shift(-horizon) / closes - 1.0
+59 
+60
+  ▶️ shell({'command': 'python -c "\nsrc = open(\'scripts/factor_research_lib.py\').read()\nlines = src.splitlines()\nfor i in range(120, min(200,len(lines))):\n    print(i+1, lines[i])\n"'})
+  ✅ shell output: 
+
+ ✅ Output:
+121 def library_signals(panels, closes=None, rets=None, vix=None):
+122     """Recompute existing library factor panels from their stored definitions."""
+123     closes = closes if closes is not None else close_panel(panels)
+124     rets = rets if rets is not None else closes.pct_change()
+125     if vix is None:
+126         vix = panels["VIX"]["close"].astype(float) if "VIX" in panels else None
+127     sig = {}
+128     # mom_10d_skip5
+129     sig["mom_10d_skip5"] = closes.shift(5) / closes.shift(15) - 1.0
+130     # mom_120d_skip5
+131     sig["mom_120d_skip5"] = closes.shift(5) / closes.shift(125) - 1.0
+132     # vol_of_vol20x60
+133     sig["vol_of_vol20x60"] = rets.rolling(20).std().rolling(60).std()
+134     # vix_beta_cond_60x20: -beta(asset,VIX,60) * (VIX/VIX.shift(20)-1)
+135     if vix is not None:
+136         vix_ret = vix.pct_change()
+137         beta = {}
+138         for a in rets.columns:
+139             z = pd.concat([rets[a].rename("a"), vix_ret.rename("v")], axis=1).dropna()
+140             b = z["a"].rolling(60).cov(z["v"]) / z["v"].rolling(60).var()
+141             beta[a] = b
+142         beta_df = pd.DataFrame(beta, index=rets.index)
+143         cond = -beta_df * (vix / vix.shift(20) - 1.0)
+144         sig["vix_beta_cond_60x20"] = cond
+145     return sig
+146 
+147 
+148 def max_library_corr(candidate: pd.DataFrame, library: dict):
+149     """Max absolute pairwise Pearson correlation of stacked cross-sectional values."""
+150     best, best_key = 0.0, None
+151     for name, lib_sig in library.items():
+152         both = pd.concat([candidate.stack().rename("cand"), lib_sig.stack().rename("lib")], axis=1).dropna()
+153         if len(both) < 30:
+154             continue
+155         r = float(both["cand"].corr(both["lib"]))
+156         if abs(r) > best:
+157             best, best_key = abs(r), name
+158     return round(best, 4), best_key
+159 
+160 
+161 def load_library_meta():
+162     """Load persisted factor json defs to know expression/direction."""
+163     meta = {}
+164     if LIB_DIR.exists():
+165         for p in sorted(LIB_DIR.glob("*.json")):
+166             try:
+167                 d = json.loads(p.read_text())
+168                 meta[d["factor_id"]] = d
+169             except Exception:
+170                 pass
+171     return meta
+172 
+173 
+174 def full_eval(factor_panel, closes, horizons=(1, 2, 3, 5, 10, 20), min_valid=8,
+175               expected_sign=1, library=None, admission_horizon=10):
+176     """Compute all validation metrics at the admission horizon plus decay + library corr."""
+177     fwd = forward_returns(closes, admission_horizon)
+178     ics = rank_ic_series(factor_panel, fwd, min_valid)
+179     m = summarize_ic(ics, expected_sign)
+180     m.update(coverage_metrics(factor_panel, min_valid=min_valid))
+181     m["turnover_10d_rank"] = turnover_rank(factor_panel, 10)
+182     m["decay_ic_by_horizon"] = decay_profile(factor_panel, closes, horizons, min_valid, expected_sign)
+183     if library is not None:
+184         corr, key = max_library_corr(factor_panel, library)
+185         m["max_abs_library_correlation"] = corr
+186         m["max_corr_factor"] = key
+187     return m, ics
+
+────────────────────────────────────────
+🔄 Iteration 4/15
+────────────────────────────────────────
+📤 API Request - 13 messages
+📥 API Response - 3793 tokens, $0.000000
+🔧 Tool calls: ['read_file', 'shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ read_file({'file_path': 'scripts/factor_research_lib.py'})
+  ✅ read_file output: 
+
+ """Shared factor research library for miner_1.
+
+Loads the 15-asset tradable universe + macro signals through the previous
+completed trading day (no lookahead), computes factor panels, forward returns,
+rank-IC metrics, and correlation vs existing library factors.
+"""
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data, get_index_daily_data
+
+TRADABLE = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX",
+            "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
+MACRO = ["VIX", "DXY", "USDCNY", "USDJPY", "EURUSD"]
+LIB_DIR = Path("factors")
+
+
+def load_panels(days: int = 3000):
+    """Return {asset: DataFrame} for tradable + macro, full history to last completed day."""
+    panels = {}
+    for s in TRADABLE:
+        df = get_stock_daily_data(symbol=s, days=days)
+        if df is not None and len(df) > 60:
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date").sort_index()
+            panels[s] = df
+    for s in MACRO:
+        df = get_index_daily_data(symbol=s, days=days)
+        if df is not None and len(df) > 60:
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date").sort_index()
+            panels[s] = df
+    return panels
+
+
+def close_panel(panels, assets=None):
+    assets = assets or TRADABLE
+    return pd.concat(
+        {a: panels[a]["close"].astype(float) for a in assets if a in panels},
+        axis=1,
+    ).sort_index()
+
+
+def ret_panel(panels, assets=None):
+    c = close_panel(panels, assets)
+    return c.pct_change()
+
+
+def forward_returns(closes, horizon: int):
+    """Forward h-day return computed from closes: close[t+h]/close[t]-1."""
+    return closes.shift(-horizon) / closes - 1.0
+
+
+def rank_ic_series(factor_panel: pd.DataFrame, fwd: pd.DataFrame, min_valid: int = 8):
+    """Daily Spearman rank IC between factor cross-section and forward return cross-section."""
+    dates, ics = [], []
+    for dt in factor_panel.index:
+        f = factor_panel.loc[dt]
+        r = fwd.loc[dt] if dt in fwd.index else None
+        if r is None:
+            continue
+        pair = pd.concat([f.rename("f"), r.rename("r")], axis=1).dropna()
+        if len(pair) < min_valid or pair["r"].std() < 1e-14 or pair["f"].std() < 1e-14:
+            continue
+        ic = pair["f"].corr(pair["r"], method="spearman")
+        if not math.isnan(ic):
+            dates.append(dt)
+            ics.append(ic)
+    return pd.Series(ics, index=pd.DatetimeIndex(dates), name="ic")
+
+
+def summarize_ic(ic_series: pd.Series, expected_sign: int = 1):
+    ic = ic_series.mean()
+    icir = ic_series.mean() / ic_series.std(ddof=1) if ic_series.std(ddof=1) > 0 else 0.0
+    hit = float((np.sign(ic_series) == expected_sign).mean()) if expected_sign else float((np.sign(ic_series) != 0).mean())
+    return {
+        "ic": round(float(ic), 4),
+        "icir": round(float(icir), 4),
+        "ic_hit_ratio": round(float(hit), 3),
+        "n_ic_dates": int(len(ic_series)),
+        "ic_std": round(float(ic_series.std(ddof=1)), 4),
+    }
+
+
+def coverage_metrics(factor_panel: pd.DataFrame, assets=None, min_valid=8):
+    assets = assets or TRADABLE
+    valid = factor_panel.notna()
+    asset_days = float(valid[list(valid.columns)].sum().sum())
+    total_days = float(factor_panel.shape[0] * len([a for a in assets if a in valid.columns]))
+    dates_ge8 = float((valid.sum(axis=1) >= min_valid).mean())
+    return {
+        "coverage_asset_days": round(asset_days / total_days, 3) if total_days else 0.0,
+        "coverage_dates_ge8": round(dates_ge8, 3),
+    }
+
+
+def turnover_rank(factor_panel: pd.DataFrame, step: int = 10):
+    """Mean absolute raw-rank change over `step` days (0..N-1 scale)."""
+    r = factor_panel.rank(axis=1, method="average")
+    diff = r.diff(step).abs().mean().mean()
+    return round(float(diff), 3) if not math.isnan(diff) else None
+
+
+def decay_profile(factor_panel, closes, horizons=(1, 2, 3, 5, 10, 20), min_valid=8, expected_sign=1):
+    out = {}
+    for h in horizons:
+        fwd = forward_returns(closes, h)
+        ics = rank_ic_series(factor_panel, fwd, min_valid)
+        if len(ics):
+            out[str(h)] = round(float(ics.mean()), 4)
+    return out
+
+
+def library_signals(panels, closes=None, rets=None, vix=None):
+    """Recompute existing library factor panels from their stored definitions."""
+    closes = closes if closes is not None else close_panel(panels)
+    rets = rets if rets is not None else closes.pct_change()
+    if vix is None:
+        vix = panels["VIX"]["close"].astype(float) if "VIX" in panels else None
+    sig = {}
+    # mom_10d_skip5
+    sig["mom_10d_skip5"] = closes.shift(5) / closes.shift(15) - 1.0
+    # mom_120d_skip5
+    sig["mom_120d_skip5"] = closes.shift(5) / closes.shift(125) - 1.0
+    # vol_of_vol20x60
+    sig["vol_of_vol20x60"] = rets.rolling(20).std().rolling(60).std()
+    # vix_beta_cond_60x20: -beta(asset,VIX,60) * (VIX/VIX.shift(20)-1)
+    if vix is not None:
+        vix_ret = vix.pct_change()
+        beta = {}
+        for a in rets.columns:
+            z = pd.concat([rets[a].rename("a"), vix_ret.rename("v")], axis=1).dropna()
+            b = z["a"].rolling(60).cov(z["v"]) / z["v"].rolling(60).var()
+            beta[a] = b
+        beta_df = pd.DataFrame(beta, index=rets.index)
+        cond = -beta_df * (vix / vix.shift(20) - 1.0)
+        sig["vix_beta_cond_60x20"] = cond
+    return sig
+
+
+def max_library_corr(candidate: pd.DataFrame, library: dict):
+    """Max absolute pairwise Pearson correlation of stacked cross-sectional values."""
+    best, best_key = 0.0, None
+    for name, lib_sig in library.items():
+        both = pd.concat([candidate.stack().rename("cand"), lib_sig.stack().rename("lib")], axis=1).dropna()
+        if len(both) < 30:
+            continue
+        r = float(both["cand"].corr(both["lib"]))
+        if abs(r) > best:
+            best, best_key = abs(r), name
+    return round(best, 4), best_key
+
+
+def load_library_meta():
+    """Load persisted factor json defs to know expression/direction."""
+    meta = {}
+    if LIB_DIR.exists():
+        for p in sorted(LIB_DIR.glob("*.json")):
+            try:
+                d = json.loads(p.read_text())
+                meta[d["factor_id"]] = d
+            except Exception:
+                pass
+    return meta
+
+
+def full_eval(factor_panel, closes, horizons=(1, 2, 3, 5, 10, 20), min_valid=8,
+              expected_sign=1, library=None, admission_horizon=10):
+    """Compute all validation metrics at the admission horizon plus decay + library corr."""
+    fwd = forward_returns(closes, admission_horizon)
+    ics = rank_ic_series(factor_panel, fwd, min_valid)
+    m = summarize_ic(ics, expected_sign)
+    m.update(coverage_metrics(factor_panel, min_valid=min_valid))
+    m["turnover_10d_rank"] = turnover_rank(factor_panel, 10)
+    m["decay_ic_by_horizon"] = decay_profile(factor_panel, closes, horizons, min_valid, expected_sign)
+    if library is not None:
+        corr, key = max_library_corr(factor_panel, library)
+        m["max_abs_library_correlation"] = corr
+        m["max_corr_factor"] = key
+    return m, ics
+
+  ▶️ shell({'command': 'ls -la scripts/ | tail -n 30'})
+  ✅ shell output: 
+
+ ✅ Output:
+drwxrwxr-x 2 lxx lxx  4096 Aug 11 09:28 .
+drwxrwxr-x 5 lxx lxx  4096 Aug 11 10:02 ..
+-rw-rw-r-- 1 lxx lxx   277 Aug 10 16:50 _batch2_results.csv
+-rw-rw-r-- 1 lxx lxx 25480 Aug 10 17:10 _batch3_err.txt
+-rw-rw-r-- 1 lxx lxx  4297 Aug 10 17:11 _batch3_out.txt
+-rw-rw-r-- 1 lxx lxx     2 Aug 11 01:02 _miner3_batchA_results.json
+-rw-rw-r-- 1 lxx lxx  7258 Aug 10 16:38 factor_research_lib.py
+-rw-rw-r-- 1 lxx lxx  4055 Aug 10 17:04 miner_1_20260730_batch3a_sensitivity.py
+-rw-rw-r-- 1 lxx lxx  1944 Aug 10 17:06 miner_1_20260730_check_beta_corr.py
+-rw-rw-r-- 1 lxx lxx  1762 Aug 11 01:00 miner_1_20260730_debug_rankic.py
+-rw-rw-r-- 1 lxx lxx  4083 Aug 10 16:38 miner_1_20260730_explore_batch1.py
+-rw-rw-r-- 1 lxx lxx 11236 Aug 11 01:03 miner_1_20260730_explore_batch4.py
+-rw-rw-r-- 1 lxx lxx  4387 Aug 10 17:20 miner_1_20260730_explore_trend_quality.py
+-rw-rw-r-- 1 lxx lxx  6787 Aug 10 17:06 miner_1_20260730_persist_beta3.py
+-rw-rw-r-- 1 lxx lxx  1216 Aug 11 01:01 miner_1_20260730_probe_calendar.py
+-rw-rw-r-- 1 lxx lxx  1321 Aug 10 16:35 miner_1_20260730_probe_data.py
+-rw-rw-r-- 1 lxx lxx  3322 Aug 10 17:11 miner_1_20260730_verify_persist.py
+-rw-rw-r-- 1 lxx lxx  4144 Aug 10 16:47 miner_1_20260810_explore_batch2.py
+-rw-rw-r-- 1 lxx lxx  4510 Aug 11 09:27 miner_1_20260811_explore_risk_shape.py
+-rw-rw-r-- 1 lxx lxx  7211 Aug 10 16:50 miner_2_20260730_explore_batch.py
+-rw-rw-r-- 1 lxx lxx 11311 Aug 10 17:07 miner_2_20260730_explore_batch3.py
+-rw-rw-r-- 1 lxx lxx 15545 Aug 11 01:02 miner_2_20260730_repair_library.py
+-rw-rw-r-- 1 lxx lxx  8005 Aug 10 16:40 miner_3_20260730_screen_candidates.py
+-rw-rw-r-- 1 lxx lxx  9138 Aug 10 16:44 miner_3_20260730_screen_v2.py
+-rw-rw-r-- 1 lxx lxx 11397 Aug 10 16:57 miner_3_20260730_screen_v3.py
+-rw-rw-r-- 1 lxx lxx 10709 Aug 10 17:25 miner_3_20260730_screen_v4.py
+-rw-rw-r-- 1 lxx lxx  1280 Aug 11 00:55 miner_3_20260810_debug_rankic.py
+-rw-rw-r-- 1 lxx lxx  1776 Aug 11 01:03 miner_3_20260810_debug_vec.py
+-rw-rw-r-- 1 lxx lxx  1227 Aug 11 00:50 miner_3_20260810_probe_state.py
+-rw-rw-r-- 1 lxx lxx  5938 Aug 11 01:02 miner_3_20260810_screen_batchA.py
+
+────────────────────────────────────────
+🔄 Iteration 2/15
+────────────────────────────────────────
+📤 API Request - 5 messages
+📥 API Response - 236 tokens, $0.000000
+🔧 Tool calls: ['read_file', 'read_file']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ read_file({'file_path': 'scripts/miner_2_20260730_repair_library.py'})
+  ✅ read_file output: 
+
+ """miner_2 (sim date 2026-07-30): rebuild factor library with recoverable .npy
+signal artifacts + explore new close-only cross-asset factors.  Vectorized IC.
+
+Context: all previously persisted factors were quarantined because their signal
+artifact used panel_json_v1 (dict) which the deterministic gate's
+_load_signal_artifact() does NOT recognize. This script re-persists every
+gate-passing factor with a real 2D .npy matrix on a shared canonical grid, then
+runs enforce_library() (admission + pairwise rho conflict + capacity), and
+rebuilds factor_ensemble.json from the kept library.
+
+Validation window: 2020-01-01 .. 2026-07-15 (warm-up), h=10, min_valid=8 assets/date.
+Admission gates (15-asset universe): |IC| >= 0.0070 and |ICIR| >= 0.0840.
+"""
+import sys
+import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, "scripts")
+from factor_research_lib import (load_panels, close_panel, forward_returns,
+                                 coverage_metrics, turnover_rank,
+                                 library_signals, max_library_corr, TRADABLE)
+from alphacrafter.factor_contract import FactorContract, enforce_library, validate_ensemble
+
+VAL_START = pd.Timestamp("2020-01-01")
+VAL_END = pd.Timestamp("2026-07-15")
+H = 10
+MIN_VALID = 8
+CONTRACT = FactorContract()
+
+# ---------------- data ----------------
+panels = load_panels(3000)
+closes_full = close_panel(panels)                      # full history -> 2026-07-29
+grid = closes_full.index[(closes_full.index >= VAL_START) & (closes_full.index <= VAL_END)]
+closes = closes_full.reindex(grid)
+rets = closes.pct_change()
+print(f"data: {len(TRADABLE)} tradable assets, grid {grid.min().date()}..{grid.max().date()} "
+      f"({len(grid)} dates, warm-up window)", flush=True)
+
+vix = panels["VIX"]["close"].astype(float) if "VIX" in panels else None
+cn10 = panels["CN10Y"]["close"].astype(float)
+eur = panels["EURUSD"]["close"].astype(float)
+
+# ---------------- factor builders ----------------
+def rolling_beta(asset_ret, driver, win=60, min_obs=40):
+    driver = driver.astype(float)
+    beta = {}
+    for a in asset_ret.columns:
+        z = pd.concat([asset_ret[a].rename("a"), driver.rename("m")], axis=1).dropna()
+        if len(z) < min_obs + 5:
+            beta[a] = pd.Series(np.nan, index=asset_ret.index)
+            continue
+        cov = z["a"].rolling(win).cov(z["m"])
+        var = z["m"].rolling(win).var()
+        b = (cov / var).where(z["m"].rolling(win).count() >= min_obs)
+        beta[a] = b.reindex(asset_ret.index)
+    return pd.DataFrame(beta, index=asset_ret.index)
+
+def per_asset(func):
+    out = {}
+    for a in TRADABLE:
+        s = closes_full[a].dropna()
+        if len(s) < 30:
+            out[a] = pd.Series(np.nan, index=grid)
+            continue
+        try:
+            out[a] = func(s).reindex(grid)
+        except Exception:
+            out[a] = pd.Series(np.nan, index=grid)
+    return pd.DataFrame(out, index=grid)
+
+C = {}
+# --- library incumbents (stored definitions) ---
+C["mom_10d_skip5"] = per_asset(lambda s: s.shift(5) / s.shift(15) - 1.0)
+C["mom_120d_skip5"] = per_asset(lambda s: s.shift(5) / s.shift(125) - 1.0)
+C["vol_of_vol20x60"] = per_asset(lambda s: s.pct_change().rolling(20).std().rolling(60).std())
+if vix is not None:
+    vix_ret = vix.pct_change()
+    C["vix_beta_cond_60x20"] = (-rolling_beta(rets, vix_ret, 60)
+                                * (vix / vix.shift(20) - 1.0).reindex(grid))
+# --- macro beta factors (batch-3a) ---
+C["rate_beta_cn10y_60d"] = rolling_beta(rets, cn10.pct_change(), 60)
+C["eurusd_beta_60d"] = rolling_beta(rets, eur.pct_change(), 60)
+mkt = rets.mean(axis=1)
+dn_mkt = mkt.where(mkt < 0).fillna(0.0)
+C["dn_mkt_beta_60d"] = rolling_beta(rets, dn_mkt, 60)
+# --- batch-3 passers ---
+C["down_up_vol_ratio_20"] = per_asset(
+    lambda s: s.pct_change().clip(upper=0).rolling(20).std()
+    / (s.pct_change().clip(lower=0).rolling(20).std() + 1e-12))
+mom20 = per_asset(lambda s: s / s.shift(20) - 1.0)
+C["rel_mom_20d"] = mom20.sub(mom20.mean(axis=1), axis=0)
+btc = closes_full["BTC"].dropna()
+btc_ret = btc.pct_change()
+btc_mom = btc_ret.rolling(20).mean() * 20.0
+C["crypto_beta_btc_60x20"] = rolling_beta(rets, btc_ret, 60) * btc_mom.reindex(grid)
+# --- NEW close-only explorations ---
+C["skew_60d"] = per_asset(lambda s: s.pct_change().rolling(60).skew())
+C["vol_term_20_60"] = per_asset(
+    lambda s: s.pct_change().rolling(20).std() / s.pct_change().rolling(60).std() - 1.0)
+C["range_pos_20d"] = per_asset(
+    lambda s: (s - s.rolling(20).min()) / (s.rolling(20).max() - s.rolling(20).min()) - 0.5)
+C["dd_60d"] = per_asset(lambda s: s / s.rolling(60).max() - 1.0)
+
+lib = library_signals(panels, closes, rets)
+
+# ---------------- vectorized validation ----------------
+def fast_ic_series(factor_panel, fwd, min_valid=MIN_VALID):
+    """Daily cross-sectional Spearman IC via rank-then-Pearson (fully vectorized)."""
+    f = factor_panel.rank(axis=1)
+    r = fwd.rank(axis=1)
+    common = f.index.intersection(r.index)
+    f = f.loc[common]
+    r = r.loc[common]
+    valid = f.notna() & r.notna()
+    n = valid.sum(axis=1)
+    fv = f.where(valid)
+    rv = r.where(valid)
+    fm = fv.sub(fv.mean(axis=1), axis=0)
+    rm = rv.sub(rv.mean(axis=1), axis=0)
+    num = (fm * rm).sum(axis=1, min_count=1)
+    den = np.sqrt((fm ** 2).sum(axis=1) * (rm ** 2).sum(axis=1))
+    ic = num / den
+    ic = ic[(n >= min_valid) & (den > 1e-12)]
+    return ic.dropna()
+
+def validate(name, panel):
+    panel = panel.reindex(grid)
+    fwd10 = forward_returns(closes, H)
+    ics = fast_ic_series(panel, fwd10)
+    ics = ics[(ics.index >= VAL_START) & (ics.index <= VAL_END)]
+    if len(ics) < 200:
+        return None
+    ic = float(ics.mean())
+    icir = float(ics.mean() / ics.std(ddof=1)) if ics.std(ddof=1) > 0 else 0.0
+    hit = float((np.sign(ics) == np.sign(ic)).mean())
+    cov = coverage_metrics(panel)
+    decay = {}
+    for h in (1, 2, 3, 5, 10, 20):
+        s = fast_ic_series(panel, forward_returns(closes, h))
+        s = s[(s.index >= VAL_START) & (s.index <= VAL_END)]
+        if len(s) >= 100:
+            decay[str(h)] = round(float(s.mean()), 4)
+    corr, key = max_library_corr(panel, lib)
+    return {"ic": round(ic, 4), "icir": round(icir, 4), "ic_hit_ratio": round(hit, 3),
+            "n_ic_dates": int(len(ics)), "ic_std": round(float(ics.std(ddof=1)), 4),
+            "coverage_asset_days": cov["coverage_asset_days"],
+            "coverage_dates_ge8": cov["coverage_dates_ge8"],
+            "turnover_10d_rank": turnover_rank(panel, 10),
+            "decay_ic_by_horizon": decay,
+            "max_abs_library_correlation": corr, "max_corr_factor": key}
+
+results = {}
+print("\n--- validation (h=10, warm-up window) ---", flush=True)
+for name, panel in C.items():
+    m = validate(name, panel)
+    if m is None:
+        print(f"{name:26s} NOTE insufficient IC dates", flush=True)
+        continue
+    results[name] = m
+    ok = abs(m["ic"]) >= CONTRACT.ic_threshold and abs(m["icir"]) >= CONTRACT.icir_threshold
+    print(f"{name:26s} IC={m['ic']:>8.4f} ICIR={m['icir']:>8.4f} hit={m['ic_hit_ratio']:.3f} "
+          f"n={m['n_ic_dates']:5d} covAD={m['coverage_asset_days']:.3f} "
+          f"covD8={m['coverage_dates_ge8']:.3f} to={m['turnover_10d_rank']:.3f} "
+          f"rho={m['max_abs_library_correlation']:.3f}({m['max_corr_factor']}) "
+          f"{'PASS' if ok else 'FAIL'}", flush=True)
+
+# ---------------- persistence (JSON + .npy artifact) ----------------
+META = {
+    "mom_10d_skip5": ("Short Momentum 10d (skip 5d)", "close.shift(5) / close.shift(15) - 1.0",
+                      "10-day price momentum with 5-day skip to avoid short-term reversal.",
+                      ["close"], {"lookback": 10, "skip": 5}, ["momentum", "cross-asset"]),
+    "mom_120d_skip5": ("Long Momentum 120d (skip 5d)", "close.shift(5) / close.shift(125) - 1.0",
+                       "120-day price momentum with 5-day skip (trend persistence).",
+                       ["close"], {"lookback": 120, "skip": 5}, ["momentum", "cross-asset"]),
+    "vol_of_vol20x60": ("Vol-of-Vol 20x60", "rolling_std(pct_change(close),20).rolling(60).std()",
+                        "Volatility of 20-day realized volatility over 60 days (vol regime instability).",
+                        ["close"], {"vol_win": 20, "smooth_win": 60}, ["volatility", "cross-asset"]),
+    "vix_beta_cond_60x20": ("VIX-beta conditional 60x20",
+                            "-beta(asset_ret, pct_change(VIX), 60) * (VIX/VIX.shift(20)-1)",
+                            "Negative VIX-beta times 20d VIX change: assets that hedge VIX spikes are favored when VIX rises.",
+                            ["close", "VIX"], {"beta_win": 60, "cond_win": 20}, ["macro-beta", "volatility"]),
+    "rate_beta_cn10y_60d": ("CN10Y rate beta 60d", "beta(asset_ret, pct_change(CN10Y), 60)",
+                            "Rolling 60d beta of each asset's daily return on CN10Y yield changes.",
+                            ["close", "CN10Y"], {"beta_win": 60, "min_obs": 40}, ["macro-beta", "rates"]),
+    "eurusd_beta_60d": ("EURUSD beta 60d", "beta(asset_ret, pct_change(EURUSD), 60)",
+                        "Rolling 60d beta on EURUSD changes (global risk-appetite proxy).",
+                        ["close", "EURUSD"], {"beta_win": 60, "min_obs": 40}, ["macro-beta", "fx"]),
+    "dn_mkt_beta_60d": ("Downside market beta 60d", "beta(asset_ret, min(0, mean(asset_ret,axis=1)), 60)",
+                        "Rolling 60d beta on downside-only cross-asset market return (crash sensitivity).",
+                        ["close"], {"beta_win": 60, "min_obs": 40}, ["macro-beta", "downside"]),
+    "down_up_vol_ratio_20": ("Downside/upside vol ratio 20d",
+                             "rolling_std(clip(r,upper=0),20) / rolling_std(clip(r,lower=0),20)",
+                             "Ratio of downside to upside realized volatility over 20 days (asymmetric risk).",
+                             ["close"], {"win": 20}, ["volatility", "asymmetry"]),
+    "rel_mom_20d": ("Relative momentum 20d", "mom20 - cross_sectional_mean(mom20)",
+                    "Cross-sectionally demeaned 20d momentum (relative strength vs peers).",
+                    ["close"], {"lookback": 20}, ["momentum", "relative"]),
+    "crypto_beta_btc_60x20": ("BTC-beta conditional 60x20",
+                              "beta(asset_ret, pct_change(BTC), 60) * mean(pct_change(BTC),20)*20",
+                              "BTC-beta times 20d BTC momentum (crypto-driven risk regime tilt).",
+                              ["close", "BTC"], {"beta_win": 60, "cond_win": 20}, ["macro-beta", "crypto"]),
+    "skew_60d": ("Return skewness 60d", "rolling_skew(pct_change(close), 60)",
+                 "60-day skewness of daily returns (tail-risk asymmetry).",
+                 ["close"], {"win": 60}, ["volatility", "tail"]),
+    "vol_term_20_60": ("Vol term structure 20/60", "vol20/vol60 - 1",
+                       "Short vs long realized vol ratio (vol regime slope).",
+                       ["close"], {"short_win": 20, "long_win": 60}, ["volatility"]),
+    "range_pos_20d": ("20d range position", "(close-min20)/(max20-min20) - 0.5",
+                      "Close location inside the 20d high-low range (trend vs mean-reversion regime).",
+                      ["close"], {"win": 20}, ["trend", "location"]),
+    "dd_60d": ("60d drawdown depth", "close/rolling_max(close,60) - 1",
+               "Distance from 60-day high (recovery/drawdown state).",
+               ["close"], {"win": 60}, ["trend", "drawdown"]),
+}
+
+print("\n--- persistence ---", flush=True)
+for fid, m in results.items():
+    ok = abs(m["ic"]) >= CONTRACT.ic_threshold and abs(m["icir"]) >= CONTRACT.icir_threshold
+    if not ok:
+        continue
+    fname, expr, desc, deps, params, tags = META[fid]
+    exp_dir = int(np.sign(m["ic"])) if m["ic"] else 1
+    panel = C[fid].reindex(grid)
+    arr = panel[TRADABLE].values.astype(float)
+    npy_path = Path("factors") / f"{fid}_signal.npy"
+    np.save(npy_path, arr)
+    payload = {
+        "factor_id": fid, "factor_name": fname, "version": "1.0.0",
+        "calculation": {"expression": expr, "description": desc},
+        "dependencies": deps, "parameters": params, "expected_direction": exp_dir,
+        "signal_artifact": npy_path.name, "signal_artifact_format": "npy",
+        "signal_artifact_shape": list(arr.shape),
+        "signal_artifact_grid": {"start": str(grid.min().date()), "end": str(grid.max().date()),
+                                 "n_dates": int(len(grid)), "columns": TRADABLE,
+                                 "note": "canonical grid shared by all library factors"},
+        "validation": {"status": "EFFECTIVE",
+                       "period": f"{VAL_START.date()}..{VAL_END.date()}",
+                       "last_validated": "2026-07-30", "admission_horizon": H,
+                       "regime_notes": ("Validated 2020-01-01..2026-07-15 (warm-up) across regimes: "
+                                        "COVID crash 2020, 2020-21 bull, 2022 tightening bear, "
+                                        "2023-24 AI-led equity rally, 2024-26 crypto/commodity cycles. "
+                                        "Cross-sectional Spearman rank IC on the 15-asset tradable "
+                                        "universe, h=10, min 8 valid instruments per date."),
+                       "metrics": {**m, "signal_artifact": npy_path.name}},
+        "tags": tags,
+    }
+    out = Path("factors") / f"{fid}.json"
+    out.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    print(f"WROTE factors/{fid}.json + {npy_path.name} | IC={m['ic']:.4f} ICIR={m['icir']:.4f} "
+          f"dir={exp_dir:+d} decay10={m['decay_ic_by_horizon']['10']}", flush=True)
+
+# ---------------- deterministic gate ----------------
+print("\n--- enforce_library ---", flush=True)
+result = enforce_library(Path("factors"), CONTRACT)
+print(json.dumps(result, indent=2, default=str), flush=True)
+
+with open("factor_library_audit.jsonl", "a", encoding="utf-8") as f:
+    f.write(json.dumps({"cycle": 3, **result}) + "\n")
+
+# ---------------- ensemble ----------------
+print("\n--- ensemble rebuild ---", flush=True)
+kept = []
+for name in result["kept_files"]:
+    p = json.loads(Path("factors", name).read_text(encoding="utf-8"))
+    sel = p["benchmark_admission"]["selected_metrics"]
+    kept.append((name, p["factor_id"], abs(sel["ic"]) * abs(sel["icir"]),
+                 p.get("expected_direction", 1)))
+total_q = sum(q for _, _, q, _ in kept) or 1.0
+selected = [{"factor_id": fid, "weight": round(q / total_q, 4), "direction": int(np.sign(d)) if d else 1}
+            for _, fid, q, d in kept]
+ensemble = {"schema_version": 1, "selected_factors": selected, "method": "quality_ic_tilt"}
+Path("factors", "factor_ensemble.json").write_text(json.dumps(ensemble, indent=2), encoding="utf-8")
+print(json.dumps(ensemble, indent=2), flush=True)
+print("ensemble validation:", validate_ensemble("factors/factor_ensemble.json", "factors", CONTRACT), flush=True)
+
+# ---------------- round-trip verification ----------------
+print("\n--- artifact round-trip ---", flush=True)
+ok_all = True
+for name in result["kept_files"]:
+    p = json.loads(Path("factors", name).read_text(encoding="utf-8"))
+    art = np.load(Path("factors") / p["signal_artifact"], allow_pickle=False)
+    shape_ok = art.shape == (len(grid), len(TRADABLE))
+    ok_all = ok_all and shape_ok
+    print(f"{name:28s} artifact={p['signal_artifact']} shape={art.shape} ok={shape_ok}", flush=True)
+print("ALL ARTIFACTS OK" if ok_all else "ARTIFACT MISMATCH", flush=True)
+
+  ▶️ read_file({'file_path': 'scripts/miner_1_20260730_verify_persist.py'})
+  ✅ read_file output: 
+
+ """Verify persisted factor JSONs are valid, reloadable, and internally consistent.
+Handles both gzip-b64 artifact format and normalized plain panel_json_v1."""
+import json, base64, gzip, sys
+from pathlib import Path
+import numpy as np
+
+fids = ["rate_beta_cn10y_60d", "eurusd_beta_60d", "dn_mkt_beta_60d"]
+ok = True
+
+
+def extract_panel(rec):
+    art = rec["validation"]["signal_artifact"]
+    if "payload_b64_gzip" in art:
+        payload = json.loads(gzip.decompress(base64.b64decode(art["payload_b64_gzip"])))
+        return payload["dates"], payload["assets"], payload["values"], art["format"]
+    return art["dates"], art["assets"], art["values"], art["format"]
+
+
+for fid in fids:
+    p = Path(f"factors/{fid}.json")
+    try:
+        rec = json.loads(p.read_text())
+    except Exception as e:
+        print(f"[FAIL] {fid}: JSON parse error: {e}")
+        ok = False
+        continue
+    v = rec.get("validation", {})
+    m = v.get("metrics", {})
+    art = v.get("signal_artifact", {})
+    try:
+        dates, assets, values, fmt = extract_panel(rec)
+        n_dates = len(dates)
+        n_assets = len(assets)
+        n_vals = sum(1 for a in assets for x in values[a] if x is not None)
+    except Exception as e:
+        print(f"[FAIL] {fid}: artifact decode error: {e}")
+        ok = False
+        continue
+    checks = {
+        "factor_id": rec.get("factor_id") == fid,
+        "status_effective": v.get("status") == "EFFECTIVE",
+        "ic_gate": abs(m.get("ic", 0)) >= 0.007,
+        "icir_gate": abs(m.get("icir", 0)) >= 0.084,
+        "artifact_dims": (art.get("n_dates") == n_dates) and (art.get("n_assets") == n_assets),
+        "artifact_values": n_vals > 1000,
+        "libcorr_present": "max_abs_library_correlation" in m,
+        "last_validated": v.get("last_validated"),
+    }
+    status = "OK" if all(checks.values()) and checks["last_validated"] else "MISMATCH"
+    if status != "OK":
+        ok = False
+    print(f"[{status}] {fid}: id={checks['factor_id']} status={checks['status_effective']} "
+          f"ic_gate={checks['ic_gate']} icir_gate={checks['icir_gate']} "
+          f"art_dims={checks['artifact_dims']} art_vals={checks['artifact_values']} "
+          f"libcorr={m.get('max_abs_library_correlation')} validated={checks['last_validated']} "
+          f"artifact={fmt} n_dates={n_dates} n_assets={n_assets}")
+
+from itertools import combinations
+
+
+def load_signal(fid):
+    rec = json.loads(Path(f"factors/{fid}.json").read_text())
+    return extract_panel(rec)
+
+
+print("\nPairwise cross-sectional rank correlations (new trio):")
+for a, b in combinations(fids, 2):
+    d1, s1, v1, _ = load_signal(a)
+    d2, s2, v2, _ = load_signal(b)
+    common_dates = sorted(set(d1) & set(d2))
+    common_assets = [x for x in s1 if x in s2]
+    rhos = []
+    for d in common_dates:
+        i1, i2 = d1.index(d), d2.index(d)
+        x = [v1[x][i1] for x in common_assets if v1[x][i1] is not None and v2[x][i2] is not None]
+        y = [v2[x][i2] for x in common_assets if v1[x][i1] is not None and v2[x][i2] is not None]
+        if len(x) >= 5:
+            r = np.corrcoef(x, y)[0, 1]
+            if not np.isnan(r):
+                rhos.append(r)
+    print(f"  {a} vs {b}: mean rho={np.mean(rhos):.3f} over {len(rhos)} dates")
+
+print("\nALL PERSISTENCE CHECKS PASSED" if ok else "\nSOME CHECKS FAILED")
+
+
+────────────────────────────────────────
+🔄 Iteration 3/15
+────────────────────────────────────────
+📤 API Request - 9 messages
+📥 API Response - 6662 tokens, $0.000000
+🔧 Tool calls: ['shell', 'shell', 'shell', 'shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 4 tool call(s)...
+  ▶️ shell({'command': 'tail -n 200 scripts/_batch3_out.txt'})
+  ✅ shell output: 
+
+ ✅ Output:
+assets loaded: 15/15
+rel_mom_20d                IC=  0.0375 ICIR=  0.1061 hit=0.547 n= 1655 covAD=0.718 covD8=0.697 to=3.253 rho=0.569(mom_10d_skip5) PASS
+rel_mom_60d                IC=  0.0103 ICIR=  0.0284 hit=0.504 n= 1614 covAD=0.702 covD8=0.680 to=2.334 rho=0.529(mom_120d_skip5) 
+accel_60_20                IC= -0.0234 ICIR= -0.0650 hit=0.537 n= 1614 covAD=0.702 covD8=0.680 to=2.642 rho=0.605(mom_120d_skip5) 
+trend_consist_60           IC=  0.0169 ICIR=  0.0556 hit=0.523 n= 1615 covAD=0.702 covD8=0.680 to=2.103 rho=0.351(mom_120d_skip5) 
+updown_ratio_60            IC=  0.0155 ICIR=  0.0470 hit=0.524 n= 1614 covAD=0.702 covD8=0.680 to=2.378 rho=0.452(mom_120d_skip5) 
+sharpe_60d                 IC=  0.0161 ICIR=  0.0486 hit=0.521 n= 1614 covAD=0.702 covD8=0.680 to=2.392 rho=0.452(mom_120d_skip5) 
+sortino_60d                IC=  0.0147 ICIR=  0.0443 hit=0.519 n= 1614 covAD=0.702 covD8=0.680 to=2.411 rho=0.451(mom_120d_skip5) 
+autocorr_20d               IC=  0.0165 ICIR=  0.0531 hit=0.521 n= 1654 covAD=0.718 covD8=0.697 to=3.418 rho=0.119(mom_10d_skip5) 
+autocorr_60d               IC= -0.0143 ICIR= -0.0458 hit=0.513 n= 1613 covAD=0.701 covD8=0.680 to=2.285 rho=0.135(vol_of_vol20x60) 
+intraday_eff_20            NOTE insufficient
+overnight_mom_20           NOTE insufficient
+intraday_mom_20            NOTE insufficient
+gk_vol_20                  NOTE insufficient
+park_vol_20                NOTE insufficient
+gk_cc_vol_ratio_20         NOTE insufficient
+down_up_vol_ratio_20       IC= -0.0435 ICIR= -0.1297 hit=0.548 n= 1655 covAD=0.718 covD8=0.697 to=3.335 rho=0.398(mom_10d_skip5) PASS
+eq_beta_spx_60x20          IC=  0.0189 ICIR=  0.0449 hit=0.519 n= 1572 covAD=0.646 covD8=0.662 to=2.305 rho=0.724(vix_beta_cond_60x20) 
+safehav_beta_xau_60x20     IC= -0.0246 ICIR= -0.0734 hit=0.533 n= 1613 covAD=0.660 covD8=0.680 to=2.871 rho=0.116(mom_10d_skip5) 
+crypto_beta_btc_60x20      IC=  0.0406 ICIR=  0.1029 hit=0.551 n= 1614 covAD=0.702 covD8=0.680 to=3.378 rho=0.469(mom_10d_skip5) PASS
+rate_beta_us10y_60x20      IC= -0.0164 ICIR= -0.0455 hit=0.520 n= 1562 covAD=0.643 covD8=0.658 to=2.982 rho=0.194(mom_10d_skip5) 
+defensive_spx_60x20        IC= -0.0189 ICIR= -0.0449 hit=0.519 n= 1572 covAD=0.646 covD8=0.662 to=2.281 rho=0.724(vix_beta_cond_60x20) 
+vw_mom_20d                 NOTE insufficient
+obv_z_60d                  NOTE insufficient
+
+--- sorted by |ICIR| ---
+PASS down_up_vol_ratio_20       IC= -0.0435 ICIR= -0.1297 n= 1655 covAD=0.718 rho=0.398(mom_10d_skip5)
+PASS rel_mom_20d                IC=  0.0375 ICIR=  0.1061 n= 1655 covAD=0.718 rho=0.569(mom_10d_skip5)
+PASS crypto_beta_btc_60x20      IC=  0.0406 ICIR=  0.1029 n= 1614 covAD=0.702 rho=0.469(mom_10d_skip5)
+     safehav_beta_xau_60x20     IC= -0.0246 ICIR= -0.0734 n= 1613 covAD=0.660 rho=0.116(mom_10d_skip5)
+     accel_60_20                IC= -0.0234 ICIR= -0.0650 n= 1614 covAD=0.702 rho=0.605(mom_120d_skip5)
+     trend_consist_60           IC=  0.0169 ICIR=  0.0556 n= 1615 covAD=0.702 rho=0.351(mom_120d_skip5)
+     autocorr_20d               IC=  0.0165 ICIR=  0.0531 n= 1654 covAD=0.718 rho=0.119(mom_10d_skip5)
+     sharpe_60d                 IC=  0.0161 ICIR=  0.0486 n= 1614 covAD=0.702 rho=0.452(mom_120d_skip5)
+     updown_ratio_60            IC=  0.0155 ICIR=  0.0470 n= 1614 covAD=0.702 rho=0.452(mom_120d_skip5)
+     autocorr_60d               IC= -0.0143 ICIR= -0.0458 n= 1613 covAD=0.701 rho=0.135(vol_of_vol20x60)
+     rate_beta_us10y_60x20      IC= -0.0164 ICIR= -0.0455 n= 1562 covAD=0.643 rho=0.194(mom_10d_skip5)
+     eq_beta_spx_60x20          IC=  0.0189 ICIR=  0.0449 n= 1572 covAD=0.646 rho=0.724(vix_beta_cond_60x20)
+     defensive_spx_60x20        IC= -0.0189 ICIR= -0.0449 n= 1572 covAD=0.646 rho=0.724(vix_beta_cond_60x20)
+     sortino_60d                IC=  0.0147 ICIR=  0.0443 n= 1614 covAD=0.702 rho=0.451(mom_120d_skip5)
+     rel_mom_60d                IC=  0.0103 ICIR=  0.0284 n= 1614 covAD=0.702 rho=0.529(mom_120d_skip5)
+
+--- decay profile (passers) ---
+down_up_vol_ratio_20       decay={'1': -0.0141, '3': -0.0237, '5': -0.0304, '10': -0.0435, '20': -0.0389}
+rel_mom_20d                decay={'1': -0.0057, '3': 0.0042, '5': 0.0084, '10': 0.0375, '20': 0.06}
+crypto_beta_btc_60x20      decay={'1': -0.0074, '3': -0.0057, '5': -0.0003, '10': 0.0406, '20': 0.0716}
+  ▶️ shell({'command': 'python -c "print(open(\'scripts/factor_research_lib.py\').read())"'})
+  ✅ shell output: 
+
+ ✅ Output:
+"""Shared factor research library for miner_1.
+
+Loads the 15-asset tradable universe + macro signals through the previous
+completed trading day (no lookahead), computes factor panels, forward returns,
+rank-IC metrics, and correlation vs existing library factors.
+"""
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data, get_index_daily_data
+
+TRADABLE = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX",
+            "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
+MACRO = ["VIX", "DXY", "USDCNY", "USDJPY", "EURUSD"]
+LIB_DIR = Path("factors")
+
+
+def load_panels(days: int = 3000):
+    """Return {asset: DataFrame} for tradable + macro, full history to last completed day."""
+    panels = {}
+    for s in TRADABLE:
+        df = get_stock_daily_data(symbol=s, days=days)
+        if df is not None and len(df) > 60:
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date").sort_index()
+            panels[s] = df
+    for s in MACRO:
+        df = get_index_daily_data(symbol=s, days=days)
+        if df is not None and len(df) > 60:
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date").sort_index()
+            panels[s] = df
+    return panels
+
+
+def close_panel(panels, assets=None):
+    assets = assets or TRADABLE
+    return pd.concat(
+        {a: panels[a]["close"].astype(float) for a in assets if a in panels},
+        axis=1,
+    ).sort_index()
+
+
+def ret_panel(panels, assets=None):
+    c = close_panel(panels, assets)
+    return c.pct_change()
+
+
+def forward_returns(closes, horizon: int):
+    """Forward h-day return computed from closes: close[t+h]/close[t]-1."""
+    return closes.shift(-horizon) / closes - 1.0
+
+
+def rank_ic_series(factor_panel: pd.DataFrame, fwd: pd.DataFrame, min_valid: int = 8):
+    """Daily Spearman rank IC between factor cross-section and forward return cross-section."""
+    dates, ics = [], []
+    for dt in factor_panel.index:
+        f = factor_panel.loc[dt]
+        r = fwd.loc[dt] if dt in fwd.index else None
+        if r is None:
+            continue
+        pair = pd.concat([f.rename("f"), r.rename("r")], axis=1).dropna()
+        if len(pair) < min_valid or pair["r"].std() < 1e-14 or pair["f"].std() < 1e-14:
+            continue
+        ic = pair["f"].corr(pair["r"], method="spearman")
+        if not math.isnan(ic):
+            dates.append(dt)
+            ics.append(ic)
+    return pd.Series(ics, index=pd.DatetimeIndex(dates), name="ic")
+
+
+def summarize_ic(ic_series: pd.Series, expected_sign: int = 1):
+    ic = ic_series.mean()
+    icir = ic_series.mean() / ic_series.std(ddof=1) if ic_series.std(ddof=1) > 0 else 0.0
+    hit = float((np.sign(ic_series) == expected_sign).mean()) if expected_sign else float((np.sign(ic_series) != 0).mean())
+    return {
+        "ic": round(float(ic), 4),
+        "icir": round(float(icir), 4),
+        "ic_hit_ratio": round(float(hit), 3),
+        "n_ic_dates": int(len(ic_series)),
+        "ic_std": round(float(ic_series.std(ddof=1)), 4),
+    }
+
+
+def coverage_metrics(factor_panel: pd.DataFrame, assets=None, min_valid=8):
+    assets = assets or TRADABLE
+    valid = factor_panel.notna()
+    asset_days = float(valid[list(valid.columns)].sum().sum())
+    total_days = float(factor_panel.shape[0] * len([a for a in assets if a in valid.columns]))
+    dates_ge8 = float((valid.sum(axis=1) >= min_valid).mean())
+    return {
+        "coverage_asset_days": round(asset_days / total_days, 3) if total_days else 0.0,
+        "coverage_dates_ge8": round(dates_ge8, 3),
+    }
+
+
+def turnover_rank(factor_panel: pd.DataFrame, step: int = 10):
+    """Mean absolute raw-rank change over `step` days (0..N-1 scale)."""
+    r = factor_panel.rank(axis=1, method="average")
+    diff = r.diff(step).abs().mean().mean()
+    return round(float(diff), 3) if not math.isnan(diff) else None
+
+
+def decay_profile(factor_panel, closes, horizons=(1, 2, 3, 5, 10, 20), min_valid=8, expected_sign=1):
+    out = {}
+    for h in horizons:
+        fwd = forward_returns(closes, h)
+        ics = rank_ic_series(factor_panel, fwd, min_valid)
+        if len(ics):
+            out[str(h)] = round(float(ics.mean()), 4)
+    return out
+
+
+def library_signals(panels, closes=None, rets=None, vix=None):
+    """Recompute existing library factor panels from their stored definitions."""
+    closes = closes if closes is not None else close_panel(panels)
+    rets = rets if rets is not None else closes.pct_change()
+    if vix is None:
+        vix = panels["VIX"]["close"].astype(float) if "VIX" in panels else None
+    sig = {}
+    # mom_10d_skip5
+    sig["mom_10d_skip5"] = closes.shift(5) / closes.shift(15) - 1.0
+    # mom_120d_skip5
+    sig["mom_120d_skip5"] = closes.shift(5) / closes.shift(125) - 1.0
+    # vol_of_vol20x60
+    sig["vol_of_vol20x60"] = rets.rolling(20).std().rolling(60).std()
+    # vix_beta_cond_60x20: -beta(asset,VIX,60) * (VIX/VIX.shift(20)-1)
+    if vix is not None:
+        vix_ret = vix.pct_change()
+        beta = {}
+        for a in rets.columns:
+            z = pd.concat([rets[a].rename("a"), vix_ret.rename("v")], axis=1).dropna()
+            b = z["a"].rolling(60).cov(z["v"]) / z["v"].rolling(60).var()
+            beta[a] = b
+        beta_df = pd.DataFrame(beta, index=rets.index)
+        cond = -beta_df * (vix / vix.shift(20) - 1.0)
+        sig["vix_beta_cond_60x20"] = cond
+    return sig
+
+
+def max_library_corr(candidate: pd.DataFrame, library: dict):
+    """Max absolute pairwise Pearson correlation of stacked cross-sectional values."""
+    best, best_key = 0.0, None
+    for name, lib_sig in library.items():
+        both = pd.concat([candidate.stack().rename("cand"), lib_sig.stack().rename("lib")], axis=1).dropna()
+        if len(both) < 30:
+            continue
+        r = float(both["cand"].corr(both["lib"]))
+        if abs(
+... (output truncated, 1257 more characters)
+  ▶️ shell({'command': 'python -c "print(open(\'scripts/miner_1_20260730_persist_beta3.py\').read())"'})
+  ✅ shell output: 
+
+ ✅ Output:
+"""Persist batch-3a passing beta factors with recoverable signal artifacts (2026-07-30).
+
+Each JSON embeds validation.signal_artifact = {format, dates, assets, values}
+so the deterministic post-Miner gate can recompute pairwise rho from real
+signal artifacts instead of assuming rho=0. A sidecar CSV is also written.
+"""
+import sys, json, base64, gzip, io
+sys.path.insert(0, "scripts")
+from pathlib import Path
+import numpy as np
+import pandas as pd
+from factor_research_lib import (load_panels, close_panel, forward_returns,
+                                 rank_ic_series, summarize_ic, coverage_metrics,
+                                 turnover_rank, decay_profile, library_signals,
+                                 max_library_corr, TRADABLE)
+
+panels = load_panels()
+closes = close_panel(panels)
+rets = closes.pct_change()
+lib = library_signals(panels, closes, rets)
+HORIZONS = (1, 2, 3, 5, 10, 20)
+H_ADM = 10
+
+
+def rolling_beta(asset_ret, driver_ret, win=60, min_obs=40):
+    beta = {}
+    for a in asset_ret.columns:
+        z = pd.concat([asset_ret[a].rename("a"), driver_ret.rename("m")], axis=1).dropna()
+        cov = z["a"].rolling(win).cov(z["m"])
+        var = z["m"].rolling(win).var()
+        b = (cov / var).where(z["m"].rolling(win).count() >= min_obs)
+        beta[a] = b
+    return pd.DataFrame(beta, index=asset_ret.index)
+
+
+def build_factor(panel, fid, fname, expression, description, deps, params, exp_dir, tags):
+    """Compute metrics, build JSON with artifact, write file + sidecar csv."""
+    panel = panel.reindex(closes.index)
+    fwd = forward_returns(closes, H_ADM)
+    ics = rank_ic_series(panel, fwd, 8)
+    m = summarize_ic(ics, exp_dir)
+    m.update(coverage_metrics(panel))
+    m["turnover_10d_rank"] = turnover_rank(panel, 10)
+    m["decay_ic_by_horizon"] = decay_profile(panel, closes, HORIZONS, 8, exp_dir)
+    corr, key = max_library_corr(panel, lib)
+    m["max_abs_library_correlation"] = corr
+    m["max_corr_factor"] = key
+
+    # --- signal artifact: dates + assets + per-asset value lists (rounded) ---
+    p = panel.round(6)
+    dates = [d.strftime("%Y-%m-%d") for d in p.index]
+    assets = [a for a in p.columns if a in p]
+    values = {a: [None if pd.isna(v) else float(v) for v in p[a].tolist()] for a in assets}
+    artifact = {"format": "panel_json_v1", "n_dates": len(dates), "n_assets": len(assets),
+                "dates": dates, "assets": assets, "values": values}
+
+    rec = {
+        "factor_id": fid,
+        "factor_name": fname,
+        "version": "1.0.0",
+        "calculation": {"expression": expression, "description": description},
+        "dependencies": deps,
+        "parameters": params,
+        "expected_direction": exp_dir,
+        "validation": {
+            "status": "EFFECTIVE",
+            "period": f"{closes.index[0].date()}..{closes.index[-1].date()}",
+            "last_validated": "2026-07-30",
+            "admission_horizon": H_ADM,
+            "regime_notes": ("Validated 2020-01-01..2026-07-29 across multiple regimes: COVID "
+                             "crash 2020, recovery bull 2020-21, 2022 tightening bear, 2023-24 "
+                             "AI-led equity rally, 2024-26 crypto/commodity cycles. Cross-sectional "
+                             "rank IC on the 15-asset tradable universe, h=10."),
+            "metrics": m,
+            "signal_artifact": artifact,
+        },
+        "tags": tags,
+        "benchmark_admission": {
+            "contract": {"ic_threshold": 0.007, "icir_threshold": 0.084,
+                         "correlation_threshold": 0.5, "library_capacity": 30, "active_top_k": 10},
+            "selected_metrics": {"ic": m["ic"], "icir": m["icir"],
+                                 "metric_path": "validation.metrics",
+                                 "max_abs_library_correlation": corr,
+                                 "correlation_path": "validation.metrics.max_abs_library_correlation"},
+        },
+    }
+
+    out = Path(f"factors/{fid}.json")
+    out.write_text(json.dumps(rec))
+    # sidecar csv: long format date,symbol,value
+    long = panel.reset_index().melt(id_vars="date", var_name="symbol", value_name="value").dropna()
+    long.to_csv(f"factors/{fid}_signal.csv", index=False)
+    print(f"WROTE factors/{fid}.json ({out.stat().st_size/1024:.0f} KB) + sidecar "
+          f"({long.shape[0]} rows) | IC={m['ic']:.4f} ICIR={m['icir']:.4f} "
+          f"libcorr={corr:.3f} decay10={m['decay_ic_by_horizon']['10']}")
+    return rec
+
+
+# --- 1. rate_beta_cn10y_60d ---
+cn10 = panels["CN10Y"]["close"].astype(float)
+panel1 = rolling_beta(rets, cn10.pct_change(), 60)
+build_factor(panel1,
+             "rate_beta_cn10y_60d",
+             "CN10Y rate beta 60d",
+             "beta(asset_ret, pct_change(CN10Y), 60)",
+             "Rolling 60-day regression beta of each asset's daily return on the CN10Y yield "
+             "change. High (less negative) beta = asset co-moves with China rates; negative IC "
+             "means assets with lower CN10Y-beta (more defensive to China rate shocks) earn "
+             "higher forward 10d returns.",
+             ["close", "CN10Y"],
+             {"beta_win": 60, "min_obs": 40},
+             -1,
+             ["macro-beta", "rates", "cross-asset"])
+
+# --- 2. eurusd_beta_60d ---
+eur = panels["EURUSD"]["close"].astype(float)
+panel2 = rolling_beta(rets, eur.pct_change(), 60)
+build_factor(panel2,
+             "eurusd_beta_60d",
+             "EURUSD beta 60d",
+             "beta(asset_ret, pct_change(EURUSD), 60)",
+             "Rolling 60-day regression beta of each asset's daily return on EURUSD changes "
+             "(proxy for global risk-appetite / dollar weakness). Negative IC: assets with "
+             "lower EURUSD-beta earn higher forward 10d returns.",
+             ["close", "EURUSD"],
+             {"beta_win": 60, "min_obs": 40},
+             -1,
+             ["macro-beta", "fx", "cross-asset"])
+
+# --- 3. dn_mkt_beta_60d ---
+mkt = rets.mean(axis=1)
+dn = mkt.where(mkt < 0).fillna(0.0)
+panel3 = rolling_beta(r
+... (output truncated, 786 more characters)
+  ▶️ shell({'command': 'python -c "print(open(\'scripts/miner_2_20260730_explore_batch3.py\').read())"'})
+  ✅ shell output: 
+
+ ✅ Output:
+"""miner_2 batch-3 factor exploration v2 (optimized, vectorized autocorr).
+
+Families:
+  A. Relative strength vs cross-asset peers + trend acceleration / consistency
+  B. Risk-adjusted return (Sharpe, Sortino), vectorized return autocorrelation
+  C. Intraday vs overnight return split (uses open)
+  D. Garman-Klass / Parkinson vol and vol ratios (uses high/low)
+  E. Cross-asset conditional betas anchored on TRADABLE assets (SPX, XAU, BTC, US10Y)
+  F. Volume-weighted momentum, OBV z-score
+
+Validation window: 2020-01-01 .. 2026-07-15 (warm-up, no lookahead).
+Admission gates (15-asset universe, horizon 10): |IC| >= 0.0070, |ICIR| >= 0.0840.
+"""
+import numpy as np
+import pandas as pd
+from scipy.stats import spearmanr
+from alphacrafter.sim.utils import get_stock_daily_data
+
+WL = ['000300.SH', 'SPX', 'HSI', 'N225', 'SX5E', '000688.SH', 'SOX', 'NDX',
+      'XAU', 'COPPER', 'WTI', 'BTC', 'ETH', 'US10Y', 'CN10Y']
+END = pd.Timestamp('2026-07-15')
+MIN_ASSETS = 8
+HORIZON = 10
+
+
+def load_asset(sym):
+    df = get_stock_daily_data(symbol=sym, days=3000)
+    if df is None:
+        return None
+    df = df.copy()
+    df['date'] = pd.to_datetime(df['date'])
+    df = df[df['date'] <= END].set_index('date')
+    for c in ['open', 'high', 'low', 'close', 'volume']:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+    return df[df['close'].notna()]
+
+
+frames = {s: load_asset(s) for s in WL}
+print(f"assets loaded: {sum(1 for v in frames.values() if v is not None)}/{len(WL)}", flush=True)
+
+mac = {}
+for m in ['VIX', 'DXY']:
+    d = pd.read_csv(f"../persistent/index_data/{m}.csv")
+    d['date'] = pd.to_datetime(d['date'])
+    d = d[d['date'] <= END].set_index('date')
+    d['close'] = pd.to_numeric(d['close'], errors='coerce')
+    mac[m] = d['close'].dropna()
+
+idx = pd.DatetimeIndex(sorted(set().union(*[f.index for f in frames.values() if f is not None])))
+closes = pd.DataFrame({s: frames[s]['close'].reindex(idx) for s in WL if frames[s] is not None}, index=idx)
+opens = pd.DataFrame({s: frames[s]['open'].reindex(idx) for s in WL if frames[s] is not None}, index=idx)
+highs = pd.DataFrame({s: frames[s]['high'].reindex(idx) for s in WL if frames[s] is not None}, index=idx)
+lows = pd.DataFrame({s: frames[s]['low'].reindex(idx) for s in WL if frames[s] is not None}, index=idx)
+volume = pd.DataFrame({s: frames[s]['volume'].reindex(idx) for s in WL if frames[s] is not None}, index=idx)
+rets = closes.pct_change()
+
+
+def clean_panel(func):
+    out = {}
+    for a in WL:
+        s = closes[a].dropna()
+        if len(s) < 30:
+            out[a] = pd.Series(np.nan, index=idx)
+            continue
+        try:
+            out[a] = func(s).reindex(idx)
+        except Exception:
+            out[a] = pd.Series(np.nan, index=idx)
+    return pd.DataFrame(out, index=idx)
+
+
+def clean_rets(func):
+    out = {}
+    for a in WL:
+        s = closes[a].dropna().pct_change()
+        if len(s) < 30:
+            out[a] = pd.Series(np.nan, index=idx)
+            continue
+        try:
+            out[a] = func(s).reindex(idx)
+        except Exception:
+            out[a] = pd.Series(np.nan, index=idx)
+    return pd.DataFrame(out, index=idx)
+
+
+def fwd_panel(h):
+    out = {}
+    for a in WL:
+        s = closes[a].dropna()
+        out[a] = (s.shift(-h) / s - 1.0).reindex(idx)
+    return pd.DataFrame(out, index=idx)
+
+
+FWD = {h: fwd_panel(h) for h in (1, 3, 5, 10, 20)}
+C = {}
+
+# ---------- A. relative strength & trend structure ----------
+mom20 = clean_panel(lambda s: s / s.shift(20) - 1.0)
+mom60 = clean_panel(lambda s: s / s.shift(60) - 1.0)
+C['rel_mom_20d'] = mom20.sub(mom20.mean(axis=1), axis=0)
+C['rel_mom_60d'] = mom60.sub(mom60.mean(axis=1), axis=0)
+C['accel_60_20'] = clean_panel(lambda s: (s / s.shift(60) - 1.0) - (s / s.shift(20) - 1.0))
+C['trend_consist_60'] = clean_rets(lambda r: (r > 0).rolling(60).mean() * 2.0 - 1.0)
+C['updown_ratio_60'] = clean_rets(lambda r: (r.clip(lower=0).rolling(60).sum().abs())
+                                  / (r.clip(upper=0).rolling(60).sum().abs() + 1e-9))
+# ---------- B. risk-adjusted return & autocorr (vectorized) ----------
+C['sharpe_60d'] = clean_rets(lambda r: r.rolling(60).mean() / r.rolling(60).std())
+C['sortino_60d'] = clean_rets(lambda r: r.rolling(60).mean() / np.sqrt((r.clip(upper=0) ** 2).rolling(60).mean()))
+C['autocorr_20d'] = clean_rets(lambda r: (r * r.shift(1)).rolling(20).sum()
+                               / (r.rolling(20).std() * r.shift(1).rolling(20).std() + 1e-12))
+C['autocorr_60d'] = clean_rets(lambda r: (r * r.shift(1)).rolling(60).sum()
+                               / (r.rolling(60).std() * r.shift(1).rolling(60).std() + 1e-12))
+# ---------- C. intraday / overnight ----------
+C['intraday_eff_20'] = clean_panel(lambda s: ((s / opens[a].reindex(s.index) - 1.0).rolling(20).sum()
+                                              / ((s / opens[a].reindex(s.index) - 1.0).abs().rolling(20).sum() + 1e-12)))
+C['overnight_mom_20'] = clean_panel(lambda s: (opens[a].reindex(s.index) / s.shift(1) - 1.0).rolling(20).sum())
+C['intraday_mom_20'] = clean_panel(lambda s: (s / opens[a].reindex(s.index) - 1.0).rolling(20).sum())
+# ---------- D. Garman-Klass / Parkinson ----------
+C['gk_vol_20'] = clean_panel(lambda s: np.sqrt((0.5 * np.log(highs[a].reindex(s.index) / lows[a].reindex(s.index)) ** 2
+                                                - (2 * np.log(2) - 1) * np.log(opens[a].reindex(s.index) / s.shift(1)) ** 2)
+                                               .rolling(20).mean().clip(lower=0)))
+C['park_vol_20'] = clean_panel(lambda s: np.sqrt((np.log(highs[a].reindex(s.index) / lows[a].reindex(s.index)) ** 2)
+                                                 .rolling(20).mean() / (4 * np.log(2))))
+C['gk_cc_vol_ratio_20'] = C['gk_vol_20'] / (rets.rolling(20).std() + 1e-12)
+C['down_up_vol_ratio_20'] = clean_rets(lambda r: r.clip(upper=0).rolling(20).std()
+                                       / (r.clip(lower=0).rolling(20).std() + 1e-12))
+# ---------- E. conditional betas 
+... (output truncated, 5310 more characters)
+
+────────────────────────────────────────
+🔄 Iteration 2/15
+────────────────────────────────────────
+📤 API Request - 9 messages
+
+--- ❌ Miner miner_2 failed: Connection error. ---
+📥 API Response - 1483 tokens, $0.000000
+🔧 Tool calls: ['shell', 'shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 2 tool call(s)...
+  ▶️ shell({'command': 'python -c "\nimport inspect\ntry:\n    from alphacrafter.factor_contract import FactorContract, enforce_library, validate_ensemble\n    print(\'IMPORT OK\')\n    print(inspect.getsourcefile(FactorContract))\nexcept Exception as e:\n    print(\'IMPORT FAIL:\', e)\n"'})
+  ✅ shell output: 
+
+ ✅ Output:
+IMPORT OK
+/home/lxx/trade-agent-benchmark/AC-deepseek/AlphaCrafter/alphacrafter/factor_contract.py
+  ▶️ shell({'command': "ls -la factors/ && echo '---' && ls -la factors/quarantine/ && echo '---AUDIT---' && tail -n 5 factor_library_audit.jsonl"})
+  ✅ shell output: 
+
+ ✅ Output:
+total 5640
+drwxrwxr-x 3 lxx lxx   4096 Aug 11 00:18 .
+drwxrwxr-x 5 lxx lxx   4096 Aug 11 10:02 ..
+-rw-rw-r-- 1 lxx lxx 332865 Aug 11 01:29 dn_mkt_beta_60d.json
+-rw-rw-r-- 1 lxx lxx 729525 Aug 10 17:08 dn_mkt_beta_60d_signal.csv
+-rw-rw-r-- 1 lxx lxx 330015 Aug 11 01:29 eurusd_beta_60d.json
+-rw-rw-r-- 1 lxx lxx 660298 Aug 10 17:08 eurusd_beta_60d_signal.csv
+-rw-rw-r-- 1 lxx lxx    466 Aug 10 14:59 factor_ensemble.json
+-rw-rw-r-- 1 lxx lxx 690063 Aug 11 01:29 mom_10d_skip5.json
+-rw-rw-r-- 1 lxx lxx 666690 Aug 11 01:29 mom_120d_skip5.json
+drwxrwxr-x 2 lxx lxx   4096 Aug 10 17:12 quarantine
+-rw-rw-r-- 1 lxx lxx 322951 Aug 11 01:29 rate_beta_cn10y_60d.json
+-rw-rw-r-- 1 lxx lxx 667296 Aug 10 17:07 rate_beta_cn10y_60d_signal.csv
+-rw-rw-r-- 1 lxx lxx 673454 Aug 11 01:29 vix_beta_cond_60x20.json
+-rw-rw-r-- 1 lxx lxx 665909 Aug 11 01:29 vol_of_vol20x60.json
+---
+total 1020
+drwxrwxr-x 2 lxx lxx   4096 Aug 10 17:12 .
+drwxrwxr-x 3 lxx lxx   4096 Aug 11 00:18 ..
+-rw-rw-r-- 1 lxx lxx 332865 Aug 10 17:08 dn_mkt_beta_60d.json
+-rw------- 1 lxx lxx    295 Aug 10 17:12 dn_mkt_beta_60d.json.reason.json
+-rw-rw-r-- 1 lxx lxx 330015 Aug 10 17:08 eurusd_beta_60d.json
+-rw------- 1 lxx lxx    295 Aug 10 17:12 eurusd_beta_60d.json.reason.json
+-rw-rw-r-- 1 lxx lxx   1857 Aug 10 14:59 mom_10d_skip5.json
+-rw------- 1 lxx lxx    293 Aug 10 16:51 mom_10d_skip5.json.reason.json
+-rw-rw-r-- 1 lxx lxx   1668 Aug 10 14:59 mom_120d_skip5.json
+-rw------- 1 lxx lxx    294 Aug 10 16:51 mom_120d_skip5.json.reason.json
+-rw-rw-r-- 1 lxx lxx 322951 Aug 10 17:07 rate_beta_cn10y_60d.json
+-rw------- 1 lxx lxx    299 Aug 10 17:12 rate_beta_cn10y_60d.json.reason.json
+-rw-rw-r-- 1 lxx lxx   1836 Aug 10 14:59 vix_beta_cond_60x20.json
+-rw------- 1 lxx lxx    299 Aug 10 16:51 vix_beta_cond_60x20.json.reason.json
+-rw-rw-r-- 1 lxx lxx   1687 Aug 10 14:59 vol_of_vol20x60.json
+-rw------- 1 lxx lxx    295 Aug 10 16:51 vol_of_vol20x60.json.reason.json
+---AUDIT---
+{"cycle": 3, "capacity": 30, "kept": 4, "rejected": [], "evicted": []}
+{"cycle": 4, "capacity": 30, "kept": 4, "rejected": [], "evicted": []}
+{"cycle": 5, "capacity": 30, "kept": 4, "rejected": [], "evicted": []}
+{"cycle": 1, "capacity": 30, "kept": 0, "rejected": [], "evicted": [], "quarantined": ["mom_10d_skip5.json", "mom_120d_skip5.json", "vix_beta_cond_60x20.json", "vol_of_vol20x60.json"], "conflicts": [], "policy": "worldline_pairwise_signal_quality_v1"}
+{"cycle": 2, "capacity": 30, "kept": 0, "rejected": [], "evicted": [], "quarantined": ["dn_mkt_beta_60d.json", "eurusd_beta_60d.json", "rate_beta_cn10y_60d.json"], "conflicts": [], "policy": "worldline_pairwise_signal_quality_v1"}
+
+────────────────────────────────────────
+🔄 Iteration 4/15
+────────────────────────────────────────
+📤 API Request - 13 messages
+
+--- ❌ Miner miner_3 failed: Connection error. ---
+📥 API Response - 3798 tokens, $0.000000
+🔧 Tool calls: ['write_file']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ write_file({'content': '"""miner_1 batch-4 exploration: macro-beta & conditional-beta factors (2026-08-10).\n\nTests candidate factors at admission horizon h=10 against the shared gates\n(|IC|>=0.007, |ICIR|>=0.084), reports decay, coverage, turnover, and library\ncorrelation vs the 4 base library factors, plus pairwise correlation among new\ncandidates to avoid persisting a redundant cluster.\n"""\nimport sys, json\nsys.path.insert(0, "scripts")\nimport numpy as np\nimport pandas as pd\nfrom factor_research_lib import (load_panels, close_panel, forward_returns,\n                                 rank_ic_series, summarize_ic, coverage_metrics,\n                                 turnover_rank, decay_profile, library_signals,\n                                 max_library_corr, TRADABLE)\n\npanels = load_panels()\ncloses = close_panel(panels)\nrets = closes.pct_change()\nlib = library_signals(panels, closes, rets)\nH = 10\n\n\ndef rolling_beta(asset_ret, driver_ret, win=60, min_obs=40):\n    beta = {}\n    for a in asset_ret.columns:\n        z = pd.concat([asset_ret[a].rename("a"), driver_ret.rename("m")], axis=1).dropna()\n        b = (z["a"].rolling(win).cov(z["m"]) / z["m"].rolling(win).var())\n        beta[a] = b.where(z["m"].rolling(win).count() >= min_obs)\n    return pd.DataFrame(beta, index=asset_ret.index)\n\n\ndef eval_candidate(panel, name, expected_sign):\n    fwd = forward_returns(closes, H)\n    ics = rank_ic_series(panel, fwd, 8)\n    m = summarize_ic(ics, expected_sign)\n    m.update(coverage_metrics(panel))\n    m["turnover_10d_rank"] = turnover_rank(panel, 10)\n    m["decay"] = decay_profile(panel, closes, (1, 2, 3, 5, 10, 20), 8, expected_sign)\n    corr, key = max_library_corr(panel, lib)\n    m["max_lib_corr"], m["max_corr_key"] = corr, key\n    return m\n\n\ndef pct(s):\n    s = s.astype(float)\n    return s.pct_change()\n\n\ncands = {}\n\n# --- macro beta drivers (plain 60d) ---\nfor drv, dname in [("DXY", "dxy"), ("USDJPY", "usdjpy"), ("COPPER", "copper"),\n                   ("WTI", "wti"), ("XAU", "xau"), ("BTC", "btc")]:\n    if drv not in panels:\n        print(f"skip driver {drv}: not in panels")\n        continue\n    d = pct(panels[drv]["close"])\n    panel = rolling_beta(rets, d, 60)\n    cands[f"beta_{dname}_60d"] = panel\n\n# --- conditional beta: beta * 20d driver momentum ---\nfor drv, dname in [("COPPER", "copper"), ("WTI", "wti"), ("XAU", "xau"),\n                   ("BTC", "btc"), ("DXY", "dxy")]:\n    if drv not in panels:\n        continue\n    drv_close = panels[drv]["close"].astype(float)\n    d = pct(drv_close)\n    beta = rolling_beta(rets, d, 60)\n    mom20 = drv_close / drv_close.shift(20) - 1.0\n    cands[f"cbeta_{dname}_60x20"] = beta.mul(mom20, axis=0)\n\n# --- yield-curve spread beta: beta(asset, d(CN10Y - US10Y), 60) ---\ncn10 = panels["CN10Y"]["close"].astype(float)\nus10 = panels["US10Y"]["close"].astype(float)\nspread = cn10 - us10\ncands["beta_yspread_60d"] = rolling_beta(rets, spread.pct_change(), 60)\n\n# --- relative momentum (asset mom minus cross-section mean) at 40d ---\nmom40 = closes.shift(5) / closes.shift(45) - 1.0\ncands["rel_mom_40d"] = mom40.sub(mom40.mean(axis=1), axis=0)\n\n# --- gold/stock regime tilt: beta(asset, XAU/SPX ratio ret) ---\nratio = panels["XAU"]["close"].astype(float) / panels["SPX"]["close"].astype(float)\ncands["beta_goldspx_60d"] = rolling_beta(rets, ratio.pct_change(), 60)\n\nrows = []\nfor name, panel in cands.items():\n    m = eval_candidate(panel, name, 1)\n    rows.append((name, m))\n    print(f"{name:24s} IC={m[\'ic\']:+.4f} ICIR={m[\'icir\']:+.4f} hit={m[\'ic_hit_ratio\']:.3f} "\n          f"n={m[\'n_ic_dates\']} covAD={m[\'coverage_asset_days\']:.3f} to={m[\'turnover_10d_rank\']:.2f} "\n          f"rho={m[\'max_lib_corr\']:.3f}({m[\'max_corr_key\']}) "\n          f"decay10={m[\'decay\'][\'10\']:+.4f} "\n          f"{\'PASS\' if abs(m[\'ic\'])>=0.007 and abs(m[\'icir\'])>=0.084 else \'\'}")\n\nprint("\\n--- pairwise cross-sectional rank corr among new candidates ---")\nfrom itertools import combinations\nnames = [r[0] for r in rows]\nfor a, b in combinations(names, 2):\n    pa, pb = cands[a], cands[b]\n    both = pd.concat([pa.stack().rename("a"), pb.stack().rename("b")], axis=1).dropna()\n    if len(both) < 30:\n        continue\n    r = both["a"].corr(both["b"])\n    if abs(r) > 0.5:\n        print(f"  HIGH {a:22s} vs {b:22s}: rho={r:+.3f} (n={len(both)})")\n\nprint("\\n--- passers only (sorted by |ICIR|) ---")\npassers = sorted([r for r in rows if abs(r[1][\'ic\']) >= 0.007 and abs(r[1][\'icir\']) >= 0.084],\n                 key=lambda r: -abs(r[1][\'icir\']))\nfor name, m in passers:\n    print(f"  PASS {name:24s} IC={m[\'ic\']:+.4f} ICIR={m[\'icir\']:+.4f} rho={m[\'max_lib_corr\']:.3f}")\n', 'file_path': 'scripts/miner_1_20260810_explore_batch4.py'})
+  ✅ write_file output: 
+
+ Successfully wrote to file: scripts/miner_1_20260810_explore_batch4.py
+
+────────────────────────────────────────
+🔄 Iteration 5/15
+────────────────────────────────────────
+📤 API Request - 15 messages
+📥 API Response - 69 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python scripts/miner_1_20260810_explore_batch4.py 2>&1 | tail -n 45'})
+  ✅ shell output: 
+
+ ❌ Command timed out after 300 seconds
+Partial stderr:
+
+
+────────────────────────────────────────
+🔄 Iteration 6/15
+────────────────────────────────────────
+📤 API Request - 17 messages
+📥 API Response - 674 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python -c "\nimport time, sys\nsys.path.insert(0, \'scripts\')\nt0 = time.time()\nfrom factor_research_lib import load_panels, close_panel\npanels = load_panels()\nprint(\'load_panels\', round(time.time()-t0,1), \'s; symbols:\', len(panels))\nt0 = time.time()\ncloses = close_panel(panels)\nprint(\'close_panel\', round(time.time()-t0,3), \'s; shape\', closes.shape)\n"'})
+  ✅ shell output: 
+
+ ✅ Output:
+load_panels 1.0 s; symbols: 20
+close_panel 0.017 s; shape (2398, 15)
+
+────────────────────────────────────────
+🔄 Iteration 7/15
+────────────────────────────────────────
+📤 API Request - 19 messages
+📥 API Response - 146 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python -c "\nsrc = open(\'scripts/factor_research_lib.py\').read().splitlines()\nfor i in range(60, 120):\n    print(i+1, src[i])\n"'})
+  ✅ shell output: 
+
+ ✅ Output:
+61 def rank_ic_series(factor_panel: pd.DataFrame, fwd: pd.DataFrame, min_valid: int = 8):
+62     """Daily Spearman rank IC between factor cross-section and forward return cross-section."""
+63     dates, ics = [], []
+64     for dt in factor_panel.index:
+65         f = factor_panel.loc[dt]
+66         r = fwd.loc[dt] if dt in fwd.index else None
+67         if r is None:
+68             continue
+69         pair = pd.concat([f.rename("f"), r.rename("r")], axis=1).dropna()
+70         if len(pair) < min_valid or pair["r"].std() < 1e-14 or pair["f"].std() < 1e-14:
+71             continue
+72         ic = pair["f"].corr(pair["r"], method="spearman")
+73         if not math.isnan(ic):
+74             dates.append(dt)
+75             ics.append(ic)
+76     return pd.Series(ics, index=pd.DatetimeIndex(dates), name="ic")
+77 
+78 
+79 def summarize_ic(ic_series: pd.Series, expected_sign: int = 1):
+80     ic = ic_series.mean()
+81     icir = ic_series.mean() / ic_series.std(ddof=1) if ic_series.std(ddof=1) > 0 else 0.0
+82     hit = float((np.sign(ic_series) == expected_sign).mean()) if expected_sign else float((np.sign(ic_series) != 0).mean())
+83     return {
+84         "ic": round(float(ic), 4),
+85         "icir": round(float(icir), 4),
+86         "ic_hit_ratio": round(float(hit), 3),
+87         "n_ic_dates": int(len(ic_series)),
+88         "ic_std": round(float(ic_series.std(ddof=1)), 4),
+89     }
+90 
+91 
+92 def coverage_metrics(factor_panel: pd.DataFrame, assets=None, min_valid=8):
+93     assets = assets or TRADABLE
+94     valid = factor_panel.notna()
+95     asset_days = float(valid[list(valid.columns)].sum().sum())
+96     total_days = float(factor_panel.shape[0] * len([a for a in assets if a in valid.columns]))
+97     dates_ge8 = float((valid.sum(axis=1) >= min_valid).mean())
+98     return {
+99         "coverage_asset_days": round(asset_days / total_days, 3) if total_days else 0.0,
+100         "coverage_dates_ge8": round(dates_ge8, 3),
+101     }
+102 
+103 
+104 def turnover_rank(factor_panel: pd.DataFrame, step: int = 10):
+105     """Mean absolute raw-rank change over `step` days (0..N-1 scale)."""
+106     r = factor_panel.rank(axis=1, method="average")
+107     diff = r.diff(step).abs().mean().mean()
+108     return round(float(diff), 3) if not math.isnan(diff) else None
+109 
+110 
+111 def decay_profile(factor_panel, closes, horizons=(1, 2, 3, 5, 10, 20), min_valid=8, expected_sign=1):
+112     out = {}
+113     for h in horizons:
+114         fwd = forward_returns(closes, h)
+115         ics = rank_ic_series(factor_panel, fwd, min_valid)
+116         if len(ics):
+117             out[str(h)] = round(float(ics.mean()), 4)
+118     return out
+119 
+120
+
+────────────────────────────────────────
+🔄 Iteration 8/15
+────────────────────────────────────────
+📤 API Request - 21 messages
+📥 API Response - 2449 tokens, $0.000000
+🔧 Tool calls: ['write_file']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ write_file({'content': '"""miner_1 batch-4 screening (fast vectorized rank-IC) - 2026-08-10.\n\nScreens macro-beta / conditional-beta candidates at h=10 with a fast\nper-row rank correlation (Spearman) implementation. Only candidates passing\nthe shared gates proceed to full library eval (decay/turnover/lib-corr) and\npossible persistence.\n"""\nimport sys, time\nsys.path.insert(0, "scripts")\nimport numpy as np\nimport pandas as pd\nfrom factor_research_lib import (load_panels, close_panel, forward_returns,\n                                 library_signals, max_library_corr, TRADABLE)\n\nt0 = time.time()\npanels = load_panels()\ncloses = close_panel(panels)\nrets = closes.pct_change()\nlib = library_signals(panels, closes, rets)\nH = 10\nfwd10 = forward_returns(closes, H)\nprint(f"data ready {time.time()-t0:.1f}s, closes {closes.shape}")\n\n\ndef rolling_beta(asset_ret, driver_ret, win=60, min_obs=40):\n    beta = {}\n    for a in asset_ret.columns:\n        z = pd.concat([asset_ret[a].rename("a"), driver_ret.rename("m")], axis=1).dropna()\n        b = (z["a"].rolling(win).cov(z["m"]) / z["m"].rolling(win).var())\n        beta[a] = b.where(z["m"].rolling(win).count() >= min_obs)\n    return pd.DataFrame(beta, index=asset_ret.index)\n\n\ndef fast_rank_ic(panel, fwd, min_valid=8):\n    f_rank = panel.rank(axis=1)\n    r_rank = fwd.rank(axis=1)\n    dates, ics = [], []\n    for dt in panel.index:\n        if dt not in fwd.index:\n            continue\n        fr, rr = f_rank.loc[dt], r_rank.loc[dt]\n        mask = fr.notna() & rr.notna()\n        n = int(mask.sum())\n        if n < min_valid:\n            continue\n        fv, rv = fr[mask].to_numpy(float), rr[mask].to_numpy(float)\n        if fv.std() < 1e-12 or rv.std() < 1e-12:\n            continue\n        ic = float(np.corrcoef(fv, rv)[0, 1])\n        if not np.isnan(ic):\n            dates.append(dt)\n            ics.append(ic)\n    s = pd.Series(ics, index=pd.DatetimeIndex(dates), name="ic")\n    return s\n\n\ndef pct(s):\n    return s.astype(float).pct_change()\n\n\ncands = {}\n# plain 60d macro betas\nfor drv, dname in [("DXY", "dxy"), ("USDJPY", "usdjpy"), ("COPPER", "copper"),\n                   ("WTI", "wti"), ("XAU", "xau"), ("BTC", "btc")]:\n    if drv in panels:\n        cands[f"beta_{dname}_60d"] = rolling_beta(rets, pct(panels[drv]["close"]), 60)\n# conditional betas: beta * 20d driver momentum\nfor drv, dname in [("COPPER", "copper"), ("WTI", "wti"), ("XAU", "xau"),\n                   ("BTC", "btc"), ("DXY", "dxy")]:\n    if drv in panels:\n        dc = panels[drv]["close"].astype(float)\n        beta = rolling_beta(rets, pct(dc), 60)\n        mom20 = dc / dc.shift(20) - 1.0\n        cands[f"cbeta_{dname}_60x20"] = beta.mul(mom20, axis=0)\n# yield-curve spread beta\ncn10 = panels["CN10Y"]["close"].astype(float)\nus10 = panels["US10Y"]["close"].astype(float)\ncands["beta_yspread_60d"] = rolling_beta(rets, (cn10 - us10).pct_change(), 60)\n# gold/stock ratio beta\nratio = panels["XAU"]["close"].astype(float) / panels["SPX"]["close"].astype(float)\ncands["beta_goldspx_60d"] = rolling_beta(rets, ratio.pct_change(), 60)\n# relative momentum 40d\nmom40 = closes.shift(5) / closes.shift(45) - 1.0\ncands["rel_mom_40d"] = mom40.sub(mom40.mean(axis=1), axis=0)\n# negative-variance regime vol factor: down-day vol / up-day vol (20d), plain\nr = rets\nup_vol = r.where(r > 0).rolling(20).std()\ndn_vol = r.where(r < 0).rolling(20).std()\ncands["down_up_vol20"] = dn_vol / up_vol\n\nprint(f"built {len(cands)} candidates {time.time()-t0:.1f}s")\n\nrows = []\nfor name, panel in cands.items():\n    t1 = time.time()\n    ic = fast_rank_ic(panel, fwd10, 8)\n    icv = ic.mean()\n    icir = icv / ic.std(ddof=1) if ic.std(ddof=1) > 0 else 0.0\n    hit = float((np.sign(ic) == 1).mean())\n    corr, key = max_library_corr(panel, lib)\n    status = "PASS" if abs(icv) >= 0.007 and abs(icir) >= 0.084 else ""\n    rows.append((name, icv, icir, len(ic), corr, key, status))\n    print(f"{name:22s} IC={icv:+.4f} ICIR={icir:+.4f} n={len(ic):4d} "\n          f"rho={corr:.3f}({key}) {status} [{time.time()-t1:.1f}s]")\n\nprint("\\n--- pairwise stacked corr among candidates (|r|>0.5 flagged) ---")\nfrom itertools import combinations\nnames = [r[0] for r in rows]\nfor a, b in combinations(names, 2):\n    both = pd.concat([cands[a].stack().rename("a"), cands[b].stack().rename("b")], axis=1).dropna()\n    if len(both) < 30:\n        continue\n    r = float(both["a"].corr(both["b"]))\n    if abs(r) > 0.5:\n        print(f"  HIGH {a:22s} vs {b:22s}: rho={r:+.3f} n={len(both)}")\n\nprint("\\n--- passers ---")\nfor name, icv, icir, n, corr, key, st in rows:\n    if st:\n        print(f"  PASS {name:22s} IC={icv:+.4f} ICIR={icir:+.4f} n={n} rho={corr:.3f}({key})")\nprint(f"total {time.time()-t0:.1f}s")\n', 'file_path': 'scripts/miner_1_20260810_screen_batch4.py'})
+  ✅ write_file output: 
+
+ Successfully wrote to file: scripts/miner_1_20260810_screen_batch4.py
+
+────────────────────────────────────────
+🔄 Iteration 9/15
+────────────────────────────────────────
+📤 API Request - 23 messages
+📥 API Response - 73 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python scripts/miner_1_20260810_screen_batch4.py 2>&1 | grep -v Warning | tail -n 50'})
+  ✅ shell output: 
+
+ ✅ Output:
+data ready 0.5s, closes (2398, 15)
+built 15 candidates 1.4s
+beta_dxy_60d           IC=+0.0509 ICIR=+0.1482 n= 572 rho=0.154(vol_of_vol20x60) PASS [2.1s]
+beta_usdjpy_60d        IC=+0.0036 ICIR=+0.0100 n= 576 rho=0.136(mom_120d_skip5)  [2.0s]
+beta_copper_60d        IC=+0.0663 ICIR=+0.1888 n= 620 rho=0.369(vol_of_vol20x60) PASS [1.9s]
+beta_wti_60d           IC=+0.0280 ICIR=+0.0743 n= 620 rho=0.277(vol_of_vol20x60)  [1.9s]
+beta_xau_60d           IC=-0.0110 ICIR=-0.0317 n= 620 rho=0.257(vol_of_vol20x60)  [1.9s]
+beta_btc_60d           IC=+0.0583 ICIR=+0.1393 n= 620 rho=0.235(vol_of_vol20x60) PASS [2.1s]
+cbeta_copper_60x20     IC=+0.0090 ICIR=+0.0252 n= 619 rho=0.162(mom_10d_skip5)  [2.0s]
+cbeta_wti_60x20        IC=+0.0073 ICIR=+0.0193 n= 619 rho=0.139(vol_of_vol20x60)  [2.2s]
+cbeta_xau_60x20        IC=-0.0243 ICIR=-0.0702 n= 620 rho=0.202(vol_of_vol20x60)  [2.0s]
+cbeta_btc_60x20        IC=+0.0394 ICIR=+0.0936 n= 620 rho=0.574(mom_10d_skip5) PASS [1.9s]
+cbeta_dxy_60x20        IC=+0.0236 ICIR=+0.0682 n= 572 rho=0.193(vol_of_vol20x60)  [1.9s]
+beta_yspread_60d       IC=-0.0025 ICIR=-0.0064 n= 518 rho=0.167(vol_of_vol20x60)  [1.9s]
+beta_goldspx_60d       IC=-0.0555 ICIR=-0.1368 n= 581 rho=0.233(vol_of_vol20x60) PASS [2.0s]
+rel_mom_40d            IC=+0.0217 ICIR=+0.0582 n= 312 rho=0.401(mom_120d_skip5)  [1.7s]
+down_up_vol20          IC=+nan ICIR=+0.0000 n=   0 rho=0.000(None)  [1.6s]
+
+--- pairwise stacked corr among candidates (|r|>0.5 flagged) ---
+  HIGH beta_dxy_60d           vs beta_usdjpy_60d       : rho=+0.555 n=18130
+
+--- passers ---
+  PASS beta_dxy_60d           IC=+0.0509 ICIR=+0.1482 n=572 rho=0.154(vol_of_vol20x60)
+  PASS beta_copper_60d        IC=+0.0663 ICIR=+0.1888 n=620 rho=0.369(vol_of_vol20x60)
+  PASS beta_btc_60d           IC=+0.0583 ICIR=+0.1393 n=620 rho=0.235(vol_of_vol20x60)
+  PASS cbeta_btc_60x20        IC=+0.0394 ICIR=+0.0936 n=620 rho=0.574(mom_10d_skip5)
+  PASS beta_goldspx_60d       IC=-0.0555 ICIR=-0.1368 n=581 rho=0.233(vol_of_vol20x60)
+total 31.3s
+
+────────────────────────────────────────
+🔄 Iteration 10/15
+────────────────────────────────────────
+📤 API Request - 25 messages
+📥 API Response - 2604 tokens, $0.000000
+🔧 Tool calls: ['write_file']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ write_file({'content': '"""miner_1 batch-4 full validation of passers + pairwise correlation audit (2026-08-10).\n\nUses the canonical library eval (rank_ic_series etc.) at h=10 for the 4 gate-passers:\nbeta_dxy_60d, beta_copper_60d, beta_btc_60d, beta_goldspx_60d.\nAlso recomputes previously persisted beta signals and reports pairwise\ncross-sectional correlations to avoid persisting a redundant cluster.\n"""\nimport sys, json\nsys.path.insert(0, "scripts")\nimport numpy as np\nimport pandas as pd\nfrom factor_research_lib import (load_panels, close_panel, forward_returns,\n                                 rank_ic_series, summarize_ic, coverage_metrics,\n                                 turnover_rank, decay_profile, library_signals,\n                                 max_library_corr, TRADABLE)\n\npanels = load_panels()\ncloses = close_panel(panels)\nrets = closes.pct_change()\nlib = library_signals(panels, closes, rets)\nH = 10\n\n\ndef rolling_beta(asset_ret, driver_ret, win=60, min_obs=40):\n    beta = {}\n    for a in asset_ret.columns:\n        z = pd.concat([asset_ret[a].rename("a"), driver_ret.rename("m")], axis=1).dropna()\n        b = (z["a"].rolling(win).cov(z["m"]) / z["m"].rolling(win).var())\n        beta[a] = b.where(z["m"].rolling(win).count() >= min_obs)\n    return pd.DataFrame(beta, index=asset_ret.index)\n\n\ndef pct(s):\n    return s.astype(float).pct_change()\n\n\npanels_c = {}\npanels_c["beta_dxy_60d"] = rolling_beta(rets, pct(panels["DXY"]["close"]), 60)\npanels_c["beta_copper_60d"] = rolling_beta(rets, pct(panels["COPPER"]["close"]), 60)\npanels_c["beta_btc_60d"] = rolling_beta(rets, pct(panels["BTC"]["close"]), 60)\nratio = panels["XAU"]["close"].astype(float) / panels["SPX"]["close"].astype(float)\npanels_c["beta_goldspx_60d"] = rolling_beta(rets, ratio.pct_change(), 60)\n# recompute previously persisted beta trio for pairwise audit\npanels_c["rate_beta_cn10y_60d"] = rolling_beta(rets, pct(panels["CN10Y"]["close"]), 60)\npanels_c["eurusd_beta_60d"] = rolling_beta(rets, pct(panels["EURUSD"]["close"]), 60)\nmkt = rets.mean(axis=1)\npanels_c["dn_mkt_beta_60d"] = rolling_beta(rets, mkt.where(mkt < 0).fillna(0.0), 60)\n\nresults = {}\nfor name, panel in panels_c.items():\n    fwd = forward_returns(closes, H)\n    ics = rank_ic_series(panel, fwd, 8)\n    m = summarize_ic(ics, 1)\n    m.update(coverage_metrics(panel))\n    m["turnover_10d_rank"] = turnover_rank(panel, 10)\n    m["decay_ic_by_horizon"] = decay_profile(panel, closes, (1, 2, 3, 5, 10, 20), 8, 1)\n    corr, key = max_library_corr(panel, lib)\n    m["max_abs_library_correlation"], m["max_corr_factor"] = corr, key\n    results[name] = (panel, m)\n    status = "PASS" if abs(m["ic"]) >= 0.007 and abs(m["icir"]) >= 0.084 else ""\n    print(f"{name:22s} IC={m[\'ic\']:+.4f} ICIR={m[\'icir\']:+.4f} hit={m[\'ic_hit_ratio\']:.3f} "\n          f"n={m[\'n_ic_dates\']} covAD={m[\'coverage_asset_days\']:.3f} to={m[\'turnover_10d_rank\']:.2f} "\n          f"rho={m[\'max_abs_library_correlation\']:.3f}({m[\'max_corr_factor\']}) "\n          f"decay={ {k: round(v,3) for k,v in m[\'decay_ic_by_horizon\'].items()} } {status}")\n\nprint("\\n--- pairwise cross-sectional correlations among all 7 beta signals ---")\nfrom itertools import combinations\nnames = list(panels_c.keys())\nfor a, b in combinations(names, 2):\n    pa, pb = panels_c[a], panels_c[b]\n    both = pd.concat([pa.stack().rename("a"), pb.stack().rename("b")], axis=1).dropna()\n    if len(both) < 30:\n        continue\n    r = float(both["a"].corr(both["b"]))\n    flag = "  <-- HIGH" if abs(r) > 0.5 else ""\n    if abs(r) > 0.4:\n        print(f"  {a:22s} vs {b:22s}: rho={r:+.3f} n={len(both)}{flag}")\n\nprint("\\n--- pairwise rank corr among the 4 new passers (CS per-date mean) ---")\nnew4 = ["beta_dxy_60d", "beta_copper_60d", "beta_btc_60d", "beta_goldspx_60d"]\nfor a, b in combinations(new4, 2):\n    pa, pb = panels_c[a], panels_c[b]\n    rhos = []\n    for dt in pa.index:\n        fa, fb = pa.loc[dt], pb.loc[dt]\n        mask = fa.notna() & fb.notna()\n        if int(mask.sum()) < 5:\n            continue\n        x, y = fa[mask].to_numpy(float), fb[mask].to_numpy(float)\n        if x.std() < 1e-12 or y.std() < 1e-12:\n            continue\n        rhos.append(np.corrcoef(x, y)[0, 1])\n    print(f"  {a:22s} vs {b:22s}: mean datewise rho={np.mean(rhos):+.3f} over {len(rhos)} dates")\n\n# save panels for persistence step\nimport pickle\nwith open("scripts/_batch4_panels.pkl", "wb") as f:\n    pickle.dump({k: v for k, v in panels_c.items()}, f)\nprint("\\nsaved panels to scripts/_batch4_panels.pkl")\n', 'file_path': 'scripts/miner_1_20260810_validate_batch4.py'})
+  ✅ write_file output: 
+
+ Successfully wrote to file: scripts/miner_1_20260810_validate_batch4.py
+
+────────────────────────────────────────
+🔄 Iteration 11/15
+────────────────────────────────────────
+📤 API Request - 27 messages
+📥 API Response - 73 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python scripts/miner_1_20260810_validate_batch4.py 2>&1 | grep -v Warning | tail -n 30'})
+  ✅ shell output: 
+
+ ✅ Output:
+beta_dxy_60d           IC=+0.0496 ICIR=+0.1441 hit=0.545 n=572 covAD=0.504 to=2.12 rho=0.154(vol_of_vol20x60) decay={'1': 0.013, '2': 0.024, '3': 0.035, '5': 0.029, '10': 0.05, '20': 0.047} PASS
+beta_copper_60d        IC=+0.0656 ICIR=+0.1871 hit=0.571 n=620 covAD=0.535 to=2.09 rho=0.369(vol_of_vol20x60) decay={'1': 0.025, '2': 0.028, '3': 0.042, '5': 0.046, '10': 0.066, '20': 0.081} PASS
+beta_btc_60d           IC=+0.0579 ICIR=+0.1381 hit=0.545 n=620 covAD=0.576 to=2.61 rho=0.235(vol_of_vol20x60) decay={'1': 0.017, '2': 0.012, '3': 0.035, '5': 0.035, '10': 0.058, '20': 0.077} PASS
+beta_goldspx_60d       IC=-0.0562 ICIR=-0.1378 hit=0.429 n=581 covAD=0.516 to=1.31 rho=0.233(vol_of_vol20x60) decay={'1': -0.011, '2': 0.004, '3': -0.031, '5': -0.029, '10': -0.056, '20': -0.068} PASS
+rate_beta_cn10y_60d    IC=-0.0520 ICIR=-0.1543 hit=0.435 n=579 covAD=0.513 to=2.27 rho=0.307(mom_120d_skip5) decay={'1': -0.023, '2': -0.022, '3': -0.029, '5': -0.036, '10': -0.052, '20': -0.066} PASS
+eurusd_beta_60d        IC=-0.0551 ICIR=-0.1563 hit=0.448 n=576 covAD=0.508 to=2.10 rho=0.231(vol_of_vol20x60) decay={'1': -0.018, '2': -0.025, '3': -0.034, '5': -0.036, '10': -0.055, '20': -0.067} PASS
+dn_mkt_beta_60d        IC=+0.0554 ICIR=+0.1404 hit=0.550 n=620 covAD=0.576 to=2.20 rho=0.197(mom_120d_skip5) decay={'1': 0.014, '2': 0.011, '3': 0.042, '5': 0.038, '10': 0.055, '20': 0.069} PASS
+
+--- pairwise cross-sectional correlations among all 7 beta signals ---
+  beta_dxy_60d           vs eurusd_beta_60d       : rho=-0.933 n=18130  <-- HIGH
+  beta_copper_60d        vs dn_mkt_beta_60d       : rho=+0.538 n=19259  <-- HIGH
+  beta_btc_60d           vs beta_goldspx_60d      : rho=-0.402 n=18567
+  beta_btc_60d           vs dn_mkt_beta_60d       : rho=+0.553 n=20727  <-- HIGH
+  beta_goldspx_60d       vs dn_mkt_beta_60d       : rho=-0.496 n=18567
+
+--- pairwise rank corr among the 4 new passers (CS per-date mean) ---
+  beta_dxy_60d           vs beta_copper_60d       : mean datewise rho=+0.069 over 1199 dates
+  beta_dxy_60d           vs beta_btc_60d          : mean datewise rho=+0.073 over 1208 dates
+  beta_dxy_60d           vs beta_goldspx_60d      : mean datewise rho=-0.167 over 1147 dates
+  beta_copper_60d        vs beta_btc_60d          : mean datewise rho=+0.316 over 1297 dates
+  beta_copper_60d        vs beta_goldspx_60d      : mean datewise rho=-0.115 over 1239 dates
+  beta_btc_60d           vs beta_goldspx_60d      : mean datewise rho=-0.365 over 1239 dates
+
+saved panels to scripts/_batch4_panels.pkl
+
+────────────────────────────────────────
+🔄 Iteration 12/15
+────────────────────────────────────────
+📤 API Request - 29 messages
+📥 API Response - 4304 tokens, $0.000000
+🔧 Tool calls: ['write_file']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ write_file({'content': '"""miner_1 batch-4b screening: orthogonal variants of passers + new conditional ideas.\n\nGoal: find factors that pass IC/ICIR gates AND have low pairwise correlation\n(<0.5) with already-persisted library signals (rate_beta_cn10y_60d,\neurusd_beta_60d, dn_mkt_beta_60d + 4 base factors).\n"""\nimport sys, time\nsys.path.insert(0, "scripts")\nimport numpy as np\nimport pandas as pd\nfrom factor_research_lib import (load_panels, close_panel, forward_returns,\n                                 library_signals, max_library_corr)\n\npanels = load_panels()\ncloses = close_panel(panels)\nrets = closes.pct_change()\nlib = library_signals(panels, closes, rets)\nH = 10\nfwd10 = forward_returns(closes, H)\n\n# recompute previously persisted beta signals for correlation audit\ndef rolling_beta(asset_ret, driver_ret, win=60, min_obs=40):\n    beta = {}\n    for a in asset_ret.columns:\n        z = pd.concat([asset_ret[a].rename("a"), driver_ret.rename("m")], axis=1).dropna()\n        b = (z["a"].rolling(win).cov(z["m"]) / z["m"].rolling(win).var())\n        beta[a] = b.where(z["m"].rolling(win).count() >= min_obs)\n    return pd.DataFrame(beta, index=asset_ret.index)\n\n\ndef pct(s):\n    return s.astype(float).pct_change()\n\n\npersisted = {}\npersisted["rate_beta_cn10y_60d"] = rolling_beta(rets, pct(panels["CN10Y"]["close"]), 60)\npersisted["eurusd_beta_60d"] = rolling_beta(rets, pct(panels["EURUSD"]["close"]), 60)\nmkt = rets.mean(axis=1)\npersisted["dn_mkt_beta_60d"] = rolling_beta(rets, mkt.where(mkt < 0).fillna(0.0), 60)\nlib_all = dict(lib)\nlib_all.update(persisted)\n\n\ndef fast_rank_ic(panel, fwd, min_valid=8):\n    f_rank = panel.rank(axis=1)\n    r_rank = fwd.rank(axis=1)\n    dates, ics = [], []\n    for dt in panel.index:\n        if dt not in fwd.index:\n            continue\n        fr, rr = f_rank.loc[dt], r_rank.loc[dt]\n        mask = fr.notna() & rr.notna()\n        if int(mask.sum()) < min_valid:\n            continue\n        fv, rv = fr[mask].to_numpy(float), rr[mask].to_numpy(float)\n        if fv.std() < 1e-12 or rv.std() < 1e-12:\n            continue\n        ic = float(np.corrcoef(fv, rv)[0, 1])\n        if not np.isnan(ic):\n            dates.append(dt)\n            ics.append(ic)\n    return np.array(ics)\n\n\ncands = {}\n# goldspx beta window variants\ngs = panels["XAU"]["close"].astype(float) / panels["SPX"]["close"].astype(float)\nfor w in (40, 90, 120):\n    cands[f"beta_goldspx_{w}d"] = rolling_beta(rets, gs.pct_change(), w)\n# china divergence beta: beta(asset, 000300/SPX ratio)\ncspx = panels["000300.SH"]["close"].astype(float) / panels["SPX"]["close"].astype(float)\ncands["beta_cnspx_60d"] = rolling_beta(rets, cspx.pct_change(), 60)\n# conditional US rate beta: beta(asset, US10Y chg) * sign(US10Y 20d chg)\nus10 = panels["US10Y"]["close"].astype(float)\nb_us = rolling_beta(rets, pct(us10), 60)\ncands["cbeta_us10y_60x20"] = b_us.mul(np.sign(us10 / us10.shift(20) - 1.0), axis=0)\n# conditional CN rate beta: beta(asset, CN10Y chg) * sign(CN10Y 20d chg)\ncn10 = panels["CN10Y"]["close"].astype(float)\nb_cn = rolling_beta(rets, pct(cn10), 60)\ncands["cbeta_cn10y_60x20"] = b_cn.mul(np.sign(cn10 / cn10.shift(20) - 1.0), axis=0)\n# VIX-regime conditional momentum: mom20d * VIX z-score (60d)\nvix = panels["VIX"]["close"].astype(float)\nvix_z = (vix - vix.rolling(60).mean()) / vix.rolling(60).std()\nmom20 = closes.shift(5) / closes.shift(25) - 1.0\ncands["mom20_x_vixz"] = mom20.mul(vix_z, axis=0)\n# VIX-regime conditional downside beta: dn_mkt_beta * VIX z-score\ncands["dnbeta_x_vixz"] = persisted["dn_mkt_beta_60d"].mul(vix_z, axis=0)\n# down/up vol ratio 40d\nr = rets\nup_vol = r.where(r > 0).rolling(40).std()\ndn_vol = r.where(r < 0).rolling(40).std()\ncands["down_up_vol40"] = dn_vol / up_vol\n\nprint(f"built {len(cands)} candidates")\nrows = []\nfor name, panel in cands.items():\n    ic = fast_rank_ic(panel, fwd10, 8)\n    icv = ic.mean()\n    icir = icv / ic.std(ddof=1) if ic.std(ddof=1) > 0 else 0.0\n    corr, key = max_library_corr(panel, lib_all)\n    status = "PASS" if abs(icv) >= 0.007 and abs(icir) >= 0.084 else ""\n    rows.append((name, icv, icir, len(ic), corr, key, status))\n    print(f"{name:22s} IC={icv:+.4f} ICIR={icir:+.4f} n={len(ic):4d} "\n          f"rhoAll={corr:.3f}({key}) {status}")\n\nprint("\\n--- passers ---")\nfor name, icv, icir, n, corr, key, st in rows:\n    if st:\n        print(f"  PASS {name:22s} IC={icv:+.4f} ICIR={icir:+.4f} rhoAll={corr:.3f}({key})")\n', 'file_path': 'scripts/miner_1_20260810_screen_batch4b.py'})
+  ✅ write_file output: 
+
+ Successfully wrote to file: scripts/miner_1_20260810_screen_batch4b.py
+
+────────────────────────────────────────
+🔄 Iteration 13/15
+────────────────────────────────────────
+📤 API Request - 31 messages
+📥 API Response - 74 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python scripts/miner_1_20260810_screen_batch4b.py 2>&1 | grep -v Warning | tail -n 25'})
+  ✅ shell output: 
+
+ ✅ Output:
+icv = ic.mean()
+  ret = ret.dtype.type(ret / rcount)
+  ret = _var(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+  arrmean = um.true_divide(arrmean, div, out=arrmean,
+  ret = ret.dtype.type(ret / rcount)
+built 9 candidates
+beta_goldspx_40d       IC=-0.0646 ICIR=-0.1612 n= 590 rhoAll=0.449(dn_mkt_beta_60d) PASS
+beta_goldspx_90d       IC=-0.0590 ICIR=-0.1469 n= 566 rhoAll=0.506(dn_mkt_beta_60d) PASS
+beta_goldspx_120d      IC=-0.0572 ICIR=-0.1411 n= 553 rhoAll=0.513(dn_mkt_beta_60d) PASS
+beta_cnspx_60d         IC=-0.0789 ICIR=-0.1873 n= 526 rhoAll=0.515(dn_mkt_beta_60d) PASS
+cbeta_us10y_60x20      IC=-0.0042 ICIR=-0.0113 n= 604 rhoAll=0.127(vol_of_vol20x60) 
+cbeta_cn10y_60x20      IC=+0.0305 ICIR=+0.0897 n= 579 rhoAll=0.118(rate_beta_cn10y_60d) PASS
+mom20_x_vixz           IC=-0.0352 ICIR=-0.0968 n= 598 rhoAll=0.158(mom_10d_skip5) PASS
+dnbeta_x_vixz          IC=+0.0171 ICIR=+0.0430 n= 616 rhoAll=0.167(mom_10d_skip5) 
+down_up_vol40          IC=+nan ICIR=+0.0000 n=   0 rhoAll=0.000(None) 
+
+--- passers ---
+  PASS beta_goldspx_40d       IC=-0.0646 ICIR=-0.1612 rhoAll=0.449(dn_mkt_beta_60d)
+  PASS beta_goldspx_90d       IC=-0.0590 ICIR=-0.1469 rhoAll=0.506(dn_mkt_beta_60d)
+  PASS beta_goldspx_120d      IC=-0.0572 ICIR=-0.1411 rhoAll=0.513(dn_mkt_beta_60d)
+  PASS beta_cnspx_60d         IC=-0.0789 ICIR=-0.1873 rhoAll=0.515(dn_mkt_beta_60d)
+  PASS cbeta_cn10y_60x20      IC=+0.0305 ICIR=+0.0897 rhoAll=0.118(rate_beta_cn10y_60d)
+  PASS mom20_x_vixz           IC=-0.0352 ICIR=-0.0968 rhoAll=0.158(mom_10d_skip5)
+
+────────────────────────────────────────
+🔄 Iteration 14/15
+────────────────────────────────────────
+📤 API Request - 33 messages
+📥 API Response - 2908 tokens, $0.000000
+🔧 Tool calls: ['write_file']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ write_file({'content': '"""miner_1 batch-4b: date-wise pairwise correlation audit for final 3 candidates.\n\nCandidates: beta_goldspx_40d, cbeta_cn10y_60x20, mom20_x_vixz.\nCheck date-wise mean cross-sectional correlation vs ALL persisted library\nsignals (4 base + rate_beta_cn10y_60d + eurusd_beta_60d + dn_mkt_beta_60d)\nand among themselves, then run canonical full eval for each.\n"""\nimport sys, pickle\nsys.path.insert(0, "scripts")\nimport numpy as np\nimport pandas as pd\nfrom factor_research_lib import (load_panels, close_panel, forward_returns,\n                                 rank_ic_series, summarize_ic, coverage_metrics,\n                                 turnover_rank, decay_profile, library_signals,\n                                 max_library_corr)\n\npanels = load_panels()\ncloses = close_panel(panels)\nrets = closes.pct_change()\nlib = library_signals(panels, closes, rets)\n\n\ndef rolling_beta(asset_ret, driver_ret, win=60, min_obs=40):\n    beta = {}\n    for a in asset_ret.columns:\n        z = pd.concat([asset_ret[a].rename("a"), driver_ret.rename("m")], axis=1).dropna()\n        b = (z["a"].rolling(win).cov(z["m"]) / z["m"].rolling(win).var())\n        beta[a] = b.where(z["m"].rolling(win).count() >= min_obs)\n    return pd.DataFrame(beta, index=asset_ret.index)\n\n\ndef pct(s):\n    return s.astype(float).pct_change()\n\n\n# --- candidate panels ---\ngs = panels["XAU"]["close"].astype(float) / panels["SPX"]["close"].astype(float)\ncand = {}\ncand["beta_goldspx_40d"] = rolling_beta(rets, gs.pct_change(), 40)\ncn10 = panels["CN10Y"]["close"].astype(float)\nb_cn = rolling_beta(rets, pct(cn10), 60)\ncand["cbeta_cn10y_60x20"] = b_cn.mul(np.sign(cn10 / cn10.shift(20) - 1.0), axis=0)\nvix = panels["VIX"]["close"].astype(float)\nvix_z = (vix - vix.rolling(60).mean()) / vix.rolling(60).std()\nmom20 = closes.shift(5) / closes.shift(25) - 1.0\ncand["mom20_x_vixz"] = mom20.mul(vix_z, axis=0)\n\n# --- persisted library panels (recomputed) ---\npersisted = {}\npersisted["rate_beta_cn10y_60d"] = rolling_beta(rets, pct(panels["CN10Y"]["close"]), 60)\npersisted["eurusd_beta_60d"] = rolling_beta(rets, pct(panels["EURUSD"]["close"]), 60)\nmkt = rets.mean(axis=1)\npersisted["dn_mkt_beta_60d"] = rolling_beta(rets, mkt.where(mkt < 0).fillna(0.0), 60)\nlib_all = dict(lib)\nlib_all.update(persisted)\n\nprint("--- date-wise mean cross-sectional rho: candidate vs each library signal ---")\nfor name, panel in cand.items():\n    for lname, lpanel in lib_all.items():\n        rhos = []\n        for dt in panel.index:\n            fa, fb = panel.loc[dt], lpanel.loc[dt]\n            mask = fa.notna() & fb.notna()\n            if int(mask.sum()) < 5:\n                continue\n            x, y = fa[mask].to_numpy(float), fb[mask].to_numpy(float)\n            if x.std() < 1e-12 or y.std() < 1e-12:\n                continue\n            rhos.append(np.corrcoef(x, y)[0, 1])\n        r = np.mean(rhos) if rhos else np.nan\n        flag = "  <-- HIGH" if abs(r) > 0.5 else ""\n        if abs(r) > 0.3:\n            print(f"  {name:20s} vs {lname:20s}: datewise rho={r:+.3f} n={len(rhos)}{flag}")\n\nprint("--- candidate vs candidate datewise ---")\ncn = list(cand.keys())\nfor i in range(len(cn)):\n    for j in range(i + 1, len(cn)):\n        a, b = cn[i], cn[j]\n        rhos = []\n        for dt in cand[a].index:\n            fa, fb = cand[a].loc[dt], cand[b].loc[dt]\n            mask = fa.notna() & fb.notna()\n            if int(mask.sum()) < 5:\n                continue\n            x, y = fa[mask].to_numpy(float), fb[mask].to_numpy(float)\n            if x.std() < 1e-12 or y.std() < 1e-12:\n                continue\n            rhos.append(np.corrcoef(x, y)[0, 1])\n        print(f"  {a} vs {b}: datewise rho={np.mean(rhos):+.3f} n={len(rhos)}")\n\nprint("\\n--- canonical full eval at h=10 ---")\nres = {}\nfor name, panel in cand.items():\n    fwd = forward_returns(closes, 10)\n    ics = rank_ic_series(panel, fwd, 8)\n    m = summarize_ic(ics, 1)\n    m.update(coverage_metrics(panel))\n    m["turnover_10d_rank"] = turnover_rank(panel, 10)\n    m["decay_ic_by_horizon"] = decay_profile(panel, closes, (1, 2, 3, 5, 10, 20), 8, 1)\n    corr, key = max_library_corr(panel, lib_all)\n    m["max_abs_library_correlation"], m["max_corr_factor"] = corr, key\n    res[name] = (panel, m)\n    print(f"{name:20s} IC={m[\'ic\']:+.4f} ICIR={m[\'icir\']:+.4f} hit={m[\'ic_hit_ratio\']:.3f} "\n          f"n={m[\'n_ic_dates\']} covAD={m[\'coverage_asset_days\']:.3f} to={m[\'turnover_10d_rank\']:.2f} "\n          f"rhoAll={m[\'max_abs_library_correlation\']:.3f}({m[\'max_corr_factor\']}) "\n          f"decay10={m[\'decay_ic_by_horizon\'][\'10\']:+.4f}")\n\nwith open("scripts/_batch4b_final.pkl", "wb") as f:\n    pickle.dump({k: v for k, v in res.items()}, f)\nprint("saved scripts/_batch4b_final.pkl")\n', 'file_path': 'scripts/miner_1_20260810_audit_batch4b.py'})
+  ✅ write_file output: 
+
+ Successfully wrote to file: scripts/miner_1_20260810_audit_batch4b.py
+
+────────────────────────────────────────
+🔄 Iteration 15/15
+────────────────────────────────────────
+📤 API Request - 35 messages
+📥 API Response - 75 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python scripts/miner_1_20260810_audit_batch4b.py 2>&1 | grep -v Warning | tail -n 30'})
+  ✅ shell output: 
+
+ ✅ Output:
+--- date-wise mean cross-sectional rho: candidate vs each library signal ---
+  beta_goldspx_40d     vs dn_mkt_beta_60d     : datewise rho=-0.504 n=1241  <-- HIGH
+--- candidate vs candidate datewise ---
+  beta_goldspx_40d vs cbeta_cn10y_60x20: datewise rho=-0.002 n=1159
+  beta_goldspx_40d vs mom20_x_vixz: datewise rho=+0.136 n=299
+  cbeta_cn10y_60x20 vs mom20_x_vixz: datewise rho=+0.035 n=305
+
+--- canonical full eval at h=10 ---
+beta_goldspx_40d     IC=-0.0655 ICIR=-0.1628 hit=0.417 n=590 covAD=0.525 to=1.51 rhoAll=0.449(dn_mkt_beta_60d) decay10=-0.0655
+cbeta_cn10y_60x20    IC=+0.0308 ICIR=+0.0906 hit=0.528 n=579 covAD=0.513 to=3.44 rhoAll=0.118(rate_beta_cn10y_60d) decay10=+0.0308
+mom20_x_vixz         IC=-0.0358 ICIR=-0.0980 hit=0.448 n=598 covAD=0.301 to=4.65 rhoAll=0.158(mom_10d_skip5) decay10=-0.0358
+saved scripts/_batch4b_final.pkl
+📝 Reached 15 iterations, generating summary...
+📝 Memory summary generated - 3371 tokens, $0.000000
+🧹 Clearing input and adding interval summary...
+📋 Interval summary: <｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="shell">
+<｜｜DSML｜｜parameter name="command" string="true">python -c "
+import sys, warnings
+warnings.filterwarnings('ignore')
+sys.path.insert(0, 'scripts')
+import numpy as np
+import pandas as pd
+from factor_research_lib import load_panels, close_panel, library_signals, max_library_corr
+
+panels = load_panels()
+closes = close_panel(panels)
+rets = closes.pct_change()
+lib = library_signals(panels, closes, rets)
+
+def rolling_beta(asset_ret, driver_ret, win=60, min_obs=40):
+    beta = {}
+    for a in asset_ret.columns:
+        z = pd.concat([asset_ret[a].rename('a'), driver_ret.rename('m')], axis=1).dropna()
+        b = (z['a'].rolling(win).cov(z['m']) / z['m'].rolling(win).var())
+        beta[a] = b.where(z['m'].rolling(win).count() >= min_obs)
+    return pd.DataFrame(beta, index=asset_ret.index)
+
+def pct(s):
+    return s.astype(float).pct_change()
+
+# persisted beta trio
+persisted = {}
+persisted['rate_beta_cn10y_60d'] = rolling_beta(rets, pct(panels['CN10Y']['close']), 60)
+persisted['eurusd_beta_60d'] = rolling_beta(rets, pct(panels['EURUSD']['close']), 60)
+mkt = rets.mean(axis=1)
+persisted['dn_mkt_beta_60d'] = rolling_beta(rets, mkt.where(mkt < 0).fillna(0.0), 60)
+lib_all = dict(lib)
+lib_all.update(persisted)
+
+gs = panels['XAU']['close'].astype(float) / panels['SPX']['close'].astype(float)
+for w in (40, 60, 90):
+    panel = rolling_beta(rets, gs.pct_change(), w)
+    corr, key = max_library_corr(panel, lib_all)
+    print(f'beta_goldspx_{w:3d}d rhoAll={corr:.3f} ({key})')
+    # also datewise vs dn_mkt
+    dn = persisted['dn_mkt_beta_60d']
+    rhos = []
+    for dt in panel.index:
+        fa, fb = panel.loc[dt], dn.loc[dt]
+        mask = fa.notna() & fb.notna()
+        if int(mask.sum()) < 5: continue
+        x, y = fa[mask].to_numpy(float), fb[mask].to_numpy(float)
+        if x.std() < 1e-12 or y.std() < 1e-12: continue
+        rhos.append(np.corrcoef(x, y)[0,1])
+    print(f'   datewise vs dn_mkt: rho={np.mean(rhos):+.3f} n={len(rhos)}')
+" 2>&1 | grep -v Warning</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>
+⚠️ Max iterations (15) reached
+
+============================================================
+📊 RUN SUMMARY
+============================================================
+Iterations: 15
+Total cost: $0.000000
+Total tool calls: 18
+Tools used: {'write_file', 'shell'}
+============================================================
+🚀 Agent run completed. Output: 
+
+============================================================
+🔬 MINER_MINER_1 PHASE COMPLETED (RESUMED)
+============================================================
+
+--- ✅ Miner miner_1 completed ---
+Output length: 0
+⚠️ Miner phase failed after retries; not advancing this cycle. The supervisor will --resume the same cycle.
+Workflow terminated during resume cycle.
+✅ Signal handler restored
