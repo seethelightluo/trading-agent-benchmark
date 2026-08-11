@@ -854,35 +854,8 @@ cash until 2026-07-16.
         
         record = CycleRecord(cycle=cycle)
         
-        # Step 1: Run Miner Agents — but skip if library is already well-populated.
-        # When the factor library has >= AC_MINER_SKIP_THRESHOLD effective factors,
-        # mining is skipped to avoid wasting API calls on redundant exploration.
-        # Miners will still run periodically (every AC_MINER_REFRESH_EVERY cycles)
-        # to discover new factors. The threshold defaults to 10.
-        _miner_skip_threshold = int(os.environ.get("AC_MINER_SKIP_THRESHOLD", "10"))
-        _miner_refresh_every = int(os.environ.get("AC_MINER_REFRESH_EVERY", "5"))
-        factor_dir_count = os.path.join(self.workspace_path, "factors")
-        _effective_count = 0
-        if os.path.isdir(factor_dir_count):
-            for fn in os.listdir(factor_dir_count):
-                if (fn.endswith(".json") and "ensemble" not in fn
-                        and not fn.endswith(".reason.json") and not fn.endswith(".bak")):
-                    _effective_count += 1
-        _should_skip_miners = (
-            _effective_count >= _miner_skip_threshold
-            and cycle % _miner_refresh_every != 0
-        )
-        if _should_skip_miners:
-            print(
-                f"⚡ Library has {_effective_count} factors (>= {_miner_skip_threshold}) "
-                f"and cycle {cycle} % {_miner_refresh_every} != 0 — skipping miner phase"
-            )
-            miner_outputs = {
-                mid: {"output_text": "(miner skipped; library stable)", "success": True}
-                for mid in self.miner_ids
-            }
-        else:
-            miner_outputs = self._run_all_miners_concurrently(cycle, None, is_resume_cycle)
+        # Step 1: Run ALL Miner Agents concurrently (every cycle, per runAC.md).
+        miner_outputs = self._run_all_miners_concurrently(cycle, None, is_resume_cycle)
         
         # Check if any miner failed
         all_miners_success = all(output['success'] for output in miner_outputs.values())

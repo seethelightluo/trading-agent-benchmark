@@ -48,7 +48,7 @@ print(f'saved artifact {art_path} shape={fac.values.shape} '
 metrics = {
     'ic_10d': round(float(s['mean_ic']), 4),
     'icir_10d': round(float(s['icir']), 4),
-    'ic_std': round(float(s['std']), 4),
+    'ic_std': round(float(ics.std(ddof=1)), 4),
     'ic_hit_rate': round(float(s['hit']), 4),
     'ic_tstat': round(float(s['tstat']), 4),
     'n_ic_dates': int(s['n']),

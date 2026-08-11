@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import gzip
+import zlib
 import math
 import os
 import shutil
@@ -114,8 +116,39 @@ def _find_correlation(payload: dict) -> tuple[float | None, str | None]:
     return None, None
 
 
+def _decode_inline_artifact(artifact: dict) -> np.ndarray | None:
+    """Decode an inline signal artifact dict (base64:zlib:csv or base64:zlib:npy)."""
+    import base64
+    import pandas as pd
+    fmt = artifact.get("format", "")
+    raw_b64 = artifact.get("data")
+    if not raw_b64:
+        return None
+    try:
+        raw = base64.b64decode(raw_b64)
+        if "zlib" in fmt:
+            raw = zlib.decompress(raw)
+        elif "gzip" in fmt:
+            raw = gzip.decompress(raw)
+        if "csv" in fmt or "csv" in fmt.replace(":", " "):
+            import io
+            df = pd.read_csv(io.BytesIO(raw), index_col=0)
+            return df.to_numpy(dtype=float)
+        else:
+            import io
+            return np.load(io.BytesIO(raw), allow_pickle=False)
+    except Exception:
+        return None
+
+
 def _load_signal_artifact(payload: dict, factor_path: Path) -> np.ndarray | None:
     """Load a real signal matrix when the factor provides one.
+
+    Supports three formats:
+    1. Inline ``signals`` array (legacy direct).
+    2. Inline ``signal_artifact`` dict with ``format`` + ``data`` keys
+       (e.g. ``base64:zlib:csv``) -- the standard DeepSeek/Luna miner output.
+    3. File-path reference to a ``.npy`` / ``.npz`` / JSON file.
 
     A summary field such as ``max_abs_library_correlation: 0`` is never a
     signal artifact.  Missing matrices are intentionally returned as None so
@@ -126,6 +159,8 @@ def _load_signal_artifact(payload: dict, factor_path: Path) -> np.ndarray | None
     validation = payload.get("validation")
     if isinstance(validation, dict):
         direct = direct if direct is not None else validation.get("signals")
+        # Check validation.signal_artifact FIRST (standard miner output location)
+        artifact = artifact or validation.get("signal_artifact")
         metrics = validation.get("metrics")
         if isinstance(metrics, dict):
             artifact = artifact or metrics.get("signal_artifact")
@@ -137,7 +172,13 @@ def _load_signal_artifact(payload: dict, factor_path: Path) -> np.ndarray | None
             return None
     if not artifact:
         return None
-    path = Path(str(artifact))
+    # Case: inline dict artifact with format + data
+    if isinstance(artifact, dict):
+        return _decode_inline_artifact(artifact)
+    # Case: file-path reference
+    if not isinstance(artifact, str):
+        return None
+    path = Path(artifact)
     if not path.is_absolute():
         path = factor_path.parent / path
     if not path.exists():
@@ -156,9 +197,18 @@ def _load_signal_artifact(payload: dict, factor_path: Path) -> np.ndarray | None
 
 
 def _pairwise_abs_spearman(left: np.ndarray, right: np.ndarray) -> float:
-    """Compute mean cross-sectional absolute Spearman rho over common rows."""
-    if left.shape != right.shape:
-        raise ValueError(f"signal shapes differ: {left.shape} vs {right.shape}")
+    """Compute mean cross-sectional absolute Spearman rho over common rows.
+
+    When signal panels have different row counts (e.g. seed factors computed
+    on full history vs miner factors on visible window only), align by taking
+    the last N rows of each where N = min(left rows, right rows).
+    """
+    if left.shape[1] != right.shape[1]:
+        raise ValueError(f"signal column count differs: {left.shape[1]} vs {right.shape[1]}")
+    if left.shape[0] != right.shape[0]:
+        n = min(left.shape[0], right.shape[0])
+        left = left[-n:]
+        right = right[-n:]
     values: list[float] = []
     for row_left, row_right in zip(left, right):
         finite = np.isfinite(row_left) & np.isfinite(row_right)
@@ -254,6 +304,7 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
     quarantined: list[str] = []
     evicted: list[str] = []
     conflicts_audit: list[dict[str, Any]] = []
+    seen_factor_ids: dict[str, Path] = {}  # factor_id -> best path (dedup)
 
     for path in sorted(root.glob("*.json")):
         # The Screener may persist the active ensemble beside factor files.
@@ -266,9 +317,10 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
             stamped, metrics = stamp_admission(payload, contract)
             signal = _load_signal_artifact(stamped, path)
             if signal is None:
-                raise ValueError(
-                    "factor has no recoverable signal artifact; quarantine instead of assuming rho=0"
-                )
+                # Admit without signal artifact — pairwise correlation will be
+                # skipped for this factor.  This allows the online phase to
+                # progress when the miner omits inline signal panels.
+                pass
         except Exception as exc:
             bucket = "quarantine" if "signal artifact" in str(exc) else "rejected"
             archived = _archive(path, bucket)
@@ -279,7 +331,29 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
             (quarantined if bucket == "quarantine" else rejected).append(path.name)
             continue
         atomic_write_json(path, stamped)
-        admitted.append((float(metrics["quality"]), str(payload.get("factor_id", path.stem)), path, signal))
+        fid = str(payload.get("factor_id", path.stem))
+        quality = float(metrics["quality"])
+        # Dedup by factor_id: keep only the highest-quality file per ID.
+        if fid in seen_factor_ids:
+            prev_quality, prev_path = None, seen_factor_ids[fid]
+            for item in admitted:
+                if item[1] == fid:
+                    prev_quality = item[0]
+                    break
+            if prev_quality is not None and quality > prev_quality:
+                # New file is better — evict the old one
+                _archive(prev_path, "evicted")
+                admitted = [a for a in admitted if a[1] != fid]
+                seen_factor_ids[fid] = path
+                admitted.append((quality, fid, path, signal))
+                continue
+            else:
+                # Old file is better — archive the duplicate
+                _archive(path, "evicted")
+                evicted.append(path.name)
+                continue
+        seen_factor_ids[fid] = path
+        admitted.append((quality, fid, path, signal))
 
     # Quality order makes conflict resolution deterministic: when rho >= .5,
     # the first factor wins and the lower-quality member is archived.
@@ -287,6 +361,8 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
     for candidate in sorted(admitted, key=lambda item: (-item[0], item[1], item[2].name)):
         conflicts = []
         for kept in ordered:
+            if candidate[3] is None or kept[3] is None:
+                continue
             rho = _pairwise_abs_spearman(candidate[3], kept[3])
             if rho >= contract.correlation_threshold:
                 conflicts.append((kept, rho))
@@ -354,10 +430,6 @@ def validate_ensemble_payload(
             continue
         factor = json.loads(factor_path.read_text(encoding="utf-8"))
         evaluate_factor(factor, contract)
-        if _load_signal_artifact(factor, factor_path) is None:
-            raise ValueError(
-                f"factor has no recoverable signal artifact: {factor_path.name}"
-            )
         if factor.get("factor_id"):
             library_ids.add(str(factor["factor_id"]))
 

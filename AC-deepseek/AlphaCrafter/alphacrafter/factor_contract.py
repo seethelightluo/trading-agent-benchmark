@@ -304,6 +304,7 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
     quarantined: list[str] = []
     evicted: list[str] = []
     conflicts_audit: list[dict[str, Any]] = []
+    seen_factor_ids: dict[str, Path] = {}  # factor_id -> best path (dedup)
 
     for path in sorted(root.glob("*.json")):
         # The Screener may persist the active ensemble beside factor files.
@@ -330,7 +331,29 @@ def enforce_library(directory: str | Path, contract: FactorContract) -> dict[str
             (quarantined if bucket == "quarantine" else rejected).append(path.name)
             continue
         atomic_write_json(path, stamped)
-        admitted.append((float(metrics["quality"]), str(payload.get("factor_id", path.stem)), path, signal))
+        fid = str(payload.get("factor_id", path.stem))
+        quality = float(metrics["quality"])
+        # Dedup by factor_id: keep only the highest-quality file per ID.
+        if fid in seen_factor_ids:
+            prev_quality, prev_path = None, seen_factor_ids[fid]
+            for item in admitted:
+                if item[1] == fid:
+                    prev_quality = item[0]
+                    break
+            if prev_quality is not None and quality > prev_quality:
+                # New file is better — evict the old one
+                _archive(prev_path, "evicted")
+                admitted = [a for a in admitted if a[1] != fid]
+                seen_factor_ids[fid] = path
+                admitted.append((quality, fid, path, signal))
+                continue
+            else:
+                # Old file is better — archive the duplicate
+                _archive(path, "evicted")
+                evicted.append(path.name)
+                continue
+        seen_factor_ids[fid] = path
+        admitted.append((quality, fid, path, signal))
 
     # Quality order makes conflict resolution deterministic: when rho >= .5,
     # the first factor wins and the lower-quality member is archived.
