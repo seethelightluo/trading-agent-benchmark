@@ -33,7 +33,7 @@ DATE_RE = re.compile(r"Current date (\d{4}-\d{2}-\d{2})")
 STALE_RE = re.compile(r"stale AC online account contract")
 
 FAMILIES = [("terra", TERRA_LOG, range(1, 4)), ("ds", DS_LOG, range(1, 10))]
-last_seen: dict[str, tuple[float, int, int]] = {}  # key -> (ts, advances, stale)
+last_seen: dict[str, tuple[float, int, int, bool]] = {}  # key -> (ts, advances, stale, running)
 
 
 def proc_state() -> dict:
@@ -132,7 +132,7 @@ def main() -> int:
                 key = f"{fam}-{wl}"
                 prev = last_seen.get(key)
                 if prev is not None and running:
-                    ts0, adv0, stale0 = prev
+                    ts0, adv0, stale0, prev_running = prev
                     if met["adv"] == adv0 and now - ts0 > STALL_MIN * 60:
                         flags.append(f"{key}:STALL(date={met['date']})")
                         if AUTO_PAUSE and not (PAUSE_DIRS[fam] / f"pause_{wl}_429").exists():
@@ -143,8 +143,8 @@ def main() -> int:
                             flags.append(f"{key}:PAUSED({paused})")
                     if met["stale"] > stale0:
                         flags.append(f"{key}:NEW_STALE({met['stale'] - stale0})")
-                if prev is None or met["adv"] != prev[1]:
-                    last_seen[key] = (now, met["adv"], met["stale"])
+                if prev is None or met["adv"] != prev[1] or running != prev[3]:
+                    last_seen[key] = (now, met["adv"], met["stale"], running)
                 win = met["adv"] + 1 if met["adv"] else 0
                 st = "run" if running else "queued"
                 nav_t = f"{nav:,}" if nav is not None else "NA"
