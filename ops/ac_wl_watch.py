@@ -22,6 +22,11 @@ TERRA_LOG = ROOT / "agent-framework" / "results" / "ac_luna_3wl_v5" / "logs"
 OUT = ROOT / "ops" / "logs" / "ac_wl_watch.log"
 SLEEP = int(os.environ.get("AC_WATCH_INTERVAL", "300"))
 STALL_MIN = int(os.environ.get("AC_WATCH_STALL_MIN", "45"))
+AUTO_PAUSE = os.environ.get("AC_WATCH_AUTO_PAUSE", "1").lower() in {"1", "true", "yes"}
+STALL_LOG = ROOT / "ops" / "logs" / "ac_wl_stalls.log"
+DS_RESULTS = ROOT / "AC-deepseek" / "results" / "ac9wl_deepseek"
+TERRA_RESULTS = ROOT / "agent-framework" / "results" / "ac_luna_3wl_v5"
+PAUSE_DIRS = {"ds": DS_RESULTS, "terra": TERRA_RESULTS}
 
 ADV_RE = re.compile(r"Advanced 10 trading days")
 DATE_RE = re.compile(r"Current date (\d{4}-\d{2}-\d{2})")
@@ -81,6 +86,32 @@ def nav_rebal(wl: str, fam: str) -> tuple[float | None, int | None]:
         return None, None
 
 
+def pause_wl(fam: str, wl: str, pid: str, reason: str) -> bool:
+    """Create the scheduler pause marker, SIGINT the process, and log a stall
+    record for manual debugging.  Returns True when this call paused the WL."""
+    marker = PAUSE_DIRS[fam] / f"pause_{wl}_429"
+    if marker.exists():
+        return False
+    try:
+        marker.write_text(
+            f"auto-paused by ac_wl_watch at {datetime.now().isoformat(timespec='seconds')}\n{reason}\n"
+        )
+    except OSError as exc:
+        print(f"WARN cannot write pause marker {marker}: {exc}", flush=True)
+        return False
+    try:
+        os.kill(int(pid), 2)  # SIGINT -> graceful agent stop
+    except (OSError, ValueError) as exc:
+        print(f"WARN cannot SIGINT pid {pid}: {exc}", flush=True)
+    STALL_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with STALL_LOG.open("a", encoding="utf-8") as f:
+        f.write(
+            f"{datetime.now().isoformat(timespec='seconds')} | {fam} {wl} "
+            f"pid={pid} | marker={marker} | {reason}\n"
+        )
+    return True
+
+
 def main() -> int:
     OUT.parent.mkdir(parents=True, exist_ok=True)
     # one-shot stamp at startup
@@ -104,6 +135,12 @@ def main() -> int:
                     ts0, adv0, stale0 = prev
                     if met["adv"] == adv0 and now - ts0 > STALL_MIN * 60:
                         flags.append(f"{key}:STALL(date={met['date']})")
+                        if AUTO_PAUSE and not (PAUSE_DIRS[fam] / f"pause_{wl}_429").exists():
+                            paused = pause_wl(
+                                fam, wl, procs[(fam, wl)],
+                                f"stalled >= {STALL_MIN}min (adv={adv0}, date={met['date']})",
+                            )
+                            flags.append(f"{key}:PAUSED({paused})")
                     if met["stale"] > stale0:
                         flags.append(f"{key}:NEW_STALE({met['stale'] - stale0})")
                 if prev is None or met["adv"] != prev[1]:

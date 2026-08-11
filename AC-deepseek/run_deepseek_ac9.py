@@ -60,6 +60,15 @@ def save_state(state: dict) -> None:
     tmp.replace(STATE_PATH)
 
 
+def pause_marker(wl: int) -> Path:
+    """Persistent operator/stall pause marker for one worldline."""
+    return RESULTS / f"pause_wl{wl}_429"
+
+
+def is_paused(wl: int) -> bool:
+    return pause_marker(wl).exists()
+
+
 def push_milestone(label: str) -> None:
     """Create and push a result checkpoint when explicitly enabled.
 
@@ -279,7 +288,9 @@ def main() -> int:
     retry_at: dict[int, float] = {}
     retry_attempt: dict[int, int] = {}
     for wl in range(1, ONLINE_WORLDLINES + 1):
-        if ac_session_complete(f"wl{wl}"):
+        if is_paused(wl):
+            state_for_wl(state, wl).update({"status": "paused_429", "paused_marker": str(pause_marker(wl))})
+        elif ac_session_complete(f"wl{wl}"):
             state_for_wl(state, wl).update({"status": "complete", "ac_done": True})
         else:
             retry_at[wl] = 0.0
@@ -289,6 +300,11 @@ def main() -> int:
     while retry_at or active:
         now = time.monotonic()
         for wl in list(retry_at):
+            if is_paused(wl):
+                state_for_wl(state, wl).update({"status": "paused_429", "paused_marker": str(pause_marker(wl))})
+                del retry_at[wl]
+                save_state(state)
+                continue
             if wl in active or now < retry_at[wl]:
                 continue
             if len(active) >= MAX_CONCURRENT_WL:
@@ -317,17 +333,22 @@ def main() -> int:
                 push_milestone(f"deepseek-wl{wl}")
             else:
                 entry["status"] = "retry_wait"
-                attempt = retry_attempt.get(wl, 0)
-                base_delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
-                delay = base_delay * random.uniform(
-                    1.0 - RETRY_JITTER, 1.0 + RETRY_JITTER
-                )
-                retry_attempt[wl] = attempt + 1
-                retry_at[wl] = time.monotonic() + delay
-                entry["retry_attempt"] = attempt + 1
-                entry["retry_delay_seconds"] = round(delay, 2)
+                if is_paused(wl):
+                    entry.update({"status": "paused_429", "paused_marker": str(pause_marker(wl))})
+                    retry_message = "paused by operator/stall marker"
+                else:
+                    attempt = retry_attempt.get(wl, 0)
+                    base_delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                    delay = base_delay * random.uniform(
+                        1.0 - RETRY_JITTER, 1.0 + RETRY_JITTER
+                    )
+                    retry_attempt[wl] = attempt + 1
+                    retry_at[wl] = time.monotonic() + delay
+                    entry["retry_attempt"] = attempt + 1
+                    entry["retry_delay_seconds"] = round(delay, 2)
+                    retry_message = f"retrying in {delay:g}s"
                 print(
-                    f"[deepseek-ac] WL{wl} rc={rc}, retrying in {delay:g}s",
+                    f"[deepseek-ac] WL{wl} rc={rc}, {retry_message}",
                     flush=True,
                 )
             save_state(state)
