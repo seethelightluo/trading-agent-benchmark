@@ -1,13 +1,16 @@
-"""Cross-asset ensemble strategy, Trader 2026-08-13.
+"""Cross-asset ensemble strategy, Trader (v8 ensemble, 2027-02-25).
 
-Screener factor ensemble (quality_ic_tilt, 7 active factors <= 10 cap):
-  trend_r2_30_signed   w=0.2410 dir=+1  signed 30d log-price trend R2
-  semi_down_ratio_20   w=0.1852 dir=-1  downside/upside semi-vol ratio - 1
-  mom_120d_skip5       w=0.1765 dir=+1  120d momentum skipping last 5d
-  vol_of_vol20x60      w=0.1254 dir=+1  60d std of 20d realized vol
-  dxy_beta_60          w=0.1094 dir=+1  60d beta of asset returns to DXY
-  time_under_water_120 w=0.0996 dir=-1  days since last 120d rolling high
-  kurt_20              w=0.0629 dir=+1  20d excess kurtosis of returns
+Ensemble is loaded dynamically from factors/factor_ensemble.json (quality_ic_tilt,
+9 active factors <= 10 cap) with fallback to DEFAULT_ENSEMBLE:
+  trend_r2_30_signed    w=0.1945 dir=+1  signed 30d log-price trend R2
+  semi_down_ratio_20    w=0.1494 dir=-1  downside/upside semi-vol ratio - 1
+  mom_120d_skip5        w=0.1489 dir=+1  120d momentum skipping last 5d
+  dxy_beta_60           w=0.1297 dir=+1  60d beta of asset returns to DXY
+  time_under_water_120  w=0.0882 dir=-1  days since last 120d rolling high
+  mom_10d_skip5         w=0.0851 dir=+1  10d momentum skipping last 5d
+  tail_ratio_20         w=0.0748 dir=+1  20d q95/|q05| return-tail asymmetry
+  vix_beta_cond_60x20   w=0.0659 dir=-1  -beta(asset,VIX,60) * 20d VIX move
+  vol_of_vol20x60       w=0.0635 dir=+1  60d std of 20d realized vol
 
 Full-investment long-only 15-asset target (cash = 0), one rebalance proposal
 per decision via rebalance_to_weights; helper gates on turnover vs 3bp cost.
@@ -22,19 +25,44 @@ from alphacrafter.sim.utils import (
     rebalance_to_weights, register_hook,
 )
 
-ENSEMBLE = [
-    ("trend_r2_30_signed",   0.2410,  1),
-    ("semi_down_ratio_20",   0.1852, -1),
-    ("mom_120d_skip5",       0.1765,  1),
-    ("vol_of_vol20x60",      0.1254,  1),
-    ("dxy_beta_60",          0.1094,  1),
-    ("time_under_water_120", 0.0996, -1),
-    ("kurt_20",              0.0629,  1),
+DEFAULT_ENSEMBLE = [
+    ("trend_r2_30_signed",   0.1945,  1),
+    ("semi_down_ratio_20",   0.1494, -1),
+    ("mom_120d_skip5",       0.1489,  1),
+    ("dxy_beta_60",          0.1297,  1),
+    ("time_under_water_120", 0.0882, -1),
+    ("mom_10d_skip5",        0.0851,  1),
+    ("tail_ratio_20",        0.0748,  1),
+    ("vix_beta_cond_60x20",  0.0659, -1),
+    ("vol_of_vol20x60",      0.0635,  1),
 ]
-FACTOR_IDS = [fid for fid, _, _ in ENSEMBLE]
 DEF = {"XAU", "US10Y", "CN10Y"}
-MAX_W, MIN_W = 0.22, 0.005
+MAX_W, MIN_W = 0.18, 0.005
 FETCH = 200
+
+
+def _load_ensemble():
+    try:
+        p = Path(__file__).parent / "factors" / "factor_ensemble.json"
+        ens = json.loads(p.read_text())
+        out = []
+        for it in ens.get("selected_factors", []):
+            if not isinstance(it, dict):
+                continue
+            fid = str(it.get("factor_id", ""))
+            if not fid:
+                continue
+            try:
+                w = float(it.get("weight", 0.0))
+                d = int(it.get("direction", 1))
+            except (TypeError, ValueError):
+                continue
+            out.append((fid, w, d))
+        if out:
+            return out[:10]
+    except (OSError, ValueError, TypeError):
+        pass
+    return list(DEFAULT_ENSEMBLE)
 
 
 def _closes(assets):
@@ -55,6 +83,19 @@ def _closes(assets):
             s["date"] = pd.to_datetime(s["date"])
             out[a] = s.set_index("date")["close"].astype(float)
     return out
+
+
+def _macro_close(symbol):
+    df = None
+    try:
+        df = get_index_daily_data(symbol, days=150)
+    except Exception:
+        df = None
+    if df is None or "close" not in df or len(df) < 80:
+        return None
+    s = df[["date", "close"]].copy()
+    s["date"] = pd.to_datetime(s["date"])
+    return s.set_index("date")["close"].astype(float)
 
 
 def _rank_map(values, assets):
@@ -101,6 +142,15 @@ def _mom_120(c):
     return float(c.iloc[-6]) / p0 - 1.0
 
 
+def _mom_10(c):
+    if len(c) < 17:
+        return None
+    p0 = float(c.iloc[-16])
+    if p0 <= 0:
+        return None
+    return float(c.iloc[-6]) / p0 - 1.0
+
+
 def _underwater(c):
     s = c.dropna().tail(125)
     if len(s) < 60:
@@ -129,6 +179,17 @@ def _kurt_20(r):
     return None if not isfinite(k) else float(k)
 
 
+def _tail_ratio(r):
+    s = r.dropna().tail(20)
+    if len(s) < 10:
+        return None
+    q95 = float(np.percentile(s.values, 95))
+    q05 = float(np.percentile(s.values, 5))
+    if abs(q05) < 1e-12:
+        return None
+    return q95 / abs(q05)
+
+
 def _dxy_beta(r, dxy_r):
     z = pd.concat([r.rename("a"), dxy_r.rename("d")], axis=1).dropna().tail(60)
     if len(z) < 30:
@@ -137,6 +198,23 @@ def _dxy_beta(r, dxy_r):
     if vd < 1e-14:
         return None
     return float(z["a"].cov(z["d"]) / vd)
+
+
+def _vix_beta_cond(r, vix_r, vix_c):
+    z = pd.concat([r.rename("a"), vix_r.rename("v")], axis=1).dropna().tail(60)
+    if len(z) < 30:
+        return None
+    vv = float(z["v"].var())
+    if vv < 1e-14:
+        return None
+    beta = float(z["a"].cov(z["v"]) / vv)
+    if vix_c is None or len(vix_c) < 22:
+        return None
+    v0 = float(vix_c.iloc[-21])
+    if v0 <= 0:
+        return None
+    vmove = float(vix_c.iloc[-1]) / v0 - 1.0
+    return -beta * vmove
 
 
 def _to_weights(score, assets, regime_w):
@@ -153,7 +231,7 @@ def _to_weights(score, assets, regime_w):
     wts = {a: raw[a] / total for a in assets}
     # regime blend: defensive tilt when market is weak
     for a in assets:
-        wts[a] = 0.80 * wts[a] + 0.20 * regime_w.get(a, 1.0 / len(assets))
+        wts[a] = 0.70 * wts[a] + 0.30 * regime_w.get(a, 1.0 / len(assets))
     # clamp
     for _ in range(60):
         excess = sum(max(0.0, x - MAX_W) for x in wts.values())
@@ -173,43 +251,60 @@ def _to_weights(score, assets, regime_w):
 @register_hook
 def strategy_hook():
     assets = list(get_account_dict()["watch_list"])
+    ensemble = _load_ensemble()
+    factor_ids = [fid for fid, _, _ in ensemble]
+
     closes = _closes(assets)
     if len(closes) < 8:
         eq = {a: 1.0 / len(assets) for a in assets}
         rebalance_to_weights(eq, forecast_returns={a: 0.0 for a in assets},
-                             factor_ids=FACTOR_IDS, horizon_days=10)
+                             factor_ids=factor_ids, horizon_days=10)
         return
 
     panel = pd.DataFrame(closes).sort_index()
     rets = panel.pct_change()
 
-    dxy_df = None
-    try:
-        dxy_df = get_index_daily_data("DXY", days=150)
-    except Exception:
-        dxy_df = None
-    dxy_r = None
-    if dxy_df is not None and "close" in dxy_df and len(dxy_df) >= 80:
-        d = dxy_df[["date", "close"]].copy()
-        d["date"] = pd.to_datetime(d["date"])
-        dxy_r = d.set_index("date")["close"].astype(float).pct_change()
+    dxy_c = _macro_close("DXY")
+    dxy_r = dxy_c.pct_change() if dxy_c is not None else None
+    vix_c = _macro_close("VIX")
+    vix_r = vix_c.pct_change() if vix_c is not None else None
 
-    fvals = {fid: {} for fid, _, _ in ENSEMBLE}
+    fvals = {fid: {} for fid, _, _ in ensemble}
     for a in assets:
         c = closes.get(a)
         r = rets[a] if a in rets else None
         if c is None or r is None:
             continue
-        fvals["trend_r2_30_signed"][a] = _trend_r2(c)
-        fvals["semi_down_ratio_20"][a] = _semi_down_ratio(r)
-        fvals["mom_120d_skip5"][a] = _mom_120(c)
-        fvals["vol_of_vol20x60"][a] = _vol_of_vol(r)
-        fvals["kurt_20"][a] = _kurt_20(r)
-        fvals["time_under_water_120"][a] = _underwater(c)
-        fvals["dxy_beta_60"][a] = _dxy_beta(r, dxy_r) if dxy_r is not None else None
+        for fid, _, _ in ensemble:
+            try:
+                if fid == "trend_r2_30_signed":
+                    v = _trend_r2(c)
+                elif fid == "semi_down_ratio_20":
+                    v = _semi_down_ratio(r)
+                elif fid == "mom_120d_skip5":
+                    v = _mom_120(c)
+                elif fid == "mom_10d_skip5":
+                    v = _mom_10(c)
+                elif fid == "vol_of_vol20x60":
+                    v = _vol_of_vol(r)
+                elif fid == "time_under_water_120":
+                    v = _underwater(c)
+                elif fid == "tail_ratio_20":
+                    v = _tail_ratio(r)
+                elif fid == "kurt_20":
+                    v = _kurt_20(r)
+                elif fid == "dxy_beta_60":
+                    v = _dxy_beta(r, dxy_r) if dxy_r is not None else None
+                elif fid == "vix_beta_cond_60x20":
+                    v = _vix_beta_cond(r, vix_r, vix_c) if vix_r is not None else None
+                else:
+                    v = None
+            except Exception:
+                v = None
+            fvals[fid][a] = v
 
     score = {a: 0.0 for a in assets}
-    for fid, w, direction in ENSEMBLE:
+    for fid, w, direction in ensemble:
         rk = _rank_map(fvals[fid], assets)
         for a in assets:
             score[a] += w * direction * rk[a]
@@ -240,16 +335,9 @@ def strategy_hook():
         for a in assets
     }
 
-    try:
-        ens = json.loads((Path(__file__).parent / "factors" / "factor_ensemble.json").read_text())
-        ids = [str(it["factor_id"]) for it in ens.get("selected_factors", [])
-               if isinstance(it, dict) and it.get("factor_id")]
-    except (OSError, ValueError, TypeError):
-        ids = FACTOR_IDS
-
     rebalance_to_weights(
         weights,
         forecast_returns=forecast_returns,
-        factor_ids=ids[:10],
+        factor_ids=factor_ids[:10],
         horizon_days=10,
     )

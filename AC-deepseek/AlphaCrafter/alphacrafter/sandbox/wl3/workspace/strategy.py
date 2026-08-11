@@ -244,9 +244,9 @@ def strategy_hook():
     mkt20 = float(market.tail(20).mean())
     vol20 = float(panel.tail(20).std().mean())
     vol_med = float(panel.tail(120).std().median(axis=0))
-    risk_off = (mkt20 < 0.0 and mdd < -0.03) or (vol20 > 1.3 * max(vol_med, 1e-6))
-    risk_on = mkt20 > 0.0 and mdd > -0.02
-    def_floor = 0.15 if risk_off else (0.10 if risk_on else 0.12)
+    risk_off = (mkt20 < 0.0 and mdd < -0.025) or (vol20 > 1.25 * max(vol_med, 1e-6))
+    risk_on = mkt20 > 0.0 and mdd > -0.015
+    def_floor = 0.16 if risk_off else (0.11 if risk_on else 0.13)
     spread = 2.0 if risk_off else (3.0 if risk_on else 2.0)
 
     # ---- target weights: full 15-asset, sum 1, cash 0 --------------------

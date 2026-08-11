@@ -1,0 +1,28 @@
+import numpy as np,pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data,get_index_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+D={}
+for s in U:
+ d=get_stock_daily_data(s,days=3200)
+ if d is None or len(d)<120: d=get_index_daily_data(s,days=3200)
+ if d is not None: D[s]=d.assign(date=pd.to_datetime(d.date)).set_index('date').sort_index().close.astype(float)
+p=pd.DataFrame(D).sort_index().ffill(); r=np.log(p).diff()
+# Relative risk-adjusted momentum: subtract each day's cross-sectional median before applying a persistent breadth regime gate.
+ret=r.rolling(20,min_periods=15).sum(); vol=r.rolling(20,min_periods=15).std()
+base=ret/(vol*np.sqrt(20)+1e-12)
+relative=base.sub(base.median(axis=1),axis=0)
+breadth=(ret>0).mean(axis=1)
+gate=((breadth-0.5)*2).rolling(5,min_periods=3).mean()
+f=relative.mul(gate,axis=0).shift(1)
+print('rows',len(p),'assets',len(D),'coverage',round(f.notna().mean().mean(),4))
+for h in [5,10,20,30]:
+ y=np.log(p).shift(-h)-np.log(p); a=[];ns=[]
+ for dt in f.index:
+  z=pd.concat([f.loc[dt],y.loc[dt]],axis=1).dropna()
+  if len(z)>=8:
+   q=z.iloc[:,0].corr(z.iloc[:,1],method='spearman')
+   if np.isfinite(q): a.append(q);ns.append(len(z))
+ a=np.array(a)
+ print('h',h,'dates',len(a),'N',round(np.mean(ns),2),'IC',round(a.mean(),6),'ICIR',round(a.mean()/a.std(ddof=1),6),'hit',round((a>0).mean(),4))
+print('turnover',round((f.rank(axis=1,pct=True).diff().abs().mean(axis=1)/2).mean(),6))
+f.to_csv('scripts/miner_1_20281116_relative_breadth_momentum_signal.csv')

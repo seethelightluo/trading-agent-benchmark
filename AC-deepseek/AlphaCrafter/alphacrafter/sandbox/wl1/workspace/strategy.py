@@ -1,16 +1,29 @@
-"""Trader strategy v3 - Screener 6-factor quality_ic_tilt ensemble.
+"""Trader strategy v7 - Screener 5-factor quality_ic_tilt ensemble.
 
-Ensemble (2026-11): mom_120d_skip5 (.38,+) | miner2_nclv_1d (.17,+)
-| miner2_nclv_2d (.12,+) | miner2_rev_2d (.10,+) | vol_of_vol20x60 (.13,+)
-| vix_beta_cond_60x20 (.10,-).
+Ensemble (2027-07-23): mom_120d_skip5 (.30,+) | vol_of_vol20x60 (.20,+)
+| miner2_nclv_1d (.19,+) | miner2_rev_2d (.17,+) | vix_beta_cond_60x20 (.14,-).
 
-Momentum anchor + short-term reversal + vol-of-vol regime + VIX-beta risk
-guard. Cross-sectional rank composite over the 15-name tradable panel; fully
-invested, non-negative weights sum to 1, no cash sleeve. One atomic rebalance
-proposal per 10-trading-day block (first day only) via rebalance_to_weights
-with aligned forecast returns so the execution gate (gross edge > one-way
-turnover * 3bp) decides. Bear regime adds a modest defensive tilt
-(XAU/US10Y/CN10Y). Factors are loaded from factor_ensemble.json at import.
+Momentum anchor (trimmed from .42 per COPPER whipsaw) + two decorrelated
+reversal members + vol-of-vol regime + VIX-beta risk guard. Cross-sectional
+rank composite over the 15-name tradable panel; fully invested, non-negative
+weights sum to 1, no cash sleeve. One atomic rebalance proposal per
+10-trading-day block via rebalance_to_weights with aligned forecast returns so
+the execution gate (gross edge > one-way turnover * 3bp) decides. Bear regime
+adds a modest defensive tilt (XAU/US10Y/CN10Y). Factors are loaded from
+factor_ensemble.json at import.
+
+v4 cadence fix (2027-01-22): the harness invokes cycles at idx%10==4 while the
+fixed grid (idx%10==8 from ONLINE_START) is never hit, which froze proposals
+since 2026-09-24. Proposals now fire on grid days OR on any hook call >=10
+trading days after the last proposal (one proposal per 10-day block either
+way), tracked via trader_state.json (fallback to account last_rebalance_date).
+
+v7 (2027-07-23): Screener refreshed weights - momentum trimmed .42->.30
+(COPPER 7-block whipsaw), vol_of_vol raised .16->.20 (strongest recent IC),
+reversal pair raised (.15/.14 -> .19/.17), vix_beta .13->.14. Added Screener
+recommended portfolio-level guard: momentum top-picks trading below their 20d
+MA are weight-capped (extended names that broke short-term MA, e.g. COPPER),
+excess redistributed to remaining names.
 """
 import json
 import math
@@ -22,10 +35,13 @@ from alphacrafter.sim.utils import (get_account_dict, get_stock_daily_data,
 ONLINE_START = "2026-07-16"
 DATE_FILE = "../persistent/date.json"
 VIX_FILE = "../persistent/index_data/VIX.csv"
+STATE_FILE = "trader_state.json"
 DATA_DAYS = 170          # enough for mom_120d_skip5 (shift(125)) + buffers
 MIN_ROWS = 140
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 CAP_W = 0.16
+GUARD_CAP = 0.06         # cap for momentum top-picks below 20d MA
+MOM_TOP_RANK = 0.60      # momentum rank threshold for the guard
 
 _VIX_CACHE = {}
 
@@ -50,6 +66,44 @@ def _is_rebalance_day(cur, tds):
     if cur < ONLINE_START or cur not in tds or ONLINE_START not in tds:
         return False
     return (tds.index(cur) - tds.index(ONLINE_START)) % 10 == 0
+
+
+def _last_proposal_date(tds):
+    """Last proposal date: state file first, else account last executed rebal."""
+    try:
+        with open(STATE_FILE) as f:
+            last = json.load(f).get("last_proposal_date")
+            if last and last in tds:
+                return last
+    except Exception:
+        pass
+    try:
+        acc = get_account_dict()
+        last = acc.get("last_rebalance_date")
+        if last and last in tds:
+            return last
+    except Exception:
+        pass
+    return None
+
+
+def _should_propose(cur, tds):
+    if cur < ONLINE_START or cur not in tds:
+        return False
+    if _is_rebalance_day(cur, tds):           # fixed grid still honoured
+        return True
+    last = _last_proposal_date(tds)           # drift-tolerant fallback
+    if last is None:
+        return True                           # first online proposal
+    return (tds.index(cur) - tds.index(last)) >= 10
+
+
+def _persist_proposal(cur):
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump({"last_proposal_date": cur}, f)
+    except Exception:
+        pass
 
 
 def _fetch(assets):
@@ -210,6 +264,47 @@ def _weights(scores, assets, regime):
     return w
 
 
+def _ma_guard(w, frames, assets, cur):
+    """Cap momentum top-picks that broke their 20d MA (Screener guard).
+
+    Extended momentum names below short-term MA (e.g. COPPER) are the main
+    post-rebalance whipsaw drag. Cap their weight at GUARD_CAP and
+    redistribute the excess proportionally to the remaining names.
+    """
+    mom_vals = _factor_values(frames, "mom_120d_skip5", cur)
+    mom_rank = _ranks(mom_vals, assets)
+    below_ma = set()
+    for a in assets:
+        df = frames.get(a)
+        if df is not None and len(df) >= 25:
+            close = float(df["close"].iloc[-1])
+            ma20 = float(df["close"].rolling(20).mean().iloc[-1])
+            if math.isfinite(ma20) and close < ma20:
+                below_ma.add(a)
+    penalized = {a for a in assets if mom_rank[a] >= MOM_TOP_RANK and a in below_ma}
+    if not penalized:
+        return w
+    excess = sum(max(0.0, w[a] - GUARD_CAP) for a in penalized)
+    if excess <= 1e-12:
+        return w
+    for a in penalized:
+        w[a] = min(w[a], GUARD_CAP)
+    room = [a for a in assets if w[a] < GUARD_CAP - 1e-12 and a not in penalized]
+    if room:
+        den = sum(w[a] for a in room) + 1e-12
+        for a in room:
+            w[a] += excess * w[a] / den
+    else:                                  # no room: spread over all non-penalized
+        room = [a for a in assets if a not in penalized]
+        den = sum(w[a] for a in room) + 1e-12
+        for a in room:
+            w[a] += excess * w[a] / den
+    tot = sum(w.values())
+    w = {a: x / tot for a, x in w.items()}
+    w[assets[-1]] += 1.0 - sum(w.values())
+    return w
+
+
 def _forecasts(scores, assets):
     vals = [scores[a] for a in assets]
     mean = float(np.mean(vals))
@@ -224,8 +319,8 @@ def _forecasts(scores, assets):
 @register_hook
 def strategy_hook():
     cur, tds = _today_and_calendar()
-    if not _is_rebalance_day(cur, tds):
-        return   # non-rebalance day: simulator marks positions / processes orders
+    if not _should_propose(cur, tds):
+        return   # non-decision day: simulator marks positions / processes orders
     if not FACTORS:
         return   # no Screener ensemble -> skip this cycle
     account = get_account_dict()
@@ -238,9 +333,11 @@ def strategy_hook():
         w = {a: 1.0 / len(assets) for a in assets}
         w[assets[-1]] += 1.0 - sum(w.values())
         rebalance_to_weights(w)
+        _persist_proposal(cur)
         return
     regime = _regime(frames, assets)
     w = _weights(scores, assets, regime)
+    w = _ma_guard(w, frames, assets, cur)   # v7: momentum-top-pick MA guard
     f = _forecasts(scores, assets)
     rebalance_to_weights(
         w,
@@ -248,3 +345,4 @@ def strategy_hook():
         factor_ids=[fid for fid, _, _ in FACTORS],
         horizon_days=10,
     )
+    _persist_proposal(cur)

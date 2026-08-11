@@ -1,0 +1,1 @@
+print(open('scripts/miner2_20260716_deep_validate_6.py').read()[:7000])
