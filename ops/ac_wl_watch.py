@@ -21,9 +21,10 @@ DS_LOG = ROOT / "AC-deepseek" / "results" / "ac9wl_deepseek" / "logs"
 TERRA_LOG = ROOT / "agent-framework" / "results" / "ac_luna_3wl_v5" / "logs"
 OUT = ROOT / "ops" / "logs" / "ac_wl_watch.log"
 SLEEP = int(os.environ.get("AC_WATCH_INTERVAL", "300"))
-STALL_MIN = int(os.environ.get("AC_WATCH_STALL_MIN", "120"))
+STALL_MIN = int(os.environ.get("AC_WATCH_STALL_MIN", "60"))
 AUTO_PAUSE = os.environ.get("AC_WATCH_AUTO_PAUSE", "1").lower() in {"1", "true", "yes"}
 STALL_LOG = ROOT / "ops" / "logs" / "ac_wl_stalls.log"
+STATE_FILE = ROOT / "ops" / "logs" / "ac_wl_watch_state.json"
 DS_RESULTS = ROOT / "AC-deepseek" / "results" / "ac9wl_deepseek"
 TERRA_RESULTS = ROOT / "agent-framework" / "results" / "ac_luna_3wl_v5"
 PAUSE_DIRS = {"ds": DS_RESULTS, "terra": TERRA_RESULTS}
@@ -34,6 +35,34 @@ STALE_RE = re.compile(r"stale AC online account contract")
 
 FAMILIES = [("terra", TERRA_LOG, range(1, 4)), ("ds", DS_LOG, range(1, 10))]
 last_seen: dict[str, tuple[float, int, int, bool]] = {}  # key -> (ts, advances, stale, running)
+
+
+def load_last_seen() -> dict[str, tuple[float, int, int, bool]]:
+    """Restore the stall clock across watcher restarts so a restart does not
+    reset the 'no advance' window for running worldlines."""
+    try:
+        raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    out: dict[str, tuple[float, int, int, bool]] = {}
+    for key, value in raw.items():
+        try:
+            ts, adv, stale, running = value
+            out[key] = (float(ts), int(adv), int(stale), bool(running))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def save_last_seen() -> None:
+    try:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(
+            json.dumps(last_seen, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def proc_state() -> dict:
@@ -114,6 +143,8 @@ def pause_wl(fam: str, wl: str, pid: str, reason: str) -> bool:
 
 def main() -> int:
     OUT.parent.mkdir(parents=True, exist_ok=True)
+    last_seen.update(load_last_seen())
+    save_last_seen()
     # one-shot stamp at startup
     with OUT.open("a", encoding="utf-8") as f:
         f.write(f"=== watcher started {datetime.now().isoformat(timespec='seconds')} ===\n")
@@ -145,6 +176,7 @@ def main() -> int:
                         flags.append(f"{key}:NEW_STALE({met['stale'] - stale0})")
                 if prev is None or met["adv"] != prev[1] or running != prev[3]:
                     last_seen[key] = (now, met["adv"], met["stale"], running)
+                    save_last_seen()
                 win = met["adv"] + 1 if met["adv"] else 0
                 st = "run" if running else "queued"
                 nav_t = f"{nav:,}" if nav is not None else "NA"
