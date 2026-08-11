@@ -77,7 +77,7 @@ CANDIDATES = [
 results = {}
 panels = {}
 for name, fn, desc, deps, params, direction in CANDIDATES:
-    res = validate_factor(fn, close, vol, open_, high, low, macro, **params)
+    res = validate_factor(fn, close, vol, open_, high, low, macro)
     panels[name] = res["panel"]
     res["max_abs_library_correlation"] = max_library_corr(res["panel"], lib)
     res["direction"] = direction

@@ -18,7 +18,7 @@ def build_library(panel, macro):
     lib["rel_mom_20d_skip5"] = raw.sub(raw.median(axis=1), axis=0)
     # beta_ew_60d: rolling 60d beta vs EW market
     ret = panel.pct_change()
-    mkt = ret.mean(axis=1, min_count=8)
+    mkt = ret.mean(axis=1)
     cols = {}
     for a in panel.columns:
         s = ret[a].dropna()

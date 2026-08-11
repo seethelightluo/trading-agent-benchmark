@@ -1,0 +1,26 @@
+import pandas as pd,numpy as np
+from scipy.stats import spearmanr
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; cut=pd.Timestamp('2026-07-15')
+p=pd.concat({s:pd.read_csv('../persistent/stock_data/'+s+'.csv',parse_dates=['date']).query('date<=@cut').set_index('date').close for s in U},axis=1).sort_index(); r=p.pct_change(); w=20
+# blend two interpretable momentum ranks: raw 20d return and downside-risk-adjusted return
+raw=p/p.shift(w)-1
+down=np.sqrt(r.where(r<0).pow(2).rolling(w,min_periods=15).mean())
+da=raw/down.replace(0,np.nan)
+f=(raw.rank(axis=1,pct=True)+da.rank(axis=1,pct=True))/2
+for h in [1,5,10]:
+ vals=[]; ns=[]
+ for i in range(len(p)-h):
+  q=pd.concat([f.iloc[i],(p.iloc[i+h]/p.iloc[i]-1).rename('y')],axis=1).dropna()
+  if len(q)>=8 and q.iloc[:,0].nunique()>1: vals.append(spearmanr(q.iloc[:,0],q.y).statistic); ns.append(len(q))
+ x=np.array(vals); print('horizon',h,'dates',len(x),'avgN',round(np.mean(ns),2),'coverage',round(np.mean(ns)/15,4),'IC',round(x.mean(),6),'ICIR',round(x.mean()/x.std(ddof=1),6),'hit',round(np.mean(x>0),4))
+# annual 10d
+vals=[]
+for i in range(len(p)-10):
+ q=pd.concat([f.iloc[i],(p.iloc[i+10]/p.iloc[i]-1).rename('y')],axis=1).dropna()
+ if len(q)>=8: vals.append((f.index[i],spearmanr(q.iloc[:,0],q.y).statistic))
+z=pd.Series(dict(vals)); print('annual10d',{int(y):round(z[z.index.year==y].mean(),6) for y in sorted(z.index.year.unique())})
+turn=[]
+for i in range(1,len(f)):
+ a=f.iloc[i];b=f.iloc[i-1]; ix=a.dropna().index.intersection(b.dropna().index)
+ if len(ix)>=8:turn.append(np.abs(a[ix]-b[ix]).mean())
+print('rank_turnover',round(np.mean(turn),6),'rows',len(p),'assets',len(U))

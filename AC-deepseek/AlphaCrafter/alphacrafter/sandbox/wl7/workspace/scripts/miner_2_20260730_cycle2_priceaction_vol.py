@@ -1,5 +1,5 @@
-"""miner_2 cycle-2 exploration: price-action structure, range-based vol, volume-price,
-risk-adjusted momentum, autocorrelation, RSI. 15-instrument cross-asset universe.
+"""miner_2 cycle-2 exploration (vectorized): price-action structure, range-based vol,
+volume-price, risk-adjusted momentum, autocorrelation, RSI. 15-instrument cross-asset universe.
 IC = cross-sectional Spearman rank IC per date (>=8 assets). Admission: |IC|>=0.007,
 |ICIR|>=0.084 @ h=10. Factor window: 2020-01-01..2026-07-15 (visible data thru 2026-07-29).
 """
@@ -7,7 +7,6 @@ import sys
 import json
 import numpy as np
 import pandas as pd
-from pathlib import Path
 
 sys.path.insert(0, "scripts")
 from miner_2_lib import (load_panel, load_macro, WATCH, MIN_ASSETS, ADMISSION,
@@ -21,96 +20,66 @@ mac = load_macro()
 
 
 def load_ohlc():
-    o, h, l, c, v = {}, {}, {}, {}, {}
+    frames = {k: {} for k in ["open", "high", "low", "close", "volume"]}
     for s in WATCH:
         df = pd.read_csv(f"../persistent/stock_data/{s}.csv")
         df["date"] = pd.to_datetime(df["date"])
         df = df[df["date"] <= MAX_VISIBLE].set_index("date").sort_index()
-        o[s] = df["open"].astype(float)
-        h[s] = df["high"].astype(float)
-        l[s] = df["low"].astype(float)
-        c[s] = df["close"].astype(float)
-        v[s] = df["volume"].astype(float)
-    return (pd.DataFrame(o, index=panel.index), pd.DataFrame(h, index=panel.index),
-            pd.DataFrame(l, index=panel.index), pd.DataFrame(c, index=panel.index),
-            pd.DataFrame(v, index=panel.index))
+        for k in frames:
+            frames[k][s] = df[k].astype(float)
+    return {k: pd.DataFrame(v, index=panel.index) for k, v in frames.items()}
 
 
-O, H, L, C, V = load_ohlc()
-hl_range = (H - L).replace(0, np.nan)
-rng = (H - L) / C  # range as fraction of close (scale-free per asset)
+F = load_ohlc()
+O, H, L, C, V = F["open"], F["high"], F["low"], F["close"], F["volume"]
+hl_range = (H - L).clip(lower=EPS)
 
-# ---------------- candidate factors (per-asset calendar aware) ----------------
+# ---------------- candidate factors (vectorized) ----------------
 def park_vol_20():
     # Parkinson volatility: sqrt( mean( ln(H/L)^2 ) / (4 ln 2) ), 20d
-    logs = np.log(H / L.replace(0, np.nan))
-    out = {}
-    for s in WATCH:
-        x = logs[s].dropna().rolling(20, min_periods=10).apply(
-            lambda w: np.sqrt((w ** 2).mean() / (4 * np.log(2))), raw=True)
-        out[s] = x
-    return pd.DataFrame(out, index=panel.index)
+    lhl = np.log(H / L.clip(lower=EPS))
+    return np.sqrt(lhl.pow(2).rolling(20, min_periods=10).mean() / (4 * np.log(2)))
 
 
 def close_pos_20():
-    # mean of (close-low)/(high-low) over 20d: trend persistence / close strength
-    cp = (C - L) / hl_range
-    return cp.rolling(20, min_periods=10).mean()
+    return ((C - L) / hl_range).rolling(20, min_periods=10).mean()
 
 
 def body_ratio_20():
-    # mean |close-open|/(high-low) over 20d: directional conviction
-    body = (C - O).abs() / hl_range
-    return body.rolling(20, min_periods=10).mean()
+    return ((C - O).abs() / hl_range).rolling(20, min_periods=10).mean()
 
 
 def upper_wick_20():
-    # mean (high - max(open,close))/(high-low) over 20d: upper wick = selling pressure
-    uw = (H - np.maximum(O, C)) / hl_range
-    return uw.rolling(20, min_periods=10).mean()
+    return ((H - np.maximum(O, C)) / hl_range).rolling(20, min_periods=10).mean()
 
 
 def vol_price_corr_20():
-    # correlation of daily return with volume over 20d: participation quality
-    out = {}
-    for s in WATCH:
-        df = pd.read_csv(f"../persistent/stock_data/{s}.csv")
-        df["date"] = pd.to_datetime(df["date"])
-        df = df[df["date"] <= MAX_VISIBLE].set_index("date").sort_index()
-        r = df["close"].pct_change()
-        vol = df["volume"].astype(float)
-        corr = r.rolling(20, min_periods=10).corr(vol)
-        out[s] = corr
-    return pd.DataFrame(out, index=panel.index)
+    # corr(ret, volume) over 20d; vectorized via rolling cov/var on z-scored series
+    rv = (rets - rets.rolling(20, min_periods=10).mean()) / rets.rolling(20, min_periods=10).std()
+    vv = (V - V.rolling(20, min_periods=10).mean()) / V.rolling(20, min_periods=10).std()
+    return (rv * vv).rolling(20, min_periods=10).mean()
 
 
 def sharpe_60():
-    # risk-adjusted momentum: mean(ret)/std(ret) over 60d
     mu = rets.rolling(60, min_periods=30).mean()
     sd = rets.rolling(60, min_periods=30).std()
-    return mu / sd.replace(0, np.nan)
+    return mu / sd.clip(lower=EPS)
 
 
 def autocorr_10():
-    # lag-1 return autocorrelation over 10d window: short-term reversal proxy
-    out = {}
-    for s in WATCH:
-        r = rets[s].dropna()
-        ac = r.rolling(10, min_periods=6).apply(lambda w: pd.Series(w).autocorr(1), raw=False)
-        out[s] = ac
-    return pd.DataFrame(out, index=panel.index)
+    # lag-1 autocorrelation of daily returns over 10d window: cov(r,r.shift)/var(r)
+    r1 = rets.shift(1)
+    cov = (rets - rets.rolling(10, min_periods=6).mean()) * (r1 - r1.rolling(10, min_periods=6).mean())
+    cov = cov.rolling(10, min_periods=6).mean()
+    var = rets.rolling(10, min_periods=6).var()
+    return cov / var.clip(lower=EPS)
 
 
 def rsi_14():
-    # classic RSI-14 using Wilder-style smoothing (simple approximation)
-    out = {}
-    for s in WATCH:
-        r = rets[s].dropna()
-        up = r.clip(lower=0).rolling(14, min_periods=8).mean()
-        dn = (-r.clip(upper=0)).rolling(14, min_periods=8).mean()
-        rs = up / dn.replace(0, np.nan)
-        out[s] = 100 - 100 / (1 + rs)
-    return pd.DataFrame(out, index=panel.index)
+    up = rets.clip(lower=0).rolling(14, min_periods=8).mean()
+    dn = (-rets.clip(upper=0)).rolling(14, min_periods=8).mean()
+    rs = up / dn.clip(lower=EPS)
+    return 100 - 100 / (1 + rs)
 
 
 CANDIDATES = {
@@ -134,17 +103,16 @@ def library_signals_all():
     libs["vol_of_vol20x60"] = rets.rolling(20).std().rolling(60).std()
     libs["max_ret_20d"] = rets.rolling(20).max()
     ds = rets.where(rets < 0)
-    libs["downside_vol_ratio_20"] = -(ds.rolling(20).std() / rets.rolling(20).std())
-    libs["amihud_20"] = (rets.abs() / V.replace(0, np.nan)).rolling(20, min_periods=10).mean()
-    # beta to EW market
+    libs["downside_vol_ratio_20"] = -(ds.rolling(20, min_periods=10).std() / rets.rolling(20, min_periods=10).std())
+    libs["amihud_20"] = (rets.abs() / V.clip(lower=EPS)).rolling(20, min_periods=10).mean()
     mkt = rets.mean(axis=1)
     cov = rets.rolling(60, min_periods=30).cov(mkt)
-    var = mkt.rolling(60, min_periods=30).var().replace(0, np.nan)
+    var = mkt.rolling(60, min_periods=30).var().clip(lower=EPS)
     libs["beta_ew_60d"] = cov.div(var, axis=0)
     try:
         vix = mac["VIX"]
         vixr = vix.pct_change()
-        beta = rets.rolling(60, min_periods=30).cov(vixr) / vixr.rolling(60, min_periods=30).var().replace(0, np.nan)
+        beta = rets.rolling(60, min_periods=30).cov(vixr) / vixr.rolling(60, min_periods=30).var().clip(lower=EPS)
         libs["vix_beta_cond_60x20"] = -beta * (vix / vix.shift(20) - 1.0)
     except Exception as e:
         print("vix lib warn:", e)
@@ -154,16 +122,15 @@ def library_signals_all():
 LIBS = library_signals_all()
 
 
-def library_corr_ext(factor: pd.DataFrame):
+def library_corr_ext(factor: pd.DataFrame, max_dates=400):
     per = {}
-    common = factor.index
+    common = factor.index.intersection(panel.index)[-max_dates:]
     for fid, lf in LIBS.items():
         cs = []
-        for dt in common[-700:]:
+        for dt in common:
             f = factor.loc[dt]
             g = lf.loc[dt]
             m = f.notna() & g.notna() & np.isfinite(f.astype(float)) & np.isfinite(g.astype(float))
-            m = m.reindex(f.index).fillna(False)
             if int(m.sum()) >= MIN_ASSETS:
                 cs.append(pd.Series(f[m]).corr(pd.Series(g[m]), method="spearman"))
         per[fid] = round(float(np.mean(cs)), 4) if cs else None
@@ -194,8 +161,7 @@ def validate(name, factor, horizons=(1, 2, 3, 5, 10, 20)):
     gate_icir = abs(res["icir_h10"]) >= ADMISSION["icir"]
     res["pass"] = bool(gate_ic and gate_icir)
     print(f"=== {name} ===  direction={direction:+.3f}  dates={len(ic10)}  assets={panel.shape[1]}")
-    print(f"  h10: IC={res['ic_h10']:+.4f}  ICIR={res['icir_h10']:+.4f}  hit={res['hit_h10']:.3f}  "
-          f"n={res['n_dates']}")
+    print(f"  h10: IC={res['ic_h10']:+.4f}  ICIR={res['icir_h10']:+.4f}  hit={res['hit_h10']:.3f}  n={res['n_dates']}")
     print(f"  coverage_asset_days={res['coverage_asset_days']:.3f}  cov_dates_ge8={res['coverage_dates_ge8']:.3f}  "
           f"turnover={res['turnover_10d_rank']:.3f}")
     print(f"  max_abs_lib_corr={res['max_abs_library_correlation']:.3f}  per={per}")

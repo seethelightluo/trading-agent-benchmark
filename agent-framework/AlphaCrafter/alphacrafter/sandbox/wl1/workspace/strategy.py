@@ -1,96 +1,84 @@
 import numpy as np
-from alphacrafter.sim.utils import register_hook, get_account_dict, get_stock_daily_data, rebalance_to_weights
+from alphacrafter.sim.utils import register_hook, get_stock_daily_data, rebalance_to_weights
 
 UNIVERSE = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
-# Current screener ensemble; seven active factors, within the ten-factor cap.
-FACTOR_WEIGHTS = {"clv": .20, "peer": .18, "vix_rev": .16, "momentum": .16,
-                  "vix_clv": .12, "shock": .10, "reversal": .08}
-MIN_W, MAX_W, REBALANCE_DAYS = .015, .16, 10
-last_decision = None
+FACTOR_WEIGHTS = {"vix": .16, "clv": .11, "rvolmom": .14, "path": .12, "resid": .10, "downmom": .09, "shock": .07, "disp": .09, "highvol": .05, "persist": .07}
+FACTOR_IDS = [
+    "miner_1_20260730_vix_state_reversal_5d", "miner_3_20260730_vix_conditioned_clv_1d",
+    "miner_1_20260730_residual_vol_scaled_momentum_10d", "miner_1_20260730_path_efficiency_10d",
+    "miner_2_20260730_residual_momentum_10d", "miner_1_20260730_downside_quality_momentum_10d",
+    "miner_1_20260730_residual_shock_blend_10d", "miner_1_20260730_dispersion_conditioned_reversal_1d",
+    "miner_2_20260730_highvol_reversal_5d", "miner_2_20260730_slow_rank_persistence_20d"
+]
+_last_decision_date = None
 
-def ranks(values):
-    good = sorted((s, float(v)) for s, v in values.items() if np.isfinite(v))
+def rank(values):
+    valid = sorted((s, float(v)) for s, v in values.items() if np.isfinite(v))
     out = {s: .5 for s in UNIVERSE}
-    if len(good) > 1:
-        for i, (s, _) in enumerate(good): out[s] = (i + 1.) / len(good)
+    for i, (s, _) in enumerate(valid): out[s] = (i + 1.) / max(len(valid), 1)
     return out
 
-def bounded_simplex(raw):
-    # Project positive scores to a complete, bounded, unit-sum long-only vector.
-    w = {s: max(float(raw.get(s, 0.0)), 1e-12) for s in UNIVERSE}
-    for _ in range(50):
-        fixed = {s for s in UNIVERSE if w[s] <= MIN_W or w[s] >= MAX_W}
-        for s in fixed: w[s] = min(MAX_W, max(MIN_W, w[s]))
-        free = [s for s in UNIVERSE if s not in fixed]
-        gap = 1.0 - sum(w[s] for s in fixed)
-        if not free: break
-        total = sum(w[s] for s in free)
-        for s in free: w[s] = gap * w[s] / max(total, 1e-12)
-        if all(MIN_W - 1e-10 <= w[s] <= MAX_W + 1e-10 for s in UNIVERSE): break
-    # A final normalization only corrects floating-point residue; bounds have ample slack.
-    z = sum(w.values())
-    return {s: w[s] / z for s in UNIVERSE}
+def bounded_weights(raw):
+    w = {s: max(float(raw.get(s, 1. / 15.)), 1e-9) for s in UNIVERSE}
+    for _ in range(40):
+        low = {s for s in UNIVERSE if w[s] < .015}; high = {s for s in UNIVERSE if w[s] > .16}
+        for s in low: w[s] = .015
+        for s in high: w[s] = .16
+        fixed = low | high; free = [s for s in UNIVERSE if s not in fixed]
+        remain = 1. - sum(w[s] for s in fixed)
+        if not free or remain <= 0: break
+        scale = remain / sum(w[s] for s in free)
+        for s in free: w[s] *= scale
+        if all(.015 - 1e-9 <= w[s] <= .16 + 1e-9 for s in UNIVERSE): break
+    total = sum(w.values())
+    return {s: w[s] / total for s in UNIVERSE}
 
 @register_hook
 def cross_asset_strategy():
-    global last_decision
-    account = get_account_dict()
-    data = {}
+    global _last_decision_date
+    prices = {}
+    dates = []
     for s in UNIVERSE:
-        df = get_stock_daily_data(symbol=s, days=90)
-        if df is None or len(df) < 35: continue
-        df = df.sort_values("date").reset_index(drop=True)
-        c = np.asarray(df["close"], dtype=float)
-        h = np.asarray(df["high"], dtype=float)
-        l = np.asarray(df["low"], dtype=float)
-        r = c[1:] / np.maximum(c[:-1], 1e-12) - 1.
-        data[s] = (c, h, l, r, str(df.iloc[-1]["date"]))
-    if len(data) < 12: return
-    decision = max(v[4] for v in data.values())
-    if last_decision is not None:
+        df = get_stock_daily_data(symbol=s, days=140)
+        if df is not None and len(df) >= 45:
+            df = df.sort_values("date"); prices[s] = np.asarray(df["close"], dtype=float)
+            dates.append(str(df.iloc[-1]["date"]))
+    if len(prices) < 12 or not dates: return
+    decision_date = max(dates)
+    if _last_decision_date is not None:
         try:
-            age = (np.datetime64(decision, "D") - np.datetime64(last_decision, "D")) / np.timedelta64(1, "D")
-            if age < REBALANCE_DAYS: return
+            if (np.datetime64(decision_date) - np.datetime64(_last_decision_date)) / np.timedelta64(1, "D") < 10: return
         except Exception: return
-
-    factors = {k: {} for k in FACTOR_WEIGHTS}
-    invvol = {}
-    ret5 = {}
-    for s, (c, h, l, r, _) in data.items():
-        vol = max(float(np.std(r[-20:])), .008)
-        ret5[s] = float(c[-1] / max(c[-6], 1e-12) - 1.)
-        clv1 = float((2*c[-1] - h[-1] - l[-1]) / max(h[-1] - l[-1], 1e-12))
-        clv5 = float(np.mean((2*c[-5:] - h[-5:] - l[-5:]) / np.maximum(h[-5:] - l[-5:], 1e-12)))
-        reversal5 = -float(np.mean(r[-5:]))
-        shock = -float(r[-1]) * min(abs(float(r[-1] / (vol + .002))), 3.)
-        # Volatility-conditioned reversal/CLV: emphasize these only in elevated
-        # asset volatility, while keeping the screener's direction intact.
-        highvol = min(max(vol / .018, .5), 2.0)
-        factors["clv"][s] = clv1
-        factors["peer"][s] = ret5[s]
-        factors["vix_rev"][s] = reversal5 * highvol
-        factors["momentum"][s] = float((c[-1] / max(c[-21], 1e-12) - 1.) / (vol + .01))
-        factors["vix_clv"][s] = clv5 * highvol
-        factors["shock"][s] = shock
-        factors["reversal"][s] = reversal5
-        invvol[s] = 1. / vol
-    med = float(np.median(list(ret5.values())))
-    factors["peer"] = {s: v - med for s, v in ret5.items()}
-    ranked = {k: ranks(v) for k, v in factors.items()}
-    score = {s: sum(FACTOR_WEIGHTS[k] * ranked[k][s] for k in FACTOR_WEIGHTS) for s in UNIVERSE}
-
-    breadth = float(np.mean([data[s][0][-1] > data[s][0][-21] for s in data]))
-    spx = data.get("SPX")
-    bear = spx is not None and spx[0][-1] < spx[0][-21] and spx[0][-1] < spx[0][-6]
+    def ret(c, n): return c[-1] / max(c[-n-1], 1e-12) - 1.
+    r10 = {s: ret(c, 10) for s, c in prices.items()}; r20 = {s: ret(c, 20) for s, c in prices.items()}
+    med10 = float(np.median(list(r10.values()))); fac = {k: {} for k in FACTOR_WEIGHTS}; vols = {}
+    cross = np.array(list(r10.values()))
+    dispersion = max(float(np.std(cross)), .001)
+    for s, c in prices.items():
+        d = c[1:] / np.maximum(c[:-1], 1e-12) - 1.; vol = max(float(np.std(d[-20:])), .008)
+        downvol = max(float(np.std(np.minimum(d[-30:], 0.))), .006); vols[s] = vol
+        rev = -float(np.mean(d[-5:]))
+        fac["vix"][s] = rev * np.clip(vol / .018, .5, 2.)
+        fac["clv"][s] = -.65 * float(d[-1]) * np.clip(vol / .018, .5, 2.) - .35 * rev
+        fac["rvolmom"][s] = (r10[s] - med10) / vol
+        fac["path"][s] = np.sign(r10[s]) * abs(r10[s]) / max(float(np.sum(abs(d[-10:]))), .01)
+        fac["resid"][s] = r10[s] - med10; fac["downmom"][s] = ret(c, 20) / downvol
+        shock = -float(d[-1]) * np.clip(abs(float(d[-1])) / (vol + .002), 0., 3.)
+        fac["shock"][s] = .6 * (r10[s] - med10) + .4 * shock
+        fac["disp"][s] = -float(d[-1]) * dispersion / max(vol, .008)
+        fac["highvol"][s] = rev * np.clip(vol / .020, .5, 2.5)
+        sub = [ret(c, min(5*j, 20)) for j in range(1, 5)]
+        fac["persist"][s] = sum(x > 0 for x in sub) + .25 * np.sign(r20[s])
+    scores = {s: sum(FACTOR_WEIGHTS[k] * rank(fac[k])[s] for k in FACTOR_WEIGHTS) for s in UNIVERSE}
+    breadth = float(np.mean([c[-1] > c[-21] for c in prices.values()])); spx = prices.get("SPX")
+    bear = spx is not None and spx[-1] < spx[-21] and spx[-1] < spx[-6]
     if bear or breadth < .40:
-        for s in ("XAU", "US10Y", "CN10Y"): score[s] += .14
-        for s in ("BTC", "ETH", "WTI"): score[s] -= .06
+        for s in ("XAU", "US10Y", "CN10Y"): scores[s] += .12
+        for s in ("BTC", "ETH", "WTI"): scores[s] -= .05
     elif breadth > .67:
-        for s in ("SPX", "NDX", "SOX", "000300.SH"): score[s] += .04
-
-    mean_iv = float(np.mean(list(invvol.values())))
-    raw = {s: max(.03, score[s]) * (.80 + .20 * invvol.get(s, mean_iv) / max(mean_iv, 1e-12)) for s in UNIVERSE}
-    weights = bounded_simplex(raw)
-    if set(weights) == set(UNIVERSE) and all(np.isfinite(v) and v >= 0 for v in weights.values()) and abs(sum(weights.values()) - 1.) < 1e-8:
-        rebalance_to_weights(weights)
-        last_decision = decision
+        for s in ("SPX", "NDX", "SOX", "000300.SH"): scores[s] += .035
+    mean_vol = float(np.mean(list(vols.values())))
+    raw = {s: max(scores[s], .03) * (.85 + .15 * mean_vol / max(vols[s], .008)) for s in UNIVERSE}
+    targets = bounded_weights(raw); forecasts = {s: .06 * (scores[s] - .5) for s in UNIVERSE}
+    rebalance_to_weights(targets, forecast_returns=forecasts, factor_ids=FACTOR_IDS, horizon_days=10)
+    _last_decision_date = decision_date

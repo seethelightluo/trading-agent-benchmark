@@ -77,7 +77,7 @@ def _factor_values(frames, fid):
             elif fid.endswith("nbody_1d"):
                 x = -(c - o) / (h - l)
             elif "mom_10d_skip5" in fid:
-                x = np.log(c / c.shift(10)) - np.log(c / c.shift(5))
+                x = np.log(c.shift(5) / c.shift(15))
             else:
                 out[a] = None
                 continue
