@@ -48,10 +48,10 @@ def spearman_from_ranks(xr, yr):
     valid = np.isfinite(xr) & np.isfinite(yr)
     nv = valid.sum(axis=1)
     ok = nv >= 8
-    out = np.full(T, np.nan)
-    xc = np.where(valid, xr, 0.0); yc = np.where(valid, yr, 0.0)
-    xc -= xc.sum(axis=1, keepdims=True) / np.maximum(nv, 1)[:, None]
-    yc -= yc.sum(axis=1, keepdims=True) / np.maximum(nv, 1)[:, None]
+    out = np.full(len(nv), np.nan)
+    xc = np.where(valid, xr, np.nan); yc = np.where(valid, yr, np.nan)
+    mx = np.nanmean(xc, axis=1, keepdims=True); my = np.nanmean(yc, axis=1, keepdims=True)
+    xc = np.where(valid, xr - mx, 0.0); yc = np.where(valid, yr - my, 0.0)
     num = (xc * yc).sum(axis=1)
     den = np.sqrt((xc * xc).sum(axis=1) * (yc * yc).sum(axis=1))
     out[ok] = num[ok] / den[ok]

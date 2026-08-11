@@ -1,117 +1,212 @@
-"""Defensive cross-asset ensemble, Screener 2035-12-20.
-Completed daily bars only; one atomic fully-invested rebalance per decision."""
+"""Trader strategy v3: Screener 6-factor ensemble (quality-IC tilt, 2026-08-13).
+
+Ensemble from factors/factor_ensemble.json:
+  eurusd_beta_60d      w=0.214 dir=-1  low EURUSD-beta tilt (risk-appetite hedge)
+  rate_beta_cn10y_60d  w=0.201 dir=-1  low CN10Y-beta tilt (rate-hedge)
+  dn_mkt_beta_60d      w=0.195 dir=+1  low downside-market-beta (safe-haven)
+  mom_120d_skip5       w=0.180 dir=+1  120d momentum, skip 5d
+  mom_10d_skip5        w=0.121 dir=+1  10d momentum, skip 5d
+  vix_beta_cond_60x20  w=0.089 dir=-1  conditional VIX-beta * 20d VIX move
+
+Full-investment long-only 15-asset cross-sectional strategy; non-negative
+weights sum to 1 (cash=0). Rebalance cadence 10 trading days (handled by
+rebalance_to_weights horizon_days). Bearish views expressed by defensive tilt
+(XAU/US10Y/CN10Y + low-beta assets), never by cash or shorts.
+"""
 from math import isfinite
 import json
 from pathlib import Path
+
 import pandas as pd
-from alphacrafter.sim.utils import (get_account_dict, get_stock_daily_data,
-    get_index_daily_data, rebalance_to_weights, register_hook)
+from alphacrafter.sim.utils import (
+    get_account_dict,
+    get_stock_daily_data,
+    get_index_daily_data,
+    rebalance_to_weights,
+    register_hook,
+)
 
-# Exact admitted M=10 weights: defensive/tail 56%, recovery/persistence/trend 29%, macro 15%.
-FW = (.17, .15, .13, .11, .10, .08, .08, .07, .06, .05)
-DEF = {"XAU", "US10Y", "CN10Y"}
-DEF_W, CAP, TOP = .12, .15, 15
+N_ASSETS = 15
+CAP = 0.18          # per-asset weight cap
+FLOOR = 0.5 / N_ASSETS
+SPREAD = 0.14       # max score-driven spread above floor before vol tilt
+MIN_OBS = 40        # min obs for 60d beta factors
 
-def stock(a, n=145):
-    try: return get_stock_daily_data(a, days=n)
-    except Exception: return None
 
-def index(a, n=100):
-    try: return get_index_daily_data(a, days=n)
-    except Exception: return None
+def stock(a, n=170):
+    try:
+        return get_stock_daily_data(a, days=n)
+    except Exception:
+        return None
+
+
+def index(a, n=170):
+    try:
+        return get_index_daily_data(a, days=n)
+    except Exception:
+        return None
+
 
 def ranks(values, assets):
-    valid = sorted((float(v), a) for a, v in values.items() if v is not None and isfinite(float(v)))
-    out = {a: .5 for a in assets}
-    for i, (_, a) in enumerate(valid): out[a] = i / max(1, len(valid)-1)
+    valid = sorted((float(v), a) for a, v in values.items()
+                   if v is not None and isfinite(float(v)))
+    out = {a: 0.5 for a in assets}
+    for i, (_, a) in enumerate(valid):
+        out[a] = i / max(1, len(valid) - 1)
     return out
 
-def loading_contraction(y, x):
-    z = pd.concat([y.rename("y"), x.rename("x")], axis=1).dropna().tail(60)
-    def beta(n):
-        q=z.tail(n); var=float(q.x.var())
-        return float(q.y.cov(q.x)/var) if len(q)>=12 and var>1e-14 else None
-    new, old = beta(20), beta(60)
-    return old-new if new is not None and old is not None else None
 
-def capped_normalize(w, pref):
-    for _ in range(40):
-        excess=sum(max(0., x-CAP) for x in w.values())
-        w={a:min(CAP, max(0., x)) for a, x in w.items()}
-        room=[a for a,x in w.items() if x<CAP-1e-12]
-        if excess < 1e-12 or not room: break
-        den=sum(max(0.,pref.get(a,0.)) for a in room)
-        for a in room: w[a] += excess*(max(0.,pref.get(a,0.))/den if den else 1/len(room))
-    total=sum(w.values())
-    return {a:x/total for a,x in w.items()}
+def rolling_beta(y, x, win=60, min_obs=MIN_OBS):
+    z = pd.concat([y.rename("y"), x.rename("x")], axis=1).dropna().tail(win)
+    if len(z) < min_obs:
+        return None
+    var = float(z.x.var())
+    if var <= 1e-14:
+        return None
+    return float(z.y.cov(z.x) / var)
+
+
+def load_ensemble():
+    try:
+        raw = json.loads((Path(__file__).parent / "factors" / "factor_ensemble.json").read_text())
+        return [(str(it["factor_id"]), float(it["weight"]), int(it.get("direction", 1)))
+                for it in raw.get("selected_factors", [])
+                if isinstance(it, dict) and it.get("factor_id")]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def compute_factor_values(assets, closes, panel, eurusd_ret, vix_close):
+    """Raw cross-sectional factor values for the 6-factor ensemble."""
+    mkt = panel.mean(axis=1)
+    dn_x = mkt.clip(upper=0.0)
+    vix_ret = vix_close.pct_change() if vix_close is not None else None
+    vix_move = (float(vix_close.iloc[-1] / vix_close.iloc[-21] - 1.0)
+                if vix_close is not None and len(vix_close) >= 22 else None)
+    cn10y_ret = closes["CN10Y"].pct_change() if closes.get("CN10Y") is not None else None
+
+    f = {fid: {} for fid, _, _ in []}  # placeholder
+    vals = {
+        "mom_120d_skip5": {},
+        "mom_10d_skip5": {},
+        "dn_mkt_beta_60d": {},
+        "eurusd_beta_60d": {},
+        "rate_beta_cn10y_60d": {},
+        "vix_beta_cond_60x20": {},
+    }
+    for a in assets:
+        c = closes.get(a)
+        if c is not None and len(c) >= 126:
+            vals["mom_120d_skip5"][a] = float(c.iloc[-6] / c.iloc[-126] - 1.0)
+        if c is not None and len(c) >= 16:
+            vals["mom_10d_skip5"][a] = float(c.iloc[-6] / c.iloc[-16] - 1.0)
+        y = panel[a]
+        vals["dn_mkt_beta_60d"][a] = rolling_beta(y, dn_x)
+        if eurusd_ret is not None:
+            vals["eurusd_beta_60d"][a] = rolling_beta(y, eurusd_ret)
+        if cn10y_ret is not None:
+            vals["rate_beta_cn10y_60d"][a] = rolling_beta(y, cn10y_ret)
+        if vix_ret is not None and vix_move is not None:
+            b = rolling_beta(y, vix_ret)
+            vals["vix_beta_cond_60x20"][a] = -b * vix_move if b is not None else None
+    return vals
+
+
+def capped_normalize(w, cap=CAP):
+    for _ in range(60):
+        excess = sum(max(0.0, x - cap) for x in w.values())
+        w = {a: min(cap, max(0.0, x)) for a, x in w.items()}
+        room = [a for a, x in w.items() if x < cap - 1e-12]
+        if excess < 1e-12 or not room:
+            break
+        den = sum(w[a] for a in room)
+        for a in room:
+            w[a] += excess * (w[a] / den if den else 1.0 / len(room))
+    total = sum(w.values())
+    return {a: x / total for a, x in w.items()} if total > 0 else {a: 1.0 / len(w) for a in w}
+
+
+def compute_target(assets):
+    """Return (weights, forecast_returns, factor_ids, info)."""
+    frames = {a: stock(a) for a in assets}
+    closes = {a: (f.close.astype(float) if f is not None and "close" in f else None)
+              for a, f in frames.items()}
+    usable = [c.pct_change().rename(a) for a, c in closes.items() if c is not None and len(c) >= 30]
+    panel = (pd.concat(usable, axis=1, join="inner").dropna().tail(130)
+             if len(usable) >= 8 else pd.DataFrame())
+    if len(panel) < 50:
+        return ({a: 1.0 / len(assets) for a in assets},
+                {a: 0.0 for a in assets}, [], {"fallback": "short_panel"})
+
+    ef = index("EURUSD")
+    eurusd_ret = (ef.close.astype(float).pct_change()
+                  if ef is not None and "close" in ef else None)
+    vf = index("VIX")
+    vix_close = (vf.close.astype(float) if vf is not None and "close" in vf else None)
+
+    ens = load_ensemble()
+    factor_ids = [fid for fid, _, _ in ens]
+    if not factor_ids:
+        # defensive fallback: slight safe-haven tilt, zero forecast
+        w = {a: 1.0 / len(assets) for a in assets}
+        for a in ("XAU", "US10Y", "CN10Y"):
+            if a in w:
+                w[a] += 0.02
+        w = capped_normalize(w, cap=0.16)
+        return (w, {a: 0.0 for a in assets}, [], {"fallback": "no_ensemble"})
+
+    vals = compute_factor_values(assets, closes, panel, eurusd_ret, vix_close)
+
+    # composite score = sum(weight * direction * rank)
+    score = {a: 0.0 for a in assets}
+    for fid, wgt, drc in ens:
+        r = ranks(vals.get(fid, {}), assets)
+        for a in assets:
+            score[a] += wgt * drc * r[a]
+
+    s_vals = [score[a] for a in assets]
+    lo, hi = min(s_vals), max(s_vals)
+    vol20 = {a: max(float(panel[a].tail(20).std()), 0.004) for a in assets}
+
+    # base weight: floor + score-driven spread; then inverse-vol tilt
+    base = {a: FLOOR + SPREAD * ((score[a] - lo) / (hi - lo + 1e-12)) for a in assets}
+    tilted = {a: base[a] / (vol20[a] ** 0.5) for a in assets}
+    weights = capped_normalize(tilted)
+
+    # forecast returns (10-day proxy): z-scored score * typical 10d cross-sectional vol
+    mean_s = sum(s_vals) / len(s_vals)
+    std_s = (sum((v - mean_s) ** 2 for v in s_vals) / len(s_vals)) ** 0.5 or 1e-12
+    scale = float(panel.tail(60).std(axis=1, ddof=0).median()) * (10.0 ** 0.5) or 0.01
+    forecast_returns = {}
+    for a in assets:
+        z = max(-2.5, min(2.5, (score[a] - mean_s) / std_s))
+        forecast_returns[a] = z * scale
+    return weights, forecast_returns, factor_ids[:10], {
+        "scores": {a: round(float(score[a]), 4) for a in assets},
+        "scale": round(float(scale), 5),
+        "vol20": {a: round(float(v), 4) for a, v in vol20.items()},
+    }
+
 
 @register_hook
 def strategy_hook():
-    assets=list(get_account_dict()["watch_list"])
-    frames={a:stock(a) for a in assets}
-    closes={a:(f.close.astype(float) if f is not None and "close" in f and len(f)>=62 else None) for a,f in frames.items()}
-    usable=[c.pct_change().rename(a) for a,c in closes.items() if c is not None]
-    panel=pd.concat(usable,axis=1,join="inner").dropna().tail(100) if len(usable)>=8 else pd.DataFrame()
-    if len(panel)<61:
-        rebalance_to_weights(
-            {a:1/len(assets) for a in assets},
-            forecast_returns={a:0.0 for a in assets},
-            horizon_days=10,
-        ); return
-    market=panel.mean(axis=1); mv=float(market.var())
-    residual={a:panel[a]-(float(panel[a].cov(market)/mv)*market if mv>1e-14 else 0.) for a in panel}
-    vf=index("VIX"); vix=vf.close.astype(float).pct_change() if vf is not None and "close" in vf else None
-    oil,copper=closes.get("WTI"),closes.get("COPPER")
-    infl=(oil.pct_change()+copper.pct_change())*.5 if oil is not None and copper is not None else None
-    stress=vix.reindex(infl.index).clip(lower=0)*infl if vix is not None and infl is not None else None
-    commodity_rel=oil.pct_change()-copper.pct_change() if oil is not None and copper is not None else None
-    wealth=(1+market).cumprod(); mdd=wealth/wealth.rolling(60).max()-1
-    basket=panel[[a for a in DEF if a in panel]].mean(axis=1); dispersion=panel.std(axis=1)
-    high_disp=float(dispersion.tail(20).mean()) >= float(dispersion.tail(60).median())
-    beta={}; resilience={}; recovery={}; lpm={}; draw={}; macro={}; acorr={}; conditional={}; commodity={}; trend={}; vol={}
-    for a,e in residual.items():
-        ret=panel[a]; vol[a]=float(ret.tail(20).std())
-        z=pd.concat([e.rename("e"),basket.rename("b"),market.rename("m")],axis=1).dropna()
-        def downbeta(n):
-            q=z.tail(n); q=q[q.m<0]; var=float(q.b.var())
-            return float(q.e.cov(q.b)/var) if len(q)>=5 and var>1e-14 else None
-        new,old=downbeta(20),downbeta(60); beta[a]=old-new if new is not None and old is not None else None
-        recovery[a]=float(ret.tail(20).clip(upper=0).mean())-float(ret.iloc[:-20].tail(40).clip(upper=0).mean())
-        resilience[a]=loading_contraction(e,vix.clip(lower=0)**2) if vix is not None else None
-        macro[a]=loading_contraction(e,stress) if stress is not None else None
-        oc=float(ret.iloc[:-20].tail(40).corr(mdd.iloc[:-20].tail(40))); nc=float(ret.tail(20).corr(mdd.tail(20)))
-        draw[a]=oc-nc if isfinite(oc) and isfinite(nc) else None
-        neg=ret.tail(60).clip(upper=0); lpm[a]=-float((neg*neg).mean()**.5)
-        conditional[a]=recovery[a] if (high_disp and float(market.tail(20).mean())<0) else None
-        na,oa=float(e.tail(20).autocorr(1)),float(e.iloc[:-20].tail(40).autocorr(1))
-        acorr[a]=na-oa if isfinite(na) and isfinite(oa) else None
-        commodity[a]=loading_contraction(e,commodity_rel) if commodity_rel is not None else None
-        trend[a]=float(ret.tail(20).mean())/max(vol[a],.003)
-    factors=(beta,resilience,draw,lpm,recovery,acorr,macro,commodity,trend,conditional)
-    score={a:sum(x*ranks(f,assets)[a] for x,f in zip(FW,factors)) for a in assets}
-    selected=sorted(assets,key=lambda a:(score[a],a),reverse=True)[:TOP]
-    pref={a:.4*(2-i/max(1,TOP-1))/max(vol.get(a,.03) or .03,.003)+.6 for i,a in enumerate(selected) if a not in DEF}
-    nondef=[a for a in assets if a not in DEF]; den=sum(pref.get(a,0.) for a in nondef)
-    raw={a:(DEF_W if a in DEF else .64*pref.get(a,0.)/den) for a in assets} if den else {a:1/len(assets) for a in assets}
-    weights=capped_normalize(raw,pref)
-    weights[assets[-1]] += 1-sum(weights.values())
-    score_values = [float(score[a]) for a in assets]
-    score_mean = sum(score_values) / len(score_values)
-    score_std = (sum((value - score_mean) ** 2 for value in score_values) / len(score_values)) ** .5
-    return_scale = float(panel.tail(252).std(axis=1, ddof=0).median()) if len(panel) else .01
-    if not isfinite(return_scale) or return_scale <= 0: return_scale = .01
-    forecast_returns = {
-        a: ((float(score[a]) - score_mean) / max(score_std, 1e-12)) * return_scale
-        for a in assets
-    }
-    try:
-        ensemble = json.loads((Path(__file__).parent / "factor_ensemble.json").read_text())
-        factor_ids = [str(item["factor_id"]) for item in ensemble.get("selected_factors", []) if isinstance(item, dict) and item.get("factor_id")]
-    except (OSError, ValueError, TypeError):
-        factor_ids = []
+    assets = list(get_account_dict()["watch_list"])
+    weights, forecast_returns, factor_ids, info = compute_target(assets)
     rebalance_to_weights(
         weights,
         forecast_returns=forecast_returns,
-        factor_ids=factor_ids[:10],
+        factor_ids=factor_ids,
         horizon_days=10,
     )
+
+
+if __name__ == "__main__":
+    import sys
+    from alphacrafter.sim.utils import get_account_dict
+    _assets = list(get_account_dict()["watch_list"])
+    _w, _f, _ids, _info = compute_target(_assets)
+    print("factor_ids:", _ids)
+    print("info:", json.dumps(_info, indent=1)[:1500])
+    print("weights sum:", round(sum(_w.values()), 6))
+    for _a in _assets:
+        print(f"  {_a:10s} w={_w[_a]:.4f} f={_f[_a]:+.5f}")

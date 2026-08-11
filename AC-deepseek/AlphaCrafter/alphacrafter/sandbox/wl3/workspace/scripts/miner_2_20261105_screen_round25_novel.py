@@ -21,6 +21,7 @@ Spearman rho. Gates: |IC|>=0.007, |ICIR|>=0.084, max_abs_library_correlation<0.5
 import sys, time, json, warnings
 warnings.filterwarnings('ignore')
 sys.path.insert(0, 'scripts')
+import math
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -107,7 +108,7 @@ def _perm_entropy(x, order=3, lag=1):
         return np.nan
     p = np.array(list(patterns.values()), dtype=float) / tot
     ent = -np.sum(p * np.log(p))
-    return ent / np.log(np.math.factorial(order))
+    return ent / math.log(math.factorial(order))
 
 
 def _lz_complexity(bits):
@@ -274,7 +275,16 @@ for fid, fn in CANDIDATES:
         print(f'{fid}: factor_fn EXCEPTION {e}', flush=True)
         results[fid] = {'ok': False, 'error': str(e)}
         continue
-    m = validate_factor(fid, panel, prices)
+    if panel.shape[0] < 100 or panel.shape[1] < 8:
+        print(f'{fid}: panel too small {panel.shape} -> skip', flush=True)
+        results[fid] = {'ok': False, 'metrics': None}
+        continue
+    try:
+        m = validate_factor(fid, panel, prices)
+    except Exception as e:
+        print(f'{fid}: validate_factor EXCEPTION {type(e).__name__} {e}', flush=True)
+        results[fid] = {'ok': False, 'error': str(e)}
+        continue
     if m is None:
         print(f'{fid}: insufficient data -> None', flush=True)
         results[fid] = {'ok': False, 'metrics': None}

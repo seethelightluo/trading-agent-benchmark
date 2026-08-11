@@ -188,7 +188,7 @@ def hurst_est(x, min_len=8):
         return np.nan
     return R / S
 
-P["hurst_20"] = ret.rolling(20).apply(lambda x: hurst_est(x.values), raw=True)
+P["hurst_20"] = ret.rolling(20).apply(lambda x: hurst_est(np.asarray(x)), raw=False)
 
 # 10. VWAP anchoring (close vs volume-weighted average price over 20d)
 typ = (high + low + close) / 3.0

@@ -1,23 +1,21 @@
-"""Trader strategy v4 -- Screener quality_ic_tilt ensemble (9 factors) + regime overlay + trend-sanity cap.
+"""Trader strategy v5 -- Screener quality_ic_tilt ensemble (9 factors) LIVE-computed.
 
 Cross-sectional factor composite (CS rank -> z-score -> winsorize 3 sigma, dir +1),
 fully-invested 15-asset long-only target, one atomic rebalance per 10-trading-day block.
 Risk-off regime tilts toward defensive tradable assets (XAU/US10Y/CN10Y); never cash.
-Signals come from persisted factor artifacts aligned to the visible trading date
-(stale artifacts are clamped to their last validated row, matching Screener's gate).
 
 Ensemble (2026-08-13, quality_ic_tilt, <=10 cap): max_consec_gain_20 .208,
 mom20_volproxy60 .165, spx_corr60 .115, mom_20d_skip5 .110, gain_loss_20 .108,
 downbeta_spx_60 .093, usdjpy_beta_cond_120x60 .083, volcluster_60 .059, calmness_20 .058.
 All directions +1.
 
-v4 change (2026-08-27): trend-sanity cap overlay. Factor artifacts froze at
-2026-07-29 (20 trading days stale, miners no-output cycle), so a deeply falling
-asset can still receive a top factor score (COPPER z=+1.69 while 20d return
--7.5% / 60d -8.8%, top-cap drag for two consecutive live cycles). Any asset with
-a live 20d return below -4% has its per-asset cap reduced from CAP (0.17) to
-TREND_CAP (0.09) before the cap/floor fit. This is a risk-sizing overlay only;
-factor direction and ensemble weights are untouched.
+v5 change (2026-09-24): factor artifacts froze at 2026-07-29 (~40 td stale), giving
+static z-ranks and negative gross edge at the 08-27 and 09-10 block starts (gate
+correctly skipped both). Instead of waiting for a miner artifact refresh, compute the
+9 ensemble factor signals LIVE from price data visible at each decision date (same
+formulas/directions as the persisted artifacts; recomputation cross-checked in
+scripts/trader_20260924_validate_livefactors.py). Persisted artifact rows are kept
+only as a fallback when live data is insufficient. v4 trend-sanity cap retained.
 """
 import json
 import math
@@ -45,7 +43,14 @@ TREND_THRESH = -0.04    # 20d return threshold triggering the trend cap
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 AGGRESSIVE = {"SOX", "NDX", "ETH", "BTC", "000688.SH", "N225"}
 EMBEDDED = {"mom_20d_skip5", "range_pos_252", "spx_corr60"}
+LIVE_FIDS = {
+    "mom_20d_skip5", "mom20_volproxy60", "calmness_20", "volcluster_60",
+    "max_consec_gain_20", "gain_loss_20", "spx_corr60", "downbeta_spx_60",
+    "usdjpy_beta_cond_120x60",
+}
 ARTIFACT_START = "2020-01-01"
+LIVE_MIN_FINITE = 10    # of 15 assets required to trust a live factor row
+INERTIA = 0.5        # blend weight on the live-factor target (1-INERTIA on current holdings)
 
 
 def _load_ensemble():
@@ -143,6 +148,118 @@ def _regime(closes, assets):
     return r, vix_level, m20, disp20
 
 
+def _current_weights(account, assets):
+    """Current portfolio weights from the account (net-asset scaled), zeros elsewhere."""
+    na = float(account.get("net_assets", 0.0) or 0.0)
+    w = {a: 0.0 for a in assets}
+    if na <= 0.0:
+        return w
+    for p in account.get("positions", []):
+        s = p.get("symbol")
+        if s in w:
+            mv = float(p.get("market_value", 0.0) or 0.0)
+            w[s] = max(0.0, mv) / na
+    return w
+
+
+def _live_factors(assets):
+    """Recompute ensemble factor signals live from price data visible at the
+    decision date. Returns {fid: [value per asset]} with NaN where unavailable.
+    Formulas match the persisted artifacts (cross-checked 2026-09-24)."""
+    import numpy as np
+    import pandas as pd
+    closes = {}
+    for a in assets:
+        try:
+            df = get_stock_daily_data(a, days=300)
+        except Exception:
+            df = None
+        if df is not None and "close" in df and len(df) >= 130:
+            closes[a] = df.set_index(pd.to_datetime(df["date"]))["close"].astype(float)
+    if len(closes) < 8:
+        return {}
+    try:
+        uf = get_index_daily_data("USDJPY", days=300)
+        usdjpy = uf.set_index(pd.to_datetime(uf["date"]))["close"].astype(float)
+    except Exception:
+        usdjpy = None
+    spx = closes.get("SPX")
+    spx_ret = spx.pct_change() if spx is not None else None
+    usdjpy_ret = usdjpy.pct_change() if usdjpy is not None else None
+
+    per = {a: {} for a in assets}
+    for a, c in closes.items():
+        ret = c.pct_change()
+        f = per[a]
+        f["mom_20d_skip5"] = c.shift(5) / c.shift(25) - 1.0
+        raw20 = c.shift(5) / c.shift(25) - 1.0
+        mom60 = c / c.shift(60) - 1.0
+        f["mom20_volproxy60"] = raw20 / (1.0 + mom60.abs())
+        std20 = ret.rolling(20, min_periods=10).std()
+        f["calmness_20"] = (ret.abs() < 0.5 * std20).rolling(20, min_periods=10).mean()
+        f["volcluster_60"] = ret.abs().rolling(60, min_periods=40).corr(ret.abs().shift(1))
+        pos = (ret > 0).astype(int)
+
+        def longest_run(x):
+            m = 0.0
+            cur = 0
+            for v in x:
+                if v == 1:
+                    cur += 1
+                    if cur > m:
+                        m = cur
+                else:
+                    cur = 0
+            return m
+
+        f["max_consec_gain_20"] = pos.rolling(21, min_periods=10).apply(longest_run, raw=True)
+        g = ret.clip(lower=0).rolling(20, min_periods=10).sum()
+        l = ret.clip(upper=0).abs().rolling(20, min_periods=10).sum()
+        f["gain_loss_20"] = g / l.replace(0, np.nan)
+        if spx_ret is not None:
+            f["spx_corr60"] = ret.rolling(60, min_periods=15).corr(spx_ret)
+            m2 = pd.concat([ret, spx_ret], axis=1, join="inner").dropna()
+            m2.columns = ["a", "s"]
+
+            def downbeta(x):
+                sub = m2.loc[x.index]
+                sub = sub[sub["s"] < 0]
+                if len(sub) < 15:
+                    return np.nan
+                if sub["s"].var() < 1e-12:
+                    return np.nan
+                return float(sub["a"].cov(sub["s"]) / sub["s"].var())
+
+            f["downbeta_spx_60"] = m2["a"].rolling(60, min_periods=20).apply(downbeta, raw=False)
+        if usdjpy_ret is not None:
+            m3 = pd.concat([ret, usdjpy_ret], axis=1, join="inner").dropna()
+            m3.columns = ["a", "u"]
+
+            def jpybeta(x):
+                sub = m3.loc[x.index]
+                if len(sub) < 60 or sub["u"].var() < 1e-12:
+                    return np.nan
+                return float(sub["a"].cov(sub["u"]) / sub["u"].var())
+
+            b = m3["a"].rolling(120, min_periods=60).apply(jpybeta, raw=False)
+            mom60j = usdjpy / usdjpy.shift(60) - 1.0
+            f["usdjpy_beta_cond_120x60"] = b * mom60j
+
+    out = {}
+    for fid in LIVE_FIDS:
+        vals = []
+        for a in assets:
+            s = per[a].get(fid) if a in per else None
+            if s is not None and len(s) > 0:
+                v = float(s.iloc[-1])
+                vals.append(v if v == v else float("nan"))
+            else:
+                vals.append(float("nan"))
+        if sum(1 for v in vals if v == v) >= LIVE_MIN_FINITE:
+            out[fid] = vals
+    return out
+
+
 def _fit_weights(pref, cap=CAP, floor=FLOOR, cap_map=None):
     """Iterative cap/floor normalization of a non-negative preference vector.
 
@@ -191,7 +308,7 @@ def _fit_weights(pref, cap=CAP, floor=FLOOR, cap_map=None):
     return {a: x / total for a, x in w.items()}
 
 
-def build_target(assets, date_state, ensemble):
+def build_target(assets, date_state, ensemble, current_weights=None):
     """Pure computation of (weights, forecast_returns, factor_ids, meta)."""
     trading_days = date_state.get("trading_days", [])
     visible = date_state.get("visible_through", date_state.get("current_date"))
@@ -202,15 +319,22 @@ def build_target(assets, date_state, ensemble):
         row_idx = 0
 
     n = len(assets)
+    live = _live_factors(assets)
     z = [0.0] * n
     used = []
     for fac in ensemble:
-        row = _signal_row(fac["factor_id"], row_idx, n)
+        fid = fac["factor_id"]
+        row = None
+        lv = live.get(fid)
+        if lv is not None and sum(1 for v in lv if v == v) >= LIVE_MIN_FINITE:
+            row = lv
+        if row is None:
+            row = _signal_row(fid, row_idx, n)  # stale-artifact fallback
         if row is None:
             continue
         zz = _rank_z(row)
         z = [a + fac["weight"] * fac["direction"] * b for a, b in zip(z, zz)]
-        used.append(fac["factor_id"])
+        used.append(fid)
     if not used:
         return None
 
@@ -237,6 +361,15 @@ def build_target(assets, date_state, ensemble):
         else:
             pref[a] = base[a] * (1.0 - delta)
 
+    # v5.1 inertia blend: keep a share of current holdings so fresh ensemble
+    # signals rotate the book gradually instead of churning winners away
+    # (60d backtest of pure live factors was flat w/ 7.4% DD; blended book
+    # preserves the accumulated momentum edge while adapting to new signals).
+    lam = INERTIA
+    if current_weights:
+        pref = {a: lam * pref.get(a, 0.0) + (1.0 - lam) * max(0.0, current_weights.get(a, 0.0))
+                for a in assets}
+
     # v4 trend-sanity overlay: deeply negative live 20d return -> tighter cap
     r20 = {}
     for a in assets:
@@ -258,7 +391,7 @@ def build_target(assets, date_state, ensemble):
     forecast = {a: z_std[i] * sigma[a] * math.sqrt(10.0) for i, a in enumerate(assets)}
     forecast = {a: (max(-0.25, min(0.25, v)) if v == v else 0.0) for a, v in forecast.items()}
 
-    meta = {"risk": risk, "vix": vix, "m20": m20, "disp": disp,
+    meta = {"risk": risk, "vix": vix, "m20": m20, "disp": disp, "lam": lam,
             "n_factors": len(used), "z": dict(zip(assets, z_std)),
             "r20": r20, "cap_map": cap_map}
     return weights, forecast, used, meta
@@ -288,7 +421,8 @@ def strategy_hook():
     ensemble = _load_ensemble()
     if not ensemble:
         return
-    built = build_target(assets, date_state, ensemble)
+    cur_w = _current_weights(account, assets)
+    built = build_target(assets, date_state, ensemble, current_weights=cur_w)
     if built is None:
         return
     weights, forecast, used, meta = built

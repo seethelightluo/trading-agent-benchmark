@@ -1,14 +1,16 @@
 """Screener ensemble strategy, trader 2026-11-05 refresh.
 
-Cross-sectional factor ensemble (quality_ic_tilt, SPX-beta cluster cap 0.32)
-drives a fully-invested 15-asset long-only target. One proposal per 10-trading-
-day block (first day only); the rebalance helper applies the 3bp gate.
+Cross-sectional factor ensemble (quality_ic_tilt) drives a fully-invested
+15-asset long-only target. One proposal per 10-trading-day block (first day
+only); the rebalance helper applies the 3bp gate.
 
-2026-11-05 ensemble refresh: hilo_vol_ratio_20 added (dir +1), vix_beta_cond
-dropped, down_beta_60 cut 0.306->0.220, cn10y_beta_60 raised 0.085->0.154.
+Ensemble (2026-11-05): down_beta_60(+1) cn10y_beta_60(-1) spx_beta_60(+1)
+vol_adj_mom_20_60(+1) dxy_beta_cond_60x20(+1) hs300_beta_60(-1)
+hilo_vol_ratio_20(+1) intraday_ret_skew_20(+1) comm_basket_beta_60(+1)
+vol_of_vol20x60(+1). vix_beta_cond_60x20 and dd_duration_120_resid dropped.
 
-Weighting: rank-linear tilt * inverse-vol (sqrt dampened), then defensive
-floor, then water-fill cap at 0.18. Sum-to-1, cash 0, fractional quantities.
+Weighting: rank-linear tilt * inverse-vol (sqrt dampened), defensive floor,
+water-fill cap at 0.18. Sum-to-1, cash 0, fractional quantities.
 """
 import json
 import math
@@ -172,73 +174,71 @@ def strategy_hook():
     if len(panel) < 70:
         return
 
+    ens = load_ensemble()
+    ens_ids = {fid for fid, _, _ in ens}
+
     r_spx = ret["SPX"]
     r_300 = ret["000300.SH"]
     d_cn = close["CN10Y"].pct_change()
+    r_comm = pd.concat(
+        [ret["XAU"].rename("XAU"), ret["COPPER"].rename("COPPER"), ret["WTI"].rename("WTI")],
+        axis=1, join="inner").mean(axis=1)
     dxy = series(get_df("DXY"))
     vix = series(get_df("VIX"))
     r_dxy = dxy.pct_change() if dxy is not None else None
     r_vix = vix.pct_change() if vix is not None else None
 
-    # ---- factor signals -------------------------------------------------
-    sig = {fid: {} for fid, _, _ in load_ensemble()} or {}
+    # ---- factor signals (only those in the active ensemble) --------------
+    sig = {fid: {} for fid in ens_ids}
     for a in assets:
         c, o, r = close[a], open_[a], ret[a]
-        sig["down_beta_60"][a] = down_beta(r, r_spx)
-        sig["spx_beta_60"][a] = beta_last(r, r_spx)
-        sig["hs300_beta_60"][a] = beta_last(r, r_300)
-        sig["cn10y_beta_60"][a] = beta_last(r, d_cn)
-        sig["vol_adj_mom_20_60"][a] = (
-            (c.iloc[-6] / c.iloc[-26] - 1.0) / max(float(r.tail(60).std()), 1e-6)
-            if len(c) >= 30 else None)
-        if r_dxy is not None:
-            b = beta_last(r, r_dxy)
-            sig["dxy_beta_cond_60x20"][a] = (
-                b * (dxy.iloc[-1] / dxy.iloc[-21] - 1.0) if b is not None else None)
-        else:
-            sig["dxy_beta_cond_60x20"][a] = None
-        if r_vix is not None:
-            b = beta_last(r, r_vix)
-            sig["vix_beta_cond_60x20"][a] = (
-                -b * (vix.iloc[-1] / vix.iloc[-21] - 1.0) if b is not None else None)
-        else:
-            sig["vix_beta_cond_60x20"][a] = None
-        # hilo_vol_ratio_20: (max20-min20)/close / std20(ret)  [dir +1]
-        hi20 = c.rolling(20).max()
-        lo20 = c.rolling(20).min()
-        sig["hilo_vol_ratio_20"][a] = (
-            float((hi20.iloc[-1] - lo20.iloc[-1]) / max(c.iloc[-1], 1e-9)
-                  / max(float(r.tail(20).std()), 1e-6))
-            if len(c) >= 25 else None)
-        if o is not None:
-            ir = (c / o - 1.0).dropna().tail(20)
-            sig["intraday_ret_skew_20"][a] = float(ir.skew()) if len(ir) >= 5 else None
-        else:
-            sig["intraday_ret_skew_20"][a] = None
-        rv20 = r.rolling(20).std()
-        sig["vol_of_vol20x60"][a] = float(rv20.tail(60).std()) if len(rv20.dropna()) >= 40 else None
-        # dd_duration_120_resid
-        c120 = c.tail(126)
-        prev_max = c120.shift(1).rolling(120, min_periods=60).max()
-        hit = (c120 > prev_max) & prev_max.notna()
-        idx_hit = np.where(hit.values)[0]
-        days = (len(c120) - 1 - idx_hit[-1]) if len(idx_hit) else 120
-        y = math.log1p(max(0, days))
-        sig["dd_duration_120_resid"][a] = y
-
-    # per-date cross-sectional orthogonalization of dd_duration vs mom120
-    mom_vals = {a: (close[a].iloc[-6] / close[a].iloc[-121] - 1.0
-                    if len(close[a]) >= 122 else 0.0) for a in assets}
-    ys = np.array([sig["dd_duration_120_resid"][a] for a in assets], dtype=float)
-    xs = np.array([mom_vals[a] for a in assets], dtype=float)
-    xm, ym = xs.mean(), ys.mean()
-    vx = float(np.var(xs))
-    b = float(np.cov(xs, ys)[0, 1] / vx) if vx > 1e-14 else 0.0
-    for i, a in enumerate(assets):
-        sig["dd_duration_120_resid"][a] = ys[i] - b * (xs[i] - xm)
+        if "down_beta_60" in ens_ids:
+            sig["down_beta_60"][a] = down_beta(r, r_spx)
+        if "spx_beta_60" in ens_ids:
+            sig["spx_beta_60"][a] = beta_last(r, r_spx)
+        if "hs300_beta_60" in ens_ids:
+            sig["hs300_beta_60"][a] = beta_last(r, r_300)
+        if "cn10y_beta_60" in ens_ids:
+            sig["cn10y_beta_60"][a] = beta_last(r, d_cn)
+        if "comm_basket_beta_60" in ens_ids:
+            sig["comm_basket_beta_60"][a] = beta_last(r, r_comm)
+        if "vol_adj_mom_20_60" in ens_ids:
+            sig["vol_adj_mom_20_60"][a] = (
+                (c.iloc[-6] / c.iloc[-26] - 1.0) / max(float(r.tail(60).std()), 1e-6)
+                if len(c) >= 30 else None)
+        if "dxy_beta_cond_60x20" in ens_ids:
+            if r_dxy is not None:
+                b = beta_last(r, r_dxy)
+                sig["dxy_beta_cond_60x20"][a] = (
+                    b * (dxy.iloc[-1] / dxy.iloc[-21] - 1.0) if b is not None else None)
+            else:
+                sig["dxy_beta_cond_60x20"][a] = None
+        if "vix_beta_cond_60x20" in ens_ids:
+            if r_vix is not None:
+                b = beta_last(r, r_vix)
+                sig["vix_beta_cond_60x20"][a] = (
+                    -b * (vix.iloc[-1] / vix.iloc[-21] - 1.0) if b is not None else None)
+            else:
+                sig["vix_beta_cond_60x20"][a] = None
+        if "hilo_vol_ratio_20" in ens_ids:
+            hi20 = c.rolling(20).max()
+            lo20 = c.rolling(20).min()
+            sig["hilo_vol_ratio_20"][a] = (
+                float((hi20.iloc[-1] - lo20.iloc[-1]) / max(c.iloc[-1], 1e-9)
+                      / max(float(r.tail(20).std()), 1e-6))
+                if len(c) >= 25 else None)
+        if "intraday_ret_skew_20" in ens_ids:
+            if o is not None:
+                ir = (c / o - 1.0).dropna().tail(20)
+                sig["intraday_ret_skew_20"][a] = float(ir.skew()) if len(ir) >= 5 else None
+            else:
+                sig["intraday_ret_skew_20"][a] = None
+        if "vol_of_vol20x60" in ens_ids:
+            rv20 = r.rolling(20).std()
+            sig["vol_of_vol20x60"][a] = (
+                float(rv20.tail(60).std()) if len(rv20.dropna()) >= 40 else None)
 
     # ---- composite score (direction preserved) --------------------------
-    ens = load_ensemble()
     score = {a: 0.0 for a in assets}
     for fid, w, d in ens:
         rk = cs_rank(sig.get(fid, {}), assets)
