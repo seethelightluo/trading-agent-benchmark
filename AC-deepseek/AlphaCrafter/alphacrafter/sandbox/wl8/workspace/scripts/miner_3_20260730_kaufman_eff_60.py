@@ -45,9 +45,8 @@ def main():
     if out is None:
         return
     metrics, record = out
-    with open(f"factors/{record['factor_id']}.json", "w") as f:
-        json.dump(record, f, indent=1)
-    print(f"[persist] wrote factors/{record['factor_id']}.json status={record['validation']['status']}")
+    from miner_3_20260730_common import persist_factor
+    persist_factor(record, factor)
 
 
 if __name__ == "__main__":

@@ -3575,3 +3575,132 @@ def strategy_hook():
 ⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
 ⚙️ Executing 1 tool call(s)...
   ▶️ shell({'command': 'python - <<\'EOF\'\nimport pandas as pd, numpy as np, glob, os\n\nassets = [\'000300.SH\',\'000688.SH\',\'SPX\',\'HSI\',\'N225\',\'SX5E\',\'SOX\',\'NDX\',\'XAU\',\'COPPER\',\'WTI\',\'BTC\',\'ETH\',\'US10Y\',\'CN10Y\']\ndata = {}\nfor a in assets:\n    p = f\'../persistent/stock_data/{a}.csv\'\n    df = pd.read_csv(p, parse_dates=[\'date\'] if \'date\' in pd.read_csv(p, nrows=1).columns else None)\n    df.columns = [c.strip().lower() for c in df.columns]\n    df = df.sort_values(\'date\').set_index(\'date\')\n    data[a] = df[\'close\'].astype(float)\n\npx = pd.DataFrame(data).dropna(how=\'all\')\npx = px.sort_index()\nprint("Date range:", px.index.min(), "->", px.index.max(), "rows:", len(px))\nret = px.pct_change()\n\nlast = px.index[-1]\nprint("\\n=== As of", last.date(), "===")\n\n# recent returns\nfor lb, label in [(21,\'1M\'), (63,\'3M\'), (126,\'6M\')]:\n    r = px.iloc[-1]/px.iloc[-1-lb] - 1 if len(px) > lb else np.nan\n    print(f"{label} ret: " + "  ".join(f"{a}:{r[a]*100:+.1f}%" for a in assets))\n\n# realized vol (annualized, 20d and 60d)\nvol20 = ret.tail(20).std()*np.sqrt(252)\nvol60 = ret.tail(60).std()*np.sqrt(252)\nprint("\\nAnn vol 20d:", {a: round(vol20[a]*100,1) for a in assets})\nprint("Ann vol 60d:", {a: round(vol60[a]*100,1) for a in assets})\nprint("Mean ann vol 20d: %.1f%%  60d: %.1f%%" % (vol20.mean()*100, vol60.mean()*100))\n\n# cross-sectional dispersion\ndisp = ret.std(axis=1)\nprint("\\nCross-section daily dispersion: last20 mean %.3f%% vs 60d median %.3f%%" % (disp.tail(20).mean()*100, disp.tail(60).median()*100))\n\n# VIX\ntry:\n    vix = pd.read_csv(\'../persistent/index_data/VIX.csv\')\n    vix.columns = [c.strip().lower() for c in vix.columns]\n    vix[\'date\'] = pd.to_datetime(vix[\'date\'])\n    vix = vix.sort_values(\'date\').set_index(\'date\')\n    v = vix[\'close\'].astype(float)\n    print("\\nVIX: last=%.1f, 20d ago=%.1f, 60d ago=%.1f, max90d=%.1f" % (v.iloc[-1], v.iloc[-21], v.iloc[-61], v.tail(90).max()))\nexcept Exception as e:\n    print("VIX err", e)\n\n# trends: 120d momentum and MA20 vs MA60 slope\nfor a in assets:\n    s = px[a].dropna()\n    if len(s) < 130: continue\n    mom120 = s.iloc[-1]/s.iloc[-126]-1\n    ma20, ma60 = s.tail(20).mean(), s.tail(60).mean()\n    print(f"{a}: mom120={mom120*100:+.1f}%  MA20/MA60={ma20/ma60-1:+.2%}  {\'UP\' if ma20>ma60 else \'DOWN\'}")\n\n# correlation regime: average pairwise corr of equity block vs full\neq = [\'SPX\',\'NDX\',\'SOX\',\'SX5E\',\'N225\',\'HSI\',\'000300.SH\',\'000688.SH\']\nc = ret.tail(60).corr()\nprint("\\nAvg pairwise corr full (60d): %.2f" % c.values[np.triu_indices_from(c.values,1)].mean())\nce = c.loc[eq,eq].values\nprint("Avg pairwise corr equity block (60d): %.2f" % ce[np.triu_indices_from(ce,1)].mean())\nEOF'})
+  ✅ shell output: 
+
+ ✅ Output:
+Date range: 2020-01-01 00:00:00 -> 2035-12-31 00:00:00 rows: 4856
+
+=== As of 2035-12-31 ===
+1M ret: 000300.SH:+9.9%  000688.SH:+0.0%  SPX:-7.8%  HSI:+3.7%  N225:-7.1%  SX5E:+1.8%  SOX:+18.3%  NDX:-4.4%  XAU:-11.0%  COPPER:+1.0%  WTI:-3.0%  BTC:-18.2%  ETH:-17.7%  US10Y:+2.4%  CN10Y:+0.0%
+3M ret: 000300.SH:+17.1%  000688.SH:+0.0%  SPX:-4.3%  HSI:-13.2%  N225:+2.7%  SX5E:+10.2%  SOX:-2.0%  NDX:+1.5%  XAU:-3.4%  COPPER:-16.4%  WTI:+19.7%  BTC:-22.6%  ETH:-15.0%  US10Y:-5.7%  CN10Y:+0.0%
+6M ret: 000300.SH:+3.7%  000688.SH:+0.0%  SPX:+1.5%  HSI:-18.4%  N225:-1.8%  SX5E:+16.8%  SOX:+21.3%  NDX:-2.8%  XAU:-10.8%  COPPER:-23.9%  WTI:+25.9%  BTC:-34.0%  ETH:-24.8%  US10Y:+4.8%  CN10Y:+0.0%
+
+Ann vol 20d: {'000300.SH': np.float64(20.6), '000688.SH': np.float64(0.0), 'SPX': np.float64(16.9), 'HSI': np.float64(24.8), 'N225': np.float64(30.7), 'SX5E': np.float64(21.9), 'SOX': np.float64(28.1), 'NDX': np.float64(25.7), 'XAU': np.float64(18.5), 'COPPER': np.float64(26.5), 'WTI': np.float64(51.5), 'BTC': np.float64(58.1), 'ETH': np.float64(72.8), 'US10Y': np.float64(21.9), 'CN10Y': np.float64(0.0)}
+Ann vol 60d: {'000300.SH': np.float64(20.2), '000688.SH': np.float64(0.0), 'SPX': np.float64(20.7), 'HSI': np.float64(25.9), 'N225': np.float64(28.6), 'SX5E': np.float64(19.8), 'SOX': np.float64(34.6), 'NDX': np.float64(26.6), 'XAU': np.float64(16.9), 'COPPER': np.float64(25.6), 'WTI': np.float64(52.4), 'BTC': np.float64(57.6), 'ETH': np.float64(72.9), 'US10Y': np.float64(20.9), 'CN10Y': np.float64(0.0)}
+Mean ann vol 20d: 27.9%  60d: 28.2%
+
+Cross-section daily dispersion: last20 mean 2.057% vs 60d median 2.012%
+
+VIX: last=20.7, 20d ago=26.6, 60d ago=26.1, max90d=39.0
+000300.SH: mom120=+5.2%  MA20/MA60=+7.08%  UP
+000688.SH: mom120=+0.0%  MA20/MA60=+0.00%  UP
+SPX: mom120=+1.8%  MA20/MA60=-3.85%  DOWN
+HSI: mom120=-17.9%  MA20/MA60=-6.42%  DOWN
+N225: mom120=-1.8%  MA20/MA60=-0.53%  DOWN
+SX5E: mom120=+15.9%  MA20/MA60=+2.60%  UP
+SOX: mom120=+23.1%  MA20/MA60=+0.37%  UP
+NDX: mom120=-2.5%  MA20/MA60=-2.04%  DOWN
+XAU: mom120=-10.9%  MA20/MA60=-1.28%  DOWN
+COPPER: mom120=-26.8%  MA20/MA60=-3.44%  DOWN
+WTI: mom120=+33.7%  MA20/MA60=+12.25%  UP
+BTC: mom120=-30.9%  MA20/MA60=-7.88%  DOWN
+ETH: mom120=-24.0%  MA20/MA60=-8.48%  DOWN
+US10Y: mom120=+7.7%  MA20/MA60=+0.58%  UP
+CN10Y: mom120=+0.0%  MA20/MA60=-0.00%  DOWN
+
+Avg pairwise corr full (60d): nan
+Avg pairwise corr equity block (60d): nan
+
+────────────────────────────────────────
+🔄 Iteration 12/15
+────────────────────────────────────────
+📤 API Request - 59 messages
+📥 API Response - 1517 tokens, $0.000000
+🔧 Tool calls: ['shell']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)
+⚙️ Executing 1 tool call(s)...
+  ▶️ shell({'command': 'python - <<\'EOF\'\nimport pandas as pd, numpy as np\n\nCUTOFF = \'2026-07-29\'\nassets = [\'000300.SH\',\'000688.SH\',\'SPX\',\'HSI\',\'N225\',\'SX5E\',\'SOX\',\'NDX\',\'XAU\',\'COPPER\',\'WTI\',\'BTC\',\'ETH\',\'US10Y\',\'CN10Y\']\ndata = {}\nfor a in assets:\n    df = pd.read_csv(f\'../persistent/stock_data/{a}.csv\')\n    df.columns = [c.strip().lower() for c in df.columns]\n    df[\'date\'] = pd.to_datetime(df[\'date\'])\n    df = df.sort_values(\'date\').set_index(\'date\')\n    data[a] = df[\'close\'].astype(float)\n\npx = pd.DataFrame(data).dropna(how=\'all\').sort_index()\npx = px[px.index <= CUTOFF]\nprint("Date range:", px.index.min().date(), "->", px.index.max().date(), "rows:", len(px))\nret = px.pct_change()\n\nprint("\\n=== As of", px.index[-1].date(), "===")\nfor lb, label in [(21,\'1M\'), (63,\'3M\'), (126,\'6M\')]:\n    if len(px) <= lb: continue\n    r = px.iloc[-1]/px.iloc[-1-lb] - 1\n    print(f"{label} ret: " + "  ".join(f"{a}:{r[a]*100:+.1f}%" for a in assets))\n\nvol20 = ret.tail(20).std()*np.sqrt(252)\nvol60 = ret.tail(60).std()*np.sqrt(252)\nprint("\\nAnn vol 20d:", {a: round(vol20[a]*100,1) for a in assets})\nprint("Mean ann vol 20d: %.1f%%  60d: %.1f%%" % (vol20.mean()*100, vol60.mean()*100))\ndisp = ret.std(axis=1)\nprint("Cross-section daily dispersion: last20 mean %.3f%% vs 60d median %.3f%%" % (disp.tail(20).mean()*100, disp.tail(60).median()*100))\n\nvix = pd.read_csv(\'../persistent/index_data/VIX.csv\')\nvix.columns = [c.strip().lower() for c in vix.columns]\nvix[\'date\'] = pd.to_datetime(vix[\'date\'])\nv = vix.sort_values(\'date\').set_index(\'date\')[\'close\'].astype(float)\nv = v[v.index <= CUTOFF]\nprint("\\nVIX: last=%.1f, 20d ago=%.1f, 60d ago=%.1f, max90d=%.1f" % (v.iloc[-1], v.iloc[-21], v.iloc[-61], v.tail(90).max()))\n\nprint("\\nTrend (MA20 vs MA60) & 120d momentum:")\nfor a in assets:\n    s = px[a].dropna()\n    if len(s) < 130: continue\n    mom120 = s.iloc[-1]/s.iloc[-126]-1\n    ma20, ma60 = s.tail(20).mean(), s.tail(60).mean()\n    print(f"  {a}: mom120={mom120*100:+6.1f}%  MA20/MA60={ma20/ma60-1:+7.2%}  {\'UP\' if ma20>ma60 else \'DOWN\'}")\n\neq = [\'SPX\',\'NDX\',\'SOX\',\'SX5E\',\'N225\',\'HSI\',\'000300.SH\']\nc = ret.tail(60).corr()\ntri = np.triu_indices_from(c.values,1)\nprint("\\nAvg pairwise corr full (60d): %.2f" % np.nanmean(c.values[tri]))\nce = c.loc[eq,eq].values\nprint("Avg pairwise corr equity block (60d): %.2f" % np.nanmean(ce[np.triu_indices_from(ce,1)]))\n# dispersion of 60d cumulative returns (cross-sectional)\ncum60 = (1+ret.tail(60)).prod()-1\nprint("Cross-sectional 60d cum ret: min %.1f%% max %.1f%% std %.1f%%" % (cum60.min()*100, cum60.max()*100, cum60.std()*100))\nEOF'})
+  ✅ shell output: 
+
+ ✅ Output:
+Date range: 2020-01-01 -> 2026-07-29 rows: 2398
+
+=== As of 2026-07-29 ===
+1M ret: 000300.SH:+nan%  000688.SH:+nan%  SPX:+nan%  HSI:+nan%  N225:+nan%  SX5E:+nan%  SOX:+nan%  NDX:+nan%  XAU:+nan%  COPPER:+nan%  WTI:+nan%  BTC:-14.8%  ETH:-11.8%  US10Y:+nan%  CN10Y:+nan%
+3M ret: 000300.SH:+nan%  000688.SH:+nan%  SPX:+nan%  HSI:+nan%  N225:+nan%  SX5E:+nan%  SOX:+nan%  NDX:+nan%  XAU:+nan%  COPPER:+nan%  WTI:+nan%  BTC:-29.9%  ETH:-25.8%  US10Y:+nan%  CN10Y:+nan%
+6M ret: 000300.SH:+nan%  000688.SH:+nan%  SPX:+nan%  HSI:+nan%  N225:+nan%  SX5E:+nan%  SOX:+nan%  NDX:+nan%  XAU:+nan%  COPPER:+nan%  WTI:+nan%  BTC:-21.9%  ETH:-24.6%  US10Y:+nan%  CN10Y:+nan%
+
+Ann vol 20d: {'000300.SH': np.float64(23.3), '000688.SH': np.float64(47.8), 'SPX': np.float64(10.6), 'HSI': np.float64(24.3), 'N225': np.float64(23.0), 'SX5E': np.float64(17.0), 'SOX': np.float64(44.3), 'NDX': np.float64(16.7), 'XAU': np.float64(17.9), 'COPPER': np.float64(24.3), 'WTI': np.float64(43.2), 'BTC': np.float64(52.8), 'ETH': np.float64(68.0), 'US10Y': np.float64(20.0), 'CN10Y': np.float64(1.5)}
+Mean ann vol 20d: 29.0%  60d: 30.8%
+Cross-section daily dispersion: last20 mean 1.690% vs 60d median 1.832%
+
+VIX: last=18.4, 20d ago=16.5, 60d ago=18.3, max90d=31.0
+
+Trend (MA20 vs MA60) & 120d momentum:
+  000300.SH: mom120=  -1.1%  MA20/MA60= -2.28%  DOWN
+  000688.SH: mom120= +24.5%  MA20/MA60= +4.67%  UP
+  SPX: mom120=  +9.0%  MA20/MA60= +1.35%  UP
+  HSI: mom120=  -3.9%  MA20/MA60= -1.12%  DOWN
+  N225: mom120= +31.5%  MA20/MA60= +1.76%  UP
+  SX5E: mom120=  +8.7%  MA20/MA60= +2.74%  UP
+  SOX: mom120= +60.2%  MA20/MA60= -0.91%  DOWN
+  NDX: mom120= +12.7%  MA20/MA60= -0.21%  DOWN
+  XAU: mom120= -18.4%  MA20/MA60= -4.82%  DOWN
+  COPPER: mom120=  -3.7%  MA20/MA60= -2.34%  DOWN
+  WTI: mom120= +15.2%  MA20/MA60= -9.37%  DOWN
+  BTC: mom120= -20.7%  MA20/MA60= -2.48%  DOWN
+  ETH: mom120= -23.5%  MA20/MA60= +1.30%  UP
+  US10Y: mom120=  +7.6%  MA20/MA60= +0.41%  UP
+  CN10Y: mom120=  -4.7%  MA20/MA60= +0.15%  UP
+
+Avg pairwise corr full (60d): 0.14
+Avg pairwise corr equity block (60d): 0.39
+Cross-sectional 60d cum ret: min -29.1% max 5.6% std 11.1%
+
+────────────────────────────────────────
+🔄 Iteration 13/15
+────────────────────────────────────────
+📤 API Request - 61 messages
+📥 API Response - 2045 tokens, $0.000000
+🔧 Tool calls: ['write_file']
+⏳ Current date 2026-07-30 is not the last trading day (2035-12-31)Traceback (most recent call last):
+  File "/home/lxx/trade-agent-benchmark/AC-deepseek/AlphaCrafter/alphacrafter/main.py", line 1023, in run
+    should_continue = self._run_single_cycle(
+                      ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/lxx/trade-agent-benchmark/AC-deepseek/AlphaCrafter/alphacrafter/main.py", line 893, in _run_single_cycle
+    screener_result = self._run_agent_phase_with_resume(
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/lxx/trade-agent-benchmark/AC-deepseek/AlphaCrafter/alphacrafter/main.py", line 578, in _run_agent_phase_with_resume
+    return self._run_agent_phase(agent, context, phase_name, max_iterations)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/lxx/trade-agent-benchmark/AC-deepseek/AlphaCrafter/alphacrafter/main.py", line 532, in _run_agent_phase
+    result = agent.run(
+             ^^^^^^^^^^
+  File "/home/lxx/trade-agent-benchmark/AC-deepseek/AlphaCrafter/alphacrafter/agent/openai/agent.py", line 574, in run
+    result = self.get_response(current_input)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/lxx/trade-agent-benchmark/AC-deepseek/AlphaCrafter/alphacrafter/agent/openai/agent.py", line 462, in get_response
+    response = self.client.responses.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/lxx/trade-agent-benchmark/.venv/lib/python3.12/site-packages/openai/resources/responses/responses.py", line 1016, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/home/lxx/trade-agent-benchmark/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1375, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/lxx/trade-agent-benchmark/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1148, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.RateLimitError: Error code: 429 - {'error': {'message': 'Concurrency limit exceeded for user, please retry later', 'type': 'rate_limit_error'}}
+
+⚙️ Executing 1 tool call(s)...
+  ▶️ write_file({'file_path': 'factors/factor_ensemble.json', 'content': '{\n  "schema_version": 1,\n  "selected_factors": [\n    {\n      "factor_id": "mom_120d_skip5",\n      "weight": 0.375,\n      "direction": 1\n    },\n    {\n      "factor_id": "vol_of_vol20x60",\n      "weight": 0.254,\n      "direction": 1\n    },\n    {\n      "factor_id": "mom_10d_skip5",\n      "weight": 0.195,\n      "direction": 1\n    },\n    {\n      "factor_id": "vix_beta_cond_60x20",\n      "weight": 0.176,\n      "direction": -1\n    }\n  ],\n  "method": "quality_ic_tilt"\n}\n'})
+  ✅ write_file output: 
+
+ Successfully wrote to file: factors/factor_ensemble.json
+
+────────────────────────────────────────
+🔄 Iteration 14/15
+────────────────────────────────────────
+📤 API Request - 63 messages
+Unexpected error: Error code: 429 - {'error': {'message': 'Concurrency limit exceeded for user, please retry later', 'type': 'rate_limit_error'}}
+✅ Signal handler restored

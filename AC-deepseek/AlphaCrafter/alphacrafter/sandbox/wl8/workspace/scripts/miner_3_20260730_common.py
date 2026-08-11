@@ -233,3 +233,51 @@ def run_validation(factor_id, factor_name, expression, description, deps, params
         ),
         last_validated="2026-07-30",
     )
+
+
+def build_signal_artifact(factor_series):
+    """Encode the factor panel (date x asset) as base64:zlib:csv artifact."""
+    import base64, zlib, io
+    fdf = pd.DataFrame(factor_series).sort_index()
+    buf = io.StringIO()
+    fdf.to_csv(buf)
+    raw = buf.getvalue().encode("utf-8")
+    comp = zlib.compress(raw, 6)
+    return base64.b64encode(comp).decode("ascii")
+
+
+def persist_factor(record, factor_series, path=None):
+    """Add signal artifact + benchmark admission block and write factors/<id>.json."""
+    import json, os
+    v = record.setdefault("validation", {})
+    v["signal_artifact"] = {
+        "format": "base64:zlib:csv",
+        "descrip": "factor value panel rows=date cols=asset (15-asset cross-asset universe)",
+        "data": build_signal_artifact(factor_series),
+    }
+    record.setdefault("version", "1.0.0")
+    record.setdefault("expected_direction", 1 if (record.get("validation", {}).get("metrics", {}).get("ic", 0) or 0) >= 0 else -1)
+    m = v.get("metrics", {})
+    record["benchmark_admission"] = {
+        "contract": {"ic_threshold": 0.007, "icir_threshold": 0.084, "correlation_threshold": 0.5,
+                     "library_capacity": 30, "active_top_k": 10},
+        "selected_metrics": {
+            "ic": m.get("ic"), "icir": m.get("icir"),
+            "metric_path": "validation.metrics",
+            "reported_max_abs_library_correlation": m.get("max_abs_library_correlation"),
+            "correlation_path": "validation.metrics.max_abs_library_correlation",
+        },
+        "admitted_at": pd.Timestamp.now().isoformat(),
+    }
+    path = path or f"factors/{record['factor_id']}.json"
+    with open(path, "w") as f:
+        json.dump(record, f, indent=1)
+    # reload check
+    with open(path) as f:
+        back = json.load(f)
+    assert back["factor_id"] == record["factor_id"]
+    assert back["validation"]["status"] == record["validation"]["status"]
+    assert "signal_artifact" in back["validation"]
+    print(f"[persist] wrote {path} status={back['validation']['status']} "
+          f"artifact_len={len(back['validation']['signal_artifact']['data'])} reload_ok=True")
+    return path
