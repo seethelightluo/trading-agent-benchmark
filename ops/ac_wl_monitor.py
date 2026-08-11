@@ -59,11 +59,21 @@ def last_match(text: str, pattern: str) -> str | None:
     return m[-1].group(1) if m else None
 
 
+def _strip_ts(name: str) -> str:
+    return re.sub(r"\.\d{8}T\d+.*\.json$", ".json", name)
+
+
 def factor_stats(sandbox: Path, wl: str) -> dict:
+    """Library stats from the audit contract; active count from the ensemble."""
     audit_path = sandbox / wl / "workspace/factor_library_audit.jsonl"
     kept = 0
     evicted: set[str] = set()
+    conflict_sources: set[str] = set()
+    audit_mtime = 0.0
+    prev_cycle = None
+    prev_kept = None
     if audit_path.exists():
+        audit_mtime = audit_path.stat().st_mtime
         for line in audit_path.read_text(encoding="utf-8", errors="replace").splitlines():
             if not line.strip():
                 continue
@@ -71,11 +81,52 @@ def factor_stats(sandbox: Path, wl: str) -> dict:
                 a = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            # Phase boundary: cycle counter restarted or the library was reseeded
+            # (kept dropped sharply). Only the last phase is counted.
+            boundary = (prev_cycle is not None and int(a["cycle"]) < prev_cycle) or (
+                prev_kept is not None and prev_kept - int(a["kept"]) >= 10
+            )
+            if boundary:
+                kept = 0
+                evicted = set()
+                conflict_sources = set()
             kept = int(a.get("kept", kept))
             for e in a.get("evicted") or []:
-                e = re.sub(r"\.\d{8}T\d+.*\.json$", ".json", e)
-                evicted.add(e)
-    return {"kept": kept, "evicted": len(evicted), "admitted": kept + len(evicted)}
+                evicted.add(_strip_ts(e))
+            for c in a.get("conflicts") or []:
+                src = c.get("source")
+                if src:
+                    conflict_sources.add(_strip_ts(src))
+            prev_cycle = int(a["cycle"])
+            prev_kept = kept
+    evicted_other = evicted - conflict_sources
+    active = None
+    for ens_rel in ("workspace/factors/factor_ensemble.json", "workspace/factor_ensemble.json"):
+        ens = read_json(sandbox / wl / ens_rel)
+        if ens and isinstance(ens.get("selected_factors"), list):
+            active = len(ens["selected_factors"])
+            break
+    factors_dir = sandbox / wl / "workspace/factors"
+    live_disk = 0
+    newest_file_mtime = 0.0
+    if factors_dir.is_dir():
+        for p in factors_dir.glob("*.json"):
+            if p.name == "factor_ensemble.json" or p.name.endswith(".bak"):
+                continue
+            if re.search(r"\.\d{8}T\d+.*\.json$", p.name):
+                continue
+            live_disk += 1
+            newest_file_mtime = max(newest_file_mtime, p.stat().st_mtime)
+    return {
+        "kept": kept,
+        "active": active,
+        "evicted": len(evicted),
+        "evicted_conflict": len(conflict_sources),
+        "evicted_other": len(evicted_other),
+        "admitted": kept + len(evicted),
+        "live_disk": live_disk,
+        "audit_stale": audit_mtime > 0 and newest_file_mtime > audit_mtime,
+    }
 
 
 def latest_nav(sandbox: Path, wl: str) -> float | None:
@@ -144,7 +195,7 @@ def main() -> None:
         rs = read_json(cfg["run_state"])
         max_cycles = rs.get("online_max_cycles", 300) if rs else 300
         print(f"== {group} (supervisor={'ALIVE' if alive else 'DEAD'}) ==")
-        header = f"{'WL':<5}{'状态':<10}{'因子 当前/累计/替换':<22}{'NAV':>12}  {'窗口进度':<26}{'近1h推进':<14}"
+        header = f"{'WL':<5}{'状态':<10}{'活跃':>4} {'库/累计':<10}{'淘汰(冲突/其他)':<16}{'NAV':>12}  {'窗口进度':<26}{'近1h推进':<14}"
         print(header)
         for wl in cfg["wls"]:
             status = "--"
@@ -161,12 +212,14 @@ def main() -> None:
             one_h = advances_last_hour(hist, key, wp["advances"], now)
             hist[key].append([now, wp["advances"], wp["date"]])
             hist[key] = [e for e in hist[key] if e[0] >= now - HISTORY_WINDOW_SECONDS][-200:]
-            facts = f"{fs['kept']}/{fs['admitted']}/{fs['evicted']}"
-            print(f"{wl:<5}{status:<10}{facts:<22}{fmt_nav(nav):>12}  {win_txt:<26}{one_h:<14}")
+            active_txt = str(fs["active"]) if fs["active"] is not None else "--"
+            elim_txt = f"{fs['evicted_conflict']}/{fs['evicted_other']}"
+            kept_txt = f"{fs['kept']}*~{fs['live_disk']}" if fs["audit_stale"] else str(fs["kept"])
+            print(f"{wl:<5}{status:<10}{active_txt:>4} {kept_txt}/{fs['admitted']:<8}{elim_txt:<16}{fmt_nav(nav):>12}  {win_txt:<26}{one_h:<14}")
         print()
 
     save_history(hist)
-    print("说明: 近1h推进按本次与上次运行快照差值估算, 首次运行显示 '--'; 因子=审计 kept; 累计=kept+历史替换; 替换=去重 evicted.")
+    print("说明: 活跃=ensemble selected_factors(<=10, 实际交易用); 库=审计 kept(<=30, 当前阶段), *~N 表示审计滞后于磁盘现存因子文件; 累计=库+当前阶段淘汰(去重); 淘汰: 冲突=rho>=0.5 质量低者出局, 其他=容量>30/重复ID; 近1h推进按快照差值估算, 首次显示 '--'.")
 
 
 if __name__ == "__main__":
