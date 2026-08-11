@@ -1,12 +1,10 @@
-"""Trader strategy v3: Screener 6-factor ensemble (quality-IC tilt, 2026-08-13).
+"""Trader strategy v4: Screener 4-factor ensemble (quality-IC tilt, 2026-08-17).
 
 Ensemble from factors/factor_ensemble.json:
-  eurusd_beta_60d      w=0.214 dir=-1  low EURUSD-beta tilt (risk-appetite hedge)
-  rate_beta_cn10y_60d  w=0.201 dir=-1  low CN10Y-beta tilt (rate-hedge)
-  dn_mkt_beta_60d      w=0.195 dir=+1  low downside-market-beta (safe-haven)
-  mom_120d_skip5       w=0.180 dir=+1  120d momentum, skip 5d
-  mom_10d_skip5        w=0.121 dir=+1  10d momentum, skip 5d
-  vix_beta_cond_60x20  w=0.089 dir=-1  conditional VIX-beta * 20d VIX move
+  vol_price_corr_20     w=0.281 dir=+1  volume-confirmed price moves
+  eurusd_beta_60d       w=0.254 dir=-1  low EURUSD-beta tilt (risk-appetite hedge)
+  rate_beta_cn10y_60d   w=0.236 dir=-1  low CN10Y-beta tilt (rate-hedge)
+  dn_mkt_beta_60d       w=0.229 dir=+1  low downside-market-beta (safe-haven)
 
 Full-investment long-only 15-asset cross-sectional strategy; non-negative
 weights sum to 1 (cash=0). Rebalance cadence 10 trading days (handled by
@@ -31,6 +29,8 @@ CAP = 0.18          # per-asset weight cap
 FLOOR = 0.5 / N_ASSETS
 SPREAD = 0.14       # max score-driven spread above floor before vol tilt
 MIN_OBS = 40        # min obs for 60d beta factors
+CORR_WIN = 20       # vol-price corr window
+CORR_MIN = 10       # min obs for corr
 
 
 def stock(a, n=170):
@@ -76,49 +76,37 @@ def load_ensemble():
         return []
 
 
-def compute_factor_values(assets, closes, panel, eurusd_ret, vix_close):
-    """Raw cross-sectional factor values for the 6-factor ensemble."""
+def compute_factor_values(assets, closes, panel, eurusd_ret, cn10y_ret, vol):
+    """Raw cross-sectional factor values for the 4-factor ensemble."""
     mkt = panel.mean(axis=1)
     dn_x = mkt.clip(upper=0.0)
-    vix_ret = vix_close.pct_change() if vix_close is not None else None
-    vix_move = (float(vix_close.iloc[-1] / vix_close.iloc[-21] - 1.0)
-                if vix_close is not None and len(vix_close) >= 22 else None)
-    cn10y_ret = closes["CN10Y"].pct_change() if closes.get("CN10Y") is not None else None
-
-    f = {fid: {} for fid, _, _ in []}  # placeholder
     vals = {
-        "mom_120d_skip5": {},
-        "mom_10d_skip5": {},
-        "dn_mkt_beta_60d": {},
+        "vol_price_corr_20": {},
         "eurusd_beta_60d": {},
         "rate_beta_cn10y_60d": {},
-        "vix_beta_cond_60x20": {},
+        "dn_mkt_beta_60d": {},
     }
     for a in assets:
         c = closes.get(a)
-        if c is not None and len(c) >= 126:
-            vals["mom_120d_skip5"][a] = float(c.iloc[-6] / c.iloc[-126] - 1.0)
-        if c is not None and len(c) >= 16:
-            vals["mom_10d_skip5"][a] = float(c.iloc[-6] / c.iloc[-16] - 1.0)
+        v = vol.get(a)
+        if c is not None and v is not None:
+            z = pd.concat([c.pct_change().rename("r"), v.astype(float).rename("v")],
+                          axis=1).dropna().tail(CORR_WIN)
+            if len(z) >= CORR_MIN:
+                _c = z.r.corr(z.v)
+                if _c is not None and isfinite(float(_c)):
+                    vals["vol_price_corr_20"][a] = float(_c)
         y = panel[a]
         vals["dn_mkt_beta_60d"][a] = rolling_beta(y, dn_x)
         if eurusd_ret is not None:
             vals["eurusd_beta_60d"][a] = rolling_beta(y, eurusd_ret)
         if cn10y_ret is not None:
             vals["rate_beta_cn10y_60d"][a] = rolling_beta(y, cn10y_ret)
-        if vix_ret is not None and vix_move is not None:
-            b = rolling_beta(y, vix_ret)
-            vals["vix_beta_cond_60x20"][a] = -b * vix_move if b is not None else None
     return vals
 
 
 def capped_normalize(w, cap=CAP):
-    """Normalize weights to sum 1, then water-fill cap at `cap`.
-
-    Normalize first so the cap comparison is meaningful, then iteratively clip
-    over-cap assets and redistribute the excess proportionally among the
-    under-cap assets until convergence.
-    """
+    """Normalize weights to sum 1, then water-fill cap at `cap`."""
     w = {a: max(0.0, float(x)) for a, x in w.items()}
     total = sum(w.values())
     if total <= 0:
@@ -151,6 +139,8 @@ def compute_target(assets):
     frames = {a: stock(a) for a in assets}
     closes = {a: (f.close.astype(float) if f is not None and "close" in f else None)
               for a, f in frames.items()}
+    vol = {a: (f.volume.astype(float) if f is not None and "volume" in f else None)
+           for a, f in frames.items()}
     usable = [c.pct_change().rename(a) for a, c in closes.items() if c is not None and len(c) >= 30]
     panel = (pd.concat(usable, axis=1, join="inner").dropna().tail(130)
              if len(usable) >= 8 else pd.DataFrame())
@@ -161,8 +151,7 @@ def compute_target(assets):
     ef = index("EURUSD")
     eurusd_ret = (ef.close.astype(float).pct_change()
                   if ef is not None and "close" in ef else None)
-    vf = index("VIX")
-    vix_close = (vf.close.astype(float) if vf is not None and "close" in vf else None)
+    cn10y_ret = (closes["CN10Y"].pct_change() if closes.get("CN10Y") is not None else None)
 
     ens = load_ensemble()
     factor_ids = [fid for fid, _, _ in ens]
@@ -175,7 +164,7 @@ def compute_target(assets):
         w = capped_normalize(w, cap=0.16)
         return (w, {a: 0.0 for a in assets}, [], {"fallback": "no_ensemble"})
 
-    vals = compute_factor_values(assets, closes, panel, eurusd_ret, vix_close)
+    vals = compute_factor_values(assets, closes, panel, eurusd_ret, cn10y_ret, vol)
 
     # composite score = sum(weight * direction * rank)
     score = {a: 0.0 for a in assets}
@@ -221,7 +210,6 @@ def strategy_hook():
 
 
 if __name__ == "__main__":
-    import sys
     from alphacrafter.sim.utils import get_account_dict
     _assets = list(get_account_dict()["watch_list"])
     _w, _f, _ids, _info = compute_target(_assets)

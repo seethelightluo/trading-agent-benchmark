@@ -1,8 +1,8 @@
-"""Trader strategy v2 - Screener 6-factor quality_ic_tilt ensemble.
+"""Trader strategy v3 - Screener 6-factor quality_ic_tilt ensemble.
 
-Ensemble (2026-10-30): mom_120d_skip5 (.36,+) | miner2_nclv_1d (.18,+)
-| miner2_nclv_2d (.14,+) | miner2_rev_2d (.12,+) | vol_of_vol20x60 (.12,+)
-| vix_beta_cond_60x20 (.08,-).
+Ensemble (2026-11): mom_120d_skip5 (.38,+) | miner2_nclv_1d (.17,+)
+| miner2_nclv_2d (.12,+) | miner2_rev_2d (.10,+) | vol_of_vol20x60 (.13,+)
+| vix_beta_cond_60x20 (.10,-).
 
 Momentum anchor + short-term reversal + vol-of-vol regime + VIX-beta risk
 guard. Cross-sectional rank composite over the 15-name tradable panel; fully
@@ -10,7 +10,7 @@ invested, non-negative weights sum to 1, no cash sleeve. One atomic rebalance
 proposal per 10-trading-day block (first day only) via rebalance_to_weights
 with aligned forecast returns so the execution gate (gross edge > one-way
 turnover * 3bp) decides. Bear regime adds a modest defensive tilt
-(XAU/US10Y/CN10Y).
+(XAU/US10Y/CN10Y). Factors are loaded from factor_ensemble.json at import.
 """
 import json
 import math

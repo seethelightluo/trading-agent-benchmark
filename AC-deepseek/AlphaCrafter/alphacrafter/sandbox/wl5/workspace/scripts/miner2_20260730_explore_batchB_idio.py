@@ -48,7 +48,7 @@ mkt = ret.mean(axis=1)
 
 # --- idio_trend_20: 20d return residualized on market via beta60 ---
 def f_idio(s):
-    c = clean(s)
+    c = clean(ret[s])
     r = c.pct_change()
     pair = pd.concat([r.rename("a"), mkt.rename("m")], axis=1).dropna()
     if len(pair) < 70:
@@ -80,7 +80,7 @@ cands["amihud_rel_60"] = pd.DataFrame({s: f_amihud_rel(s) for s in WATCH}, index
 
 # --- autocorr_20 ---
 def f_ac(s):
-    c = clean(s)
+    c = clean(ret[s])
     r = c.pct_change()
     def acf(x):
         x = x - x.mean()
@@ -134,7 +134,7 @@ cands["crypto_corr_60"] = pd.DataFrame({s: f_cryptocorr(s) for s in WATCH}, inde
 
 # --- kurt_vol_cond_60x20 ---
 def f_kurtvol(s):
-    c = clean(s)
+    c = clean(ret[s])
     r = c.pct_change()
     kurt = r.rolling(60).kurt()
     vr = r.rolling(20).std() / r.rolling(120).std().replace(0, np.nan) - 1.0
@@ -143,7 +143,7 @@ cands["kurt_vol_cond_60x20"] = pd.DataFrame({s: f_kurtvol(s) for s in WATCH}, in
 
 # --- vol_revert_20x120 ---
 def f_volrev(s):
-    c = clean(s)
+    c = clean(ret[s])
     r = c.pct_change()
     return (r.rolling(20).std() / r.rolling(120).std().replace(0, np.nan) - 1.0).reindex(idx)
 cands["vol_revert_20x120"] = pd.DataFrame({s: f_volrev(s) for s in WATCH}, index=idx)
