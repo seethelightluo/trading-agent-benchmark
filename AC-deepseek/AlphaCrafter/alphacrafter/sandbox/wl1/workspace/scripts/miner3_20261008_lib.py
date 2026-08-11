@@ -1,6 +1,16 @@
-"""Shared validation harness for miner_3 (2026-10-08 cycle).
+"""Shared validation harness for miner_3 (2026-10-08 cycle, fixed 2026-11-13).
 
-- Loads the 15 tradable instruments' daily closes.
+Calendar fix: BTC/ETH trade on weekends, so a naive outer join of the 15
+series contains weekend dates where weekday-only assets are NaN, which poisons
+rolling windows. We therefore:
+  1. drop weekend rows from the panel (simulator marks positions on trading
+     days only; decisions use previous completed trading day),
+  2. require >= 8 valid assets per row (early period has fewer because
+     BTC/ETH data starts 2021-04),
+  3. forward-fill per-asset closes inside the remaining calendar so holiday
+     gaps carry the last price (standard mixed-calendar convention) -- this
+     makes rolling windows well-defined with full coverage.
+
 - Computes daily cross-sectional rank IC for given factor panels vs forward
   returns at multiple horizons.
 - Reports IC, ICIR, hit ratio, coverage, turnover, decay, and
@@ -19,13 +29,22 @@ TRADABLE = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX"
             "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
 
 
-def load_close_panel():
+def load_close_panel(days=2400, ffill=True, min_assets=8):
+    """Common-calendar close panel for the 15 tradable instruments."""
     frames = {}
     for sym in TRADABLE:
-        df = get_stock_daily_data(symbol=sym, days=2400)
+        df = get_stock_daily_data(symbol=sym, days=days)
+        if df is None or len(df) == 0:
+            continue
         s = df.set_index("date")["close"].rename(sym)
         frames[sym] = s
     panel = pd.concat(frames, axis=1).sort_index()
+    # drop weekends (BTC/ETH trade them; weekday assets do not)
+    panel = panel[panel.index.dayofweek < 5]
+    # keep rows where the cross-section is usable
+    panel = panel[panel.notna().sum(axis=1) >= min_assets]
+    if ffill:
+        panel = panel.ffill()
     return panel
 
 
@@ -123,7 +142,7 @@ def make_artifact(factor_panel):
 
 
 def run_validation(factor_panel, close, horizons=(1, 2, 3, 5, 10, 20),
-                   factor_id="", regime_notes=""):
+                   factor_id="", regime_notes="", return_summary=False):
     """Full validation routine; prints metrics and returns summary dict."""
     results = {}
     for h in horizons:
@@ -176,4 +195,6 @@ def run_validation(factor_panel, close, horizons=(1, 2, 3, 5, 10, 20),
         "n_dates": int(factor_panel.shape[0]),
         "regime_notes": regime_notes,
     }
-    return summary
+    if return_summary:
+        return summary
+    return None

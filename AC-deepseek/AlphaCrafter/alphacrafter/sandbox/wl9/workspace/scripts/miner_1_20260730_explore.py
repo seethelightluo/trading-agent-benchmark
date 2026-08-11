@@ -13,12 +13,12 @@ macro = load_panel(MACRO)
 mrets = macro.pct_change()
 
 def beta_to(x, y, win):
-    """Rolling beta of x to y."""
-    xr = x.rename("x"); yr = y.rename("y")
-    df = pd.concat([xr, yr], axis=1).dropna()
-    cov = df["x"].rolling(win).cov(df["y"])
-    var = df["y"].rolling(win).var()
-    b = cov / var
+    """Rolling beta of x (DataFrame) to y (Series)."""
+    yr = y.rename("y")
+    df = pd.concat([x, yr], axis=1)
+    cov = x.rolling(win).cov(yr)
+    var = yr.rolling(win).var()
+    b = cov.div(var, axis=0)
     return b.reindex(x.index)
 
 def skew(x, win):

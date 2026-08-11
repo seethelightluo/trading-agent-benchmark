@@ -113,17 +113,37 @@ def compute_factor_values(assets, closes, panel, eurusd_ret, vix_close):
 
 
 def capped_normalize(w, cap=CAP):
-    for _ in range(60):
-        excess = sum(max(0.0, x - cap) for x in w.values())
-        w = {a: min(cap, max(0.0, x)) for a, x in w.items()}
-        room = [a for a, x in w.items() if x < cap - 1e-12]
-        if excess < 1e-12 or not room:
-            break
-        den = sum(w[a] for a in room)
-        for a in room:
-            w[a] += excess * (w[a] / den if den else 1.0 / len(room))
+    """Normalize weights to sum 1, then water-fill cap at `cap`.
+
+    Normalize first so the cap comparison is meaningful, then iteratively clip
+    over-cap assets and redistribute the excess proportionally among the
+    under-cap assets until convergence.
+    """
+    w = {a: max(0.0, float(x)) for a, x in w.items()}
     total = sum(w.values())
-    return {a: x / total for a, x in w.items()} if total > 0 else {a: 1.0 / len(w) for a in w}
+    if total <= 0:
+        return {a: 1.0 / len(w) for a in w}
+    w = {a: x / total for a, x in w.items()}
+    for _ in range(200):
+        excess = sum(max(0.0, x - cap) for x in w.values())
+        if excess < 1e-12:
+            break
+        clipped = {a: min(cap, x) for a, x in w.items()}
+        room = [a for a, x in clipped.items() if x < cap - 1e-12]
+        if not room:
+            w = clipped
+            break
+        room_total = sum(w[a] for a in room)
+        if room_total <= 0:
+            w = clipped
+            break
+        for a in room:
+            clipped[a] += excess * (w[a] / room_total)
+        w = clipped
+    total = sum(w.values())
+    if abs(total - 1.0) > 1e-9 and total > 0:
+        w = {a: x / total for a, x in w.items()}
+    return w
 
 
 def compute_target(assets):

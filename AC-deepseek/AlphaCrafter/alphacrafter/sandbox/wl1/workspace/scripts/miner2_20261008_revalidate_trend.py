@@ -113,7 +113,7 @@ def main():
                 ic5[i] = spearman(x, y5)
         # turnover: mean abs daily rank change (of factor cross-section ranks)
         rankdf = fdf.rank(axis=1)
-        turn = float(rankdf.diff().abs().mean(skipna=True))
+        turn = float(np.nanmean(np.abs(rankdf.diff().values)))
         # windows
         full = np.isfinite(ic1)
         recent = np.zeros_like(full)

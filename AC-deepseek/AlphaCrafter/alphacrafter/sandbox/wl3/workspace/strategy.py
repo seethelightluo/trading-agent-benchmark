@@ -1,13 +1,14 @@
-"""Screener ensemble strategy, trader 2026-11-19 refresh.
+"""Screener ensemble strategy, trader refresh 2026-12-17.
 
 Cross-sectional factor ensemble (quality_ic_tilt) drives a fully-invested
 15-asset long-only target. One proposal per 10-trading-day block (first day
 only); the rebalance helper applies the 3bp gross-edge gate.
 
-Ensemble (2026-11-19): down_beta_60(+1) spx_beta_60(+1) vol_adj_mom_20_60(+1)
-cn10y_beta_60(-1) dxy_beta_cond_60x20(+1) hs300_beta_60(-1) vol_of_vol20x60(+1)
-intraday_ret_skew_20(+1) dd_duration_120_resid(-1) vix_beta_cond_60x20(-1).
-hilo_vol_ratio_20 and comm_basket_beta_60 dropped this cycle.
+Ensemble (2026-12-17): down_beta_60(+1) cn10y_beta_60(-1) spx_beta_60(+1)
+vol_adj_mom_20_60(+1) dxy_beta_cond_60x20(+1) hs300_beta_60(-1)
+hilo_vol_ratio_20(+1) intraday_ret_skew_20(+1) comm_basket_beta_60(+1)
+vol_of_vol20x60(+1). dd_duration_120_resid and vix_beta_cond_60x20 dropped
+this cycle (two weakest live blocks); hilo+comm re-added (best live block).
 
 Weighting: rank-linear tilt * inverse-vol (sqrt dampened), defensive floor,
 water-fill cap at 0.18. Sum-to-1, cash 0, fractional quantities.
@@ -157,39 +158,6 @@ def load_ensemble():
     return []
 
 
-def dd_duration_120_resid(close, assets):
-    """log1p(days_since_120d_high) orthogonalized per-date vs z(mom_120d_skip5)."""
-    dd = {}
-    mom = {}
-    for a in assets:
-        c = close[a]
-        if c is None or len(c) < 130:
-            dd[a] = mom[a] = None
-            continue
-        highs = c.rolling(120).max().dropna()
-        c_sub = c.loc[highs.index]
-        at_high = (c_sub >= highs - 1e-12)
-        idx = at_high[at_high].index
-        if len(idx) == 0:
-            days_since = len(at_high)
-        else:
-            days_since = len(at_high) - at_high.index.get_loc(idx[-1]) - 1
-        dd[a] = math.log1p(max(0, days_since))
-        mom[a] = c.iloc[-1] / c.iloc[-126] - 1.0
-    ddv = np.array([dd[a] if dd[a] is not None else np.nan for a in assets], dtype=float)
-    momv = np.array([mom[a] if mom[a] is not None else np.nan for a in assets], dtype=float)
-    ok = np.isfinite(ddv) & np.isfinite(momv)
-    out = {a: None for a in assets}
-    if int(ok.sum()) >= 8:
-        zm = (momv[ok] - momv[ok].mean()) / (momv[ok].std() + 1e-12)
-        beta = float(np.cov(zm, ddv[ok])[0, 1] / (zm.var() + 1e-12))
-        for i, a in enumerate(assets):
-            if ok[i]:
-                z = (momv[i] - momv[ok].mean()) / (momv[ok].std() + 1e-12)
-                out[a] = float(ddv[i] - beta * z)
-    return out
-
-
 @register_hook
 def strategy_hook():
     if not is_block_start():
@@ -214,14 +182,11 @@ def strategy_hook():
     r_300 = ret["000300.SH"]
     d_cn = close["CN10Y"].pct_change()
     dxy = series(get_df("DXY"))
-    vix = series(get_df("VIX"))
     r_dxy = dxy.pct_change() if dxy is not None else None
-    r_vix = vix.pct_change() if vix is not None else None
+    comm_basket = panel[["XAU", "COPPER", "WTI"]].mean(axis=1)  # ew commodity basket
 
     # ---- factor signals (only those in the active ensemble) --------------
     sig = {fid: {} for fid in ens_ids}
-    if "dd_duration_120_resid" in ens_ids:
-        sig["dd_duration_120_resid"] = dd_duration_120_resid(close, assets)
     for a in assets:
         c, o, r = close[a], open_[a], ret[a]
         if "down_beta_60" in ens_ids:
@@ -243,19 +208,23 @@ def strategy_hook():
                     b * (dxy.iloc[-1] / dxy.iloc[-21] - 1.0) if b is not None else None)
             else:
                 sig["dxy_beta_cond_60x20"][a] = None
-        if "vix_beta_cond_60x20" in ens_ids:
-            if r_vix is not None:
-                b = beta_last(r, r_vix)
-                sig["vix_beta_cond_60x20"][a] = (
-                    -b * (vix.iloc[-1] / vix.iloc[-21] - 1.0) if b is not None else None)
+        if "hilo_vol_ratio_20" in ens_ids:
+            # (max20-min20)/close / std(ret,20)
+            if len(c) >= 25:
+                rng = (c.rolling(20).max() - c.rolling(20).min()) / c
+                rv = r.rolling(20).std()
+                q = (rng / rv).dropna()
+                sig["hilo_vol_ratio_20"][a] = float(q.iloc[-1]) if len(q) else None
             else:
-                sig["vix_beta_cond_60x20"][a] = None
+                sig["hilo_vol_ratio_20"][a] = None
         if "intraday_ret_skew_20" in ens_ids:
             if o is not None:
                 ir = (c / o - 1.0).dropna().tail(20)
                 sig["intraday_ret_skew_20"][a] = float(ir.skew()) if len(ir) >= 5 else None
             else:
                 sig["intraday_ret_skew_20"][a] = None
+        if "comm_basket_beta_60" in ens_ids:
+            sig["comm_basket_beta_60"][a] = beta_last(r, comm_basket)
         if "vol_of_vol20x60" in ens_ids:
             rv20 = r.rolling(20).std()
             sig["vol_of_vol20x60"][a] = (
