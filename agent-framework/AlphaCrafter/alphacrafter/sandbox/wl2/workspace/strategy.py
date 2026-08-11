@@ -2,72 +2,109 @@ import numpy as np
 from alphacrafter.sim.utils import register_hook, get_stock_daily_data, rebalance_to_weights
 
 ASSETS = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
-FACTORS = {"clv": .275, "leadlag": .220, "mom20": .170, "rev5": .165, "rev3": .085, "down20": .085}
-MIN_W, MAX_W = .02, .15
+# Screener ensemble (8 active factors, all positive direction).
+FACTORS = {"mom20": .07, "mom30": .07, "resid30": .06, "downmom": .24,
+           "eff": .22, "persist": .08, "lead": .17, "rev": .09}
+MIN_W, MAX_W = .025, .16
 _day = 0
 
-def rank_cs(x):
-    r = {s: .5 for s in ASSETS}
-    good = sorted((s, v) for s, v in x.items() if np.isfinite(v))
-    n = len(good)
-    if n > 1:
-        for i, (s, _) in enumerate(good): r[s] = (i + 1.) / n
-    return r
 
-def make_weights(score):
-    # Allocate the residual above the 2% floor by score, capped at 15%.
-    w = {s: MIN_W for s in ASSETS}; active = set(ASSETS)
-    residual = 1. - MIN_W * len(ASSETS)
-    while active and residual > 1e-12:
-        q = {s: max(float(score[s]), .01) for s in active}
-        z = sum(q.values())
-        capped = [s for s in active if residual * q[s] / z > MAX_W - MIN_W]
-        if not capped:
-            for s in active: w[s] += residual * q[s] / z
+def rank_cs(vals):
+    out = {s: .5 for s in ASSETS}
+    valid = [(s, float(v)) for s, v in vals.items() if np.isfinite(v)]
+    valid.sort(key=lambda z: z[1])
+    n = len(valid)
+    if n > 1:
+        for i, (s, _) in enumerate(valid):
+            out[s] = (i + 1.) / n
+    return out
+
+
+def bounded_weights(scores):
+    # Positive score transform keeps all 15 assets invested; caps limit concentration.
+    raw = {s: max(.05, float(scores.get(s, .5))) for s in ASSETS}
+    base = 1. - MIN_W * len(ASSETS)
+    w = {s: MIN_W + base * raw[s] / sum(raw.values()) for s in ASSETS}
+    for _ in range(20):
+        over = sum(max(0., w[s] - MAX_W) for s in ASSETS)
+        if over < 1e-10:
             break
+        capped = {s for s in ASSETS if w[s] >= MAX_W - 1e-10}
         for s in capped:
-            w[s] = MAX_W; residual -= MAX_W - MIN_W; active.remove(s)
+            w[s] = MAX_W
+        free = [s for s in ASSETS if s not in capped]
+        if not free:
+            break
+        den = sum(raw[s] for s in free)
+        for s in free:
+            w[s] += over * raw[s] / den
     z = sum(w.values())
-    return {s: w[s] / z for s in ASSETS}
+    return {s: max(0., w[s] / z) for s in ASSETS}
+
 
 @register_hook
 def cross_asset_strategy():
     global _day
     _day += 1
-    if (_day - 1) % 10: return
-    d = {}
-    for s in ASSETS:
-        df = get_stock_daily_data(symbol=s, days=95)
-        if df is None or len(df) < 35: continue
-        c = np.asarray(df.sort_values("date").close, dtype=float)
-        h = np.asarray(df.sort_values("date").high, dtype=float)
-        l = np.asarray(df.sort_values("date").low, dtype=float)
-        if len(c) < 32 or not np.all(np.isfinite(c[-32:])) or c[-1] <= 0: continue
-        rr = c[1:] / np.maximum(c[:-1], 1e-12) - 1.
-        vol = max(float(np.std(rr[-20:])), .008)
-        dvol = max(float(np.std(np.minimum(rr[-20:], 0.))), .004)
-        d[s] = {"clv": (2*c[-1]-h[-1]-l[-1]) / max(h[-1]-l[-1], 1e-12),
-                "r5": c[-1]/c[-6]-1., "rev5": -float(np.mean(rr[-5:])),
-                "rev3": -float(np.mean(rr[-3:])), "mom20": (c[-1]/c[-21]-1.)/(vol+.01),
-                "down20": (c[-1]/c[-21]-1.)/(dvol+.01), "trend": c[-1]/c[-31]-1.,
-                "invvol": 1./vol}
-    if len(d) < 10: return
-    med = float(np.median([x["r5"] for x in d.values()]))
-    raw = {f: {} for f in FACTORS}
-    for s, x in d.items():
-        raw["clv"][s] = x["clv"]; raw["leadlag"][s] = x["r5"] - med
-        for f in ("mom20", "rev5", "rev3", "down20"): raw[f][s] = x[f]
-    ranks = {f: rank_cs(v) for f, v in raw.items()}
+    if (_day - 1) % 10 != 0:
+        return
+
+    data = {}
+    for symbol in ASSETS:
+        df = get_stock_daily_data(symbol=symbol, days=180)
+        if df is None or len(df) < 65:
+            continue
+        close = np.asarray(df.sort_values("date")["close"], dtype=float)
+        if len(close) < 65 or not np.all(np.isfinite(close[-65:])) or close[-1] <= 0:
+            continue
+        ret = close[1:] / np.maximum(close[:-1], 1e-12) - 1.
+        vol = max(float(np.std(ret[-20:])), .008)
+        down = max(float(np.std(np.minimum(ret[-20:], 0.))), .004)
+        t20 = close[-1] / close[-21] - 1.
+        t30 = close[-1] / close[-31] - 1.
+        data[symbol] = {
+            "mom20": t20 / (vol + .01) * (.5 + np.mean(ret[-20:] > 0)),
+            "mom30": t30 / (vol + .01) * (.5 + np.mean(ret[-30:] > 0)),
+            "downmom": t20 / (down + .01),
+            "eff": t20 / (down + .015),
+            "persist": t30 / (vol + .01) * np.mean(ret[-30:] > 0),
+            "lead": close[-1] / close[-6] - 1.,
+            "rev": -float(np.mean(ret[-5:])),
+            "trend": t30, "vol": vol
+        }
+
+    # Missing observations receive neutral ranks but the target remains complete.
+    if len(data) < 10:
+        return
+    market = float(np.median([x["trend"] for x in data.values()]))
+    for x in data.values():
+        x["resid30"] = x["trend"] - market
+    ranks = {f: rank_cs({s: x[f] for s, x in data.items()}) for f in FACTORS}
     score = {s: sum(FACTORS[f] * ranks[f][s] for f in FACTORS) for s in ASSETS}
-    eq = [d[s] for s in ("000300.SH", "SPX", "HSI", "N225", "SX5E", "NDX") if s in d]
-    weak = eq and sum(x["trend"] < 0 for x in eq) / len(eq) >= .5
-    weak = weak or (d.get("SPX", {}).get("trend", 0) < 0 and d.get("SPX", {}).get("r5", 0) < 0)
-    if weak:
-        for s in ("XAU", "US10Y", "CN10Y"): score[s] += .10
-        for s in ("BTC", "ETH", "WTI"): score[s] = max(.02, score[s]-.05)
-    med_iv = float(np.median([x["invvol"] for x in d.values()]))
+
+    # Bear/high-risk regime: full investment is retained, with defensive tradable tilts.
+    eq_names = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "NDX"]
+    eq = [data[s] for s in eq_names if s in data]
+    breadth = sum(x["trend"] > 0 for x in eq) / max(1, len(eq))
+    spx = data.get("SPX", {})
+    median_vol = float(np.median([x["vol"] for x in data.values()]))
+    bear = len(eq) >= 3 and (breadth <= .50 or (spx.get("trend", 0.) < 0 and spx.get("lead", 0.) < 0))
+    high_risk = median_vol > .018 or breadth < .67
+    if bear or high_risk:
+        boost = .16 if bear else .10
+        for s in ("XAU", "US10Y", "CN10Y"):
+            score[s] += boost
+        for s in ("BTC", "ETH", "WTI"):
+            score[s] = max(.05, score[s] - (.08 if bear else .04))
+
+    # Mild inverse-volatility overlay controls concentration without changing factor ranks.
     for s in ASSETS:
-        score[s] = max(.02, score[s]) * (.92 + .08*d.get(s, {}).get("invvol", med_iv)/max(med_iv, 1e-12))
-    target = make_weights(score)
-    if set(target) == set(ASSETS) and all(np.isfinite(v) and v >= 0 for v in target.values()) and abs(sum(target.values())-1.) < 1e-8:
+        if s in data:
+            score[s] *= .985 + .015 * median_vol / max(data[s]["vol"], .004)
+    target = bounded_weights(score)
+    if abs(sum(target.values()) - 1.) < 1e-8:
         rebalance_to_weights(target)
+
+
+def strategy():
+    return cross_asset_strategy()

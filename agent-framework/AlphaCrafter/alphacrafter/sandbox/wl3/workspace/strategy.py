@@ -2,97 +2,119 @@ import numpy as np
 from alphacrafter.sim.utils import register_hook, get_stock_daily_data, rebalance_to_weights
 
 UNIVERSE = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
-# Current Screener ensemble; eight active factors, all long-predictive.
-FACTORS = {"clv": .18, "peer": .15, "mom": .17, "res20": .12,
-           "rev5": .10, "volrev": .10, "lowvolrev": .10, "macrorev": .08}
-MIN_W, MAX_W, CADENCE = .02, .14, 10
+# Current Screener quality/IC ensemble; seven active factors, all long-positive.
+FACTORS = {
+    "lowvol_rev": 0.22,
+    "volstate_rev": 0.18,
+    "peer": 0.18,
+    "resid20": 0.16,
+    "eq_resid40": 0.12,
+    "idio_rev": 0.08,
+    "clv": 0.06,
+}
+REBALANCE_DAYS = 10
+MIN_W, MAX_W = 0.03, 0.15
+_previous = None
 _day = 0
 
-def cross_rank(values):
-    valid = sorted((s, float(v)) for s, v in values.items() if np.isfinite(v))
-    out = {s: .5 for s in UNIVERSE}
-    n = len(valid)
-    for i, (s, _) in enumerate(valid):
-        out[s] = (i + 1.0) / n
+
+def rank(values):
+    good = sorted((s, x) for s, x in values.items() if np.isfinite(x))
+    out = {s: 0.5 for s in UNIVERSE}
+    if good:
+        n = len(good)
+        for i, (s, _) in enumerate(good):
+            out[s] = (i + 1.0) / n
     return out
 
-def project(raw):
-    # Projection onto the full-investment simplex with sensible concentration bounds.
-    w = {s: max(float(raw.get(s, 1.0 / len(UNIVERSE))), 1e-12) for s in UNIVERSE}
+
+def bounded(raw):
+    # Water-fill into the required 3%-15% long-only range.
     fixed, active = {}, set(UNIVERSE)
     for _ in range(30):
         left = 1.0 - sum(fixed.values())
-        z = sum(w[s] for s in active)
-        trial = {s: left * w[s] / z for s in active}
+        den = sum(max(raw[s], 1e-9) for s in active)
+        trial = {s: left * max(raw[s], 1e-9) / den for s in active}
         clipped = False
-        for s, x in list(trial.items()):
-            if x < MIN_W:
+        for s, w in list(trial.items()):
+            if w < MIN_W:
                 fixed[s] = MIN_W; active.remove(s); clipped = True
-            elif x > MAX_W:
+            elif w > MAX_W:
                 fixed[s] = MAX_W; active.remove(s); clipped = True
         if not clipped:
-            fixed.update(trial); break
-    total = sum(fixed.values())
-    return {s: fixed.get(s, 0.0) / total for s in UNIVERSE}
+            fixed.update(trial)
+            break
+    z = sum(fixed.values())
+    return {s: fixed.get(s, 0.0) / z for s in UNIVERSE}
 
-def cum(r, n):
-    return float(np.prod(1.0 + r[-n:]) - 1.0)
 
 @register_hook
 def cross_asset_strategy():
-    global _day
+    global _day, _previous
     _day += 1
-    if _day != 1 and (_day - 1) % CADENCE != 0:
+    if _day != 1 and (_day - 1) % REBALANCE_DAYS != 0:
         return
-    returns, vols, sig = {}, {}, {k: {} for k in FACTORS}
+
+    rets, vols, rows = {}, {}, {}
     for s in UNIVERSE:
-        df = get_stock_daily_data(symbol=s, days=160)
-        if df is None or len(df) < 45:
+        df = get_stock_daily_data(symbol=s, days=230)
+        if df is None or len(df) < 70:
             continue
-        df = df.sort_values("date").reset_index(drop=True)
-        c = np.asarray(df["close"], float)
-        o = np.asarray(df["open"], float)
-        h = np.asarray(df["high"], float)
-        l = np.asarray(df["low"], float)
-        q = np.asarray(df["volume"], float)
-        if np.any(~np.isfinite(c[-45:])) or np.any(c[-45:] <= 0):
+        df = df.sort_values("date")
+        c = np.asarray(df["close"], dtype=float)
+        if np.any(~np.isfinite(c[-70:])) or np.any(c[-70:] <= 0):
             continue
         r = c[1:] / c[:-1] - 1.0
-        v = max(float(np.nanstd(r[-20:])), .008)
-        returns[s], vols[s] = r, v
-        span = h[-1] - l[-1]
-        sig["clv"][s] = (2*c[-1] - h[-1] - l[-1]) / span if span > 0 else 0.0
-        sig["mom"][s] = cum(r, 20) / (v*np.sqrt(20) + .01)
-        sig["rev5"][s] = -cum(r, 5) / (v*np.sqrt(5) + .005)
-        sig["res20"][s] = 0.0
-        downside = max(float(np.std(np.minimum(r[-10:], 0.0))), .004)
-        sig["lowvolrev"][s] = -cum(r, 3) / (v*np.sqrt(3) + .005)
-        sig["macrorev"][s] = -cum(r, 3) / (downside*np.sqrt(3) + .005)
-        medq = np.nanmedian(q[-21:-1]) if len(q) >= 21 else np.nan
-        boost = np.clip(q[-1]/medq, .75, 1.5) if np.isfinite(medq) and medq > 0 else 1.0
-        sig["volrev"][s] = (-r[-1] / v) * (1.0 + .20*max(boost-1.0, 0.0))
-    if len(returns) < 8:
+        rets[s] = r
+        vols[s] = max(float(np.std(r[-20:])), 0.006)
+        rows[s] = df.iloc[-1]
+    if len(rets) < 10:
         return
-    r5 = {s: cum(r, 5) for s, r in returns.items()}
-    r20 = {s: cum(r, 20) for s, r in returns.items()}
-    for s in returns:
-        others5 = [r5[t] for t in returns if t != s]
-        others20 = [r20[t] for t in returns if t != s]
-        sig["peer"][s] = r5[s] - float(np.median(others5))
-        # Residual reversal: mean-revert relative cross-asset performance.
-        sig["res20"][s] = -(r20[s] - float(np.median(others20)))
-    ranks = {k: cross_rank(v) for k, v in sig.items()}
-    score = {s: sum(FACTORS[k] * ranks[k][s] for k in FACTORS) for s in UNIVERSE}
-    median_vol = float(np.median(list(vols.values())))
-    breadth = float(np.mean([r20[s] > 0 for s in returns]))
-    stress = median_vol > .018 or breadth < .45
-    inv_mean = float(np.mean([1.0 / v for v in vols.values()]))
+
+    r1 = {s: r[-1] for s, r in rets.items()}
+    r5 = {s: float(np.prod(1 + r[-5:]) - 1) for s, r in rets.items()}
+    r10 = {s: float(np.prod(1 + r[-10:]) - 1) for s, r in rets.items()}
+    r20 = {s: float(np.prod(1 + r[-20:]) - 1) for s, r in rets.items()}
+    r40 = {s: float(np.prod(1 + r[-40:]) - 1) for s, r in rets.items()}
+    peers = list(rets)
+    equities = [s for s in UNIVERSE[:8] if s in rets]
+    eq40 = float(np.median([r40[s] for s in equities])) if equities else 0.0
+    breadth = float(np.mean([x > 0 for x in r20.values()]))
+    stress = breadth < 0.50 or float(np.median(list(r10.values()))) < 0 or float(np.median(list(vols.values()))) > 0.018
+
+    f = {k: {} for k in FACTORS}
+    for s, r in rets.items():
+        v = vols[s]
+        peer5 = np.median([r5[t] for t in peers if t != s])
+        scale20 = v * np.sqrt(20) + 0.01
+        scale40 = v * np.sqrt(40) + 0.02
+        # One-day signals are volatility scaled and smoothed by the 10-day schedule.
+        rev = -r1[s] / (v + 0.006)
+        f["lowvol_rev"][s] = rev
+        f["volstate_rev"][s] = rev * (1.0 + min(v / 0.02, 1.0))
+        f["peer"][s] = r5[s] - peer5
+        f["resid20"][s] = (r20[s] - peer5) / scale20
+        f["eq_resid40"][s] = (r40[s] - eq40) / scale40
+        f["idio_rev"][s] = rev - (r5[s] - peer5) / (v + 0.01)
+        hi, lo, cl = float(rows[s].get("high", 0)), float(rows[s].get("low", 0)), float(rows[s]["close"])
+        f["clv"][s] = (2 * cl - hi - lo) / (hi - lo) if hi > lo else 0.0
+
+    ranked = {k: rank(v) for k, v in f.items()}
+    score = {s: sum(FACTORS[k] * ranked[k].get(s, 0.5) for k in FACTORS) for s in UNIVERSE}
+    if _previous is not None:
+        score = {s: 0.50 * score[s] + 0.50 * _previous.get(s, 0.5) for s in UNIVERSE}
+    _previous = score.copy()
+
+    invmean = float(np.mean([1.0 / v for v in vols.values()]))
+    defensive = {"XAU", "US10Y", "CN10Y"}
     raw = {}
     for s in UNIVERSE:
-        v = vols.get(s, median_vol)
-        risk_scale = min((1.0 / v) / inv_mean, 1.5)
-        raw[s] = max(score[s], .05) * (.85 + .15 * risk_scale)
-        if stress and s in {"XAU", "US10Y", "CN10Y"}:
-            raw[s] *= 1.15
-    # Always submit a complete 15-asset, non-negative, sum-to-one target; no cash sleeve.
-    rebalance_to_weights(project(raw))
+        invvol = min((1.0 / vols.get(s, 0.02)) / invmean, 1.20)
+        raw[s] = max(score[s], 0.05) * (0.90 + 0.10 * invvol)
+        if stress and s in defensive:
+            raw[s] *= 1.85
+        if stress and s not in defensive and r20.get(s, 0.0) < -0.08:
+            raw[s] *= 0.75
+    target = bounded(raw)
+    if all(np.isfinite(target[s]) and target[s] >= 0 for s in UNIVERSE) and abs(sum(target.values()) - 1.0) < 1e-8:
+        rebalance_to_weights(target)

@@ -6,7 +6,7 @@ for s in U:
  d=get_stock_daily_data(s,days=3000)
  if d is not None:
   d=d[pd.to_datetime(d.date)<=E].copy(); d.date=pd.to_datetime(d.date); D[s]=d.set_index('date')
-pd.set_option('mode.use_inf_as_na',True); C=pd.concat({s:d.close for s,d in D.items()},axis=1).sort_index().ffill(); O=pd.concat({s:d.open for s,d in D.items()},axis=1).sort_index().reindex(C.index).ffill(); H=pd.concat({s:d.high for s,d in D.items()},axis=1).sort_index().reindex(C.index).ffill(); L=pd.concat({s:d.low for s,d in D.items()},axis=1).sort_index().reindex(C.index).ffill(); R=C.pct_change(); V=R.rolling(20,min_periods=10).std(); gap=O/C.shift(1)-1; rng=(H-L)/C.shift(1); f=(-gap/(V*(1+rng))).replace([np.inf,-np.inf],np.nan)
+C=pd.concat({s:d.close for s,d in D.items()},axis=1).sort_index().ffill(); O=pd.concat({s:d.open for s,d in D.items()},axis=1).sort_index().reindex(C.index).ffill(); H=pd.concat({s:d.high for s,d in D.items()},axis=1).sort_index().reindex(C.index).ffill(); L=pd.concat({s:d.low for s,d in D.items()},axis=1).sort_index().reindex(C.index).ffill(); R=C.pct_change(); V=R.rolling(20,min_periods=10).std(); gap=O/C.shift(1)-1; rng=(H-L)/C.shift(1); f=(-gap/(V*(1+rng))).replace([np.inf,-np.inf],np.nan)
 x=[]; cs=[]; tr=[]; d5=[]; d10=[]
 for i in range(len(C)-10):
  q=pd.concat([f.iloc[i].rename('f'),R.iloc[i+1].rename('y')],axis=1).dropna()

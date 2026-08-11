@@ -1,0 +1,1 @@
+print(open("scripts/miner_3_20260730_screen_round5.py").read()[11000:13000])

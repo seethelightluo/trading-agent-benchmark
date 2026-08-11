@@ -1,8 +1,11 @@
-"""Screener ensemble strategy, trader 2026-07-30 (fixed weighting).
+"""Screener ensemble strategy, trader 2026-11-05 refresh.
 
 Cross-sectional factor ensemble (quality_ic_tilt, SPX-beta cluster cap 0.32)
 drives a fully-invested 15-asset long-only target. One proposal per 10-trading-
 day block (first day only); the rebalance helper applies the 3bp gate.
+
+2026-11-05 ensemble refresh: hilo_vol_ratio_20 added (dir +1), vix_beta_cond
+dropped, down_beta_60 cut 0.306->0.220, cn10y_beta_60 raised 0.085->0.154.
 
 Weighting: rank-linear tilt * inverse-vol (sqrt dampened), then defensive
 floor, then water-fill cap at 0.18. Sum-to-1, cash 0, fractional quantities.
@@ -200,6 +203,13 @@ def strategy_hook():
                 -b * (vix.iloc[-1] / vix.iloc[-21] - 1.0) if b is not None else None)
         else:
             sig["vix_beta_cond_60x20"][a] = None
+        # hilo_vol_ratio_20: (max20-min20)/close / std20(ret)  [dir +1]
+        hi20 = c.rolling(20).max()
+        lo20 = c.rolling(20).min()
+        sig["hilo_vol_ratio_20"][a] = (
+            float((hi20.iloc[-1] - lo20.iloc[-1]) / max(c.iloc[-1], 1e-9)
+                  / max(float(r.tail(20).std()), 1e-6))
+            if len(c) >= 25 else None)
         if o is not None:
             ir = (c / o - 1.0).dropna().tail(20)
             sig["intraday_ret_skew_20"][a] = float(ir.skew()) if len(ir) >= 5 else None
@@ -214,7 +224,6 @@ def strategy_hook():
         idx_hit = np.where(hit.values)[0]
         days = (len(c120) - 1 - idx_hit[-1]) if len(idx_hit) else 120
         y = math.log1p(max(0, days))
-        mom120 = c.iloc[-6] / c.iloc[-121] - 1.0 if len(c) >= 122 else 0.0
         sig["dd_duration_120_resid"][a] = y
 
     # per-date cross-sectional orthogonalization of dd_duration vs mom120
@@ -246,7 +255,7 @@ def strategy_hook():
     risk_off = (mkt20 < 0.0 and mdd < -0.03) or (vol20 > 1.3 * max(vol_med, 1e-6))
     risk_on = mkt20 > 0.0 and mdd > -0.02
     def_floor = 0.15 if risk_off else (0.10 if risk_on else 0.12)
-    spread = 2.0 if risk_off else (3.0 if risk_on else 2.5)
+    spread = 2.0 if risk_off else (3.0 if risk_on else 2.0)
 
     # ---- target weights: full 15-asset, sum 1, cash 0 --------------------
     weights = build_weights(score, assets, panel, def_floor, spread)
