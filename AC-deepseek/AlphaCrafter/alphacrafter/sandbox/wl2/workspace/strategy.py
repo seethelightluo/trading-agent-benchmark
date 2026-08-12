@@ -45,9 +45,10 @@ DATE_PATH = BASE.parent / "persistent" / "date.json"
 
 ONLINE_START = "2026-07-16"
 BLOCK = 10
-CAP = 0.17
+CAP = 0.14
 FLOOR = 0.012
 TREND_CAP = 0.09        # per-asset cap when live 20d return < TREND_THRESH
+MAX_TURNOVER = 0.30    # dampener: max one-way turnover per rebalance (reversal-tape risk control)
 TREND_THRESH = -0.04    # 20d return threshold triggering the trend cap
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 AGGRESSIVE = {"SOX", "NDX", "ETH", "BTC", "000688.SH", "N225"}
@@ -442,6 +443,17 @@ def build_target(assets, date_state, ensemble, current_weights=None):
         r20[a] = float(c.iloc[-1] / c.iloc[-21] - 1.0) if (c is not None and len(c) >= 21) else 0.0
     cap_map = {a: TREND_CAP for a in assets if r20[a] < TREND_THRESH}
     weights = _fit_weights(pref, cap=CAP, floor=FLOOR, cap_map=cap_map or None)
+
+    # v7 rotation dampener: cap one-way turnover so a single block's wrong bet
+    # cannot migrate > MAX_TURNOVER of the book (whipsaw tape protection).
+    if current_weights is not None:
+        turn = sum(abs(weights[a] - max(0.0, current_weights.get(a, 0.0))) for a in assets)
+        if turn > MAX_TURNOVER:
+            s = MAX_TURNOVER / turn
+            weights = {a: max(0.0, current_weights.get(a, 0.0)) + s * (weights[a] - max(0.0, current_weights.get(a, 0.0))) for a in assets}
+            tot = sum(weights.values())
+            if tot > 0:
+                weights = {a: w / tot for a, w in weights.items()}
 
     # deterministic forecast returns (10-day horizon): z * daily vol * sqrt(10)
     sigma = {}

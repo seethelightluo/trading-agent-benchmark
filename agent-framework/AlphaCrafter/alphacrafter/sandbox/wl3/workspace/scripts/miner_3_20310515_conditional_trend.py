@@ -1,6 +1,6 @@
-import numpy as np, pandas as pd
+import numpy as np,pandas as pd
 from alphacrafter.sim.utils import get_index_daily_data,get_stock_daily_data
-U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; D={}
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y'];D={}
 for s in U:
  x=None
  for fn in (get_index_daily_data,get_stock_daily_data):
@@ -9,15 +9,14 @@ for s in U:
   if x is not None and len(x):break
  if x is not None and len(x):
   x=x.copy();x.date=pd.to_datetime(x.date);D[s]=x.sort_values('date').drop_duplicates('date').set_index('date').close.astype(float)
-p=pd.DataFrame(D).sort_index().ffill();r=p.pct_change();ret10=p.pct_change(10);ret20=p.pct_change(20);vol=r.rolling(40).std();breadth=(ret20>0).mean(axis=1);gate=((ret20.median(axis=1)>0)&(breadth>=0.5)).astype(float);f=ret10/(vol*np.sqrt(10)+1e-12)*gate.shift(1)
-print('shape',p.shape,'gate',gate.mean(),'finite',np.isfinite(f.to_numpy()).sum())
+p=pd.DataFrame(D).sort_index().ffill();r=p.pct_change();ret10=p.pct_change(10);ret20=p.pct_change(20);vol=r.rolling(40).std();breadth=(ret20>0).mean(axis=1);gate=((ret20.median(axis=1)>0)&(breadth>=0.5)).astype(float);f=ret10/(vol*np.sqrt(10)+1e-12); f=f.where(gate.shift(1).eq(1))
 rows=[]
 for i in range(len(p)-11):
  z=pd.concat([f.iloc[i].rename('f'),(p.iloc[i+10]/p.iloc[i+1]-1).rename('y')],axis=1).replace([np.inf,-np.inf],np.nan).dropna()
  if len(z)>=8 and z.f.nunique()>1:rows.append((p.index[i],z.f.corr(z.y),len(z)))
-a=pd.DataFrame(rows,columns=['date','ic','n']).set_index('date');
+a=pd.DataFrame(rows,columns=['date','ic','n']).set_index('date');print('shape',p.shape,'gate',gate.mean(),'dates',len(a),'avg_n',a.n.mean() if len(a) else np.nan,'coverage',a.n.sum()/(len(a)*15) if len(a) else 0)
 if len(a):
- print('dates',len(a),'avg_n',a.n.mean(),'coverage',a.n.sum()/(len(a)*15));print('IC %.8f ICIR %.8f hit %.4f'%(a.ic.mean(),a.ic.mean()/(a.ic.std(ddof=1)+1e-12),(a.ic>0).mean()))
+ print('IC %.8f ICIR %.8f hit %.4f'%(a.ic.mean(),a.ic.mean()/(a.ic.std(ddof=1)+1e-12),(a.ic>0).mean()))
  for lo,hi in [('2020','2022'),('2023','2025'),('2026','2027'),('2028','2030'),('2031','2031')]:
   q=a.loc[lo:hi]
   if len(q):print(lo+'-'+hi,len(q),'IC %.8f ICIR %.8f'%(q.ic.mean(),q.ic.mean()/(q.ic.std(ddof=1)+1e-12)))

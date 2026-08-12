@@ -5,45 +5,43 @@ UNIVERSE = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX"
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 RISKY = {"BTC", "ETH", "WTI", "COPPER"}
 FACTOR_IDS = [
-    "miner_2_20280615_volmanaged_consistency30",
-    "miner_3_20280601_beta_residual_momentum20",
     "miner_2_20280907_breakout_failure_reversal",
+    "miner_3_20280601_beta_residual_momentum20",
+    "miner_2_20280615_volmanaged_consistency30",
     "miner_1_20280601_relative_strength20",
+    "miner_3_20280504_downside_adjusted_momentum20",
     "miner_2_20270603_medium_dispersion_reversal",
-    "miner_1_20260730_lowvol_scaled_reversal_1d",
 ]
-FACTOR_WEIGHTS = [0.25, 0.22, 0.20, 0.15, 0.12, 0.06]
+FACTOR_WEIGHTS = [0.27, 0.20, 0.18, 0.15, 0.14, 0.06]
 CADENCE = 10
 _day = 0
 _previous = None
 
-def rank(values):
-    good = sorted((s, float(v)) for s, v in values.items() if np.isfinite(v))
+
+def rank_cs(values):
+    good = sorted((s, v) for s, v in values.items() if np.isfinite(v))
     out = {s: 0.5 for s in UNIVERSE}
     for i, (s, _) in enumerate(good):
-        out[s] = (i + 1.0) / max(1, len(good))
+        out[s] = (i + 1.0) / len(good)
     return out
 
-def bounded(raw):
-    lo, hi = 0.035, 0.17
-    w = {s: max(float(raw.get(s, .01)), 1e-12) for s in UNIVERSE}
-    fixed, free = {}, set(UNIVERSE)
-    for _ in range(40):
-        if not free: break
-        rem = 1.0 - sum(fixed.values())
-        z = sum(w[s] for s in free)
-        p = {s: rem * w[s] / z for s in free}
-        low = [s for s in free if p[s] < lo]
-        high = [s for s in free if p[s] > hi]
-        if not low and not high:
-            fixed.update(p); free.clear(); break
-        for s in low: fixed[s] = lo; free.remove(s)
-        for s in high: fixed[s] = hi; free.remove(s)
-    if free:
-        rem = 1.0 - sum(fixed.values()); z = sum(w[s] for s in free)
-        fixed.update({s: rem*w[s]/z for s in free})
-    z = sum(fixed.values())
-    return {s: fixed.get(s, 0.0) / z for s in UNIVERSE}
+
+def full_weights(raw, floor=0.02, ceiling=0.25):
+    w = np.array([max(float(raw.get(s, 0.0)), 1e-8) for s in UNIVERSE])
+    for _ in range(50):
+        w /= w.sum()
+        over = w > ceiling
+        if not np.any(over):
+            break
+        excess = float(np.sum(w[over] - ceiling))
+        w[over] = ceiling
+        under = ~over
+        if np.any(under):
+            w[under] += excess * w[under] / max(float(w[under].sum()), 1e-12)
+    w = np.maximum(w, floor)
+    w /= w.sum()
+    return {s: float(x) for s, x in zip(UNIVERSE, w)}
+
 
 @register_hook
 def cross_asset_strategy():
@@ -52,46 +50,58 @@ def cross_asset_strategy():
     if _day != 1 and (_day - 1) % CADENCE != 0:
         return
     data = {}
-    for s in UNIVERSE:
-        df = get_stock_daily_data(symbol=s, days=270)
-        if df is None or len(df) < 140: continue
-        c = np.asarray(df.sort_values("date")["close"], dtype=float)[:-1]
-        if len(c) < 125 or np.any(~np.isfinite(c)) or np.any(c <= 0): continue
-        r = c[1:] / c[:-1] - 1.0
-        v20 = max(float(np.std(r[-20:])), .006)
-        v30 = max(float(np.std(r[-30:])), .006)
-        v60 = max(float(np.std(r[-60:])), .006)
-        r1, r20 = float(r[-1]), float(np.prod(1+r[-20:])-1)
-        data[s] = {"r": r, "v20": v20,
-                   "consistency": (float(np.mean(r[-30:] > 0))-.5)/v30,
-                   "beta": 0.0, "failure": -r20/v60, "relative": r20/v20,
-                   "dispersion": -r20/v30, "lowrev": -r1/v20}
-    if len(data) < 10: return
+    for symbol in UNIVERSE:
+        df = get_stock_daily_data(symbol=symbol, days=280)
+        if df is None or len(df) < 140:
+            continue
+        close = np.asarray(df.sort_values("date")["close"], dtype=float)[:-1]
+        if len(close) < 125 or np.any(~np.isfinite(close)) or np.any(close <= 0):
+            continue
+        r = close[1:] / close[:-1] - 1.0
+        v15 = max(float(np.std(r[-15:])), 0.006)
+        v20 = max(float(np.std(r[-20:])), 0.006)
+        v30 = max(float(np.std(r[-30:])), 0.006)
+        v60 = max(float(np.std(r[-60:])), 0.006)
+        ret20 = float(np.prod(1 + r[-20:]) - 1)
+        ret60 = float(np.prod(1 + r[-60:]) - 1)
+        ret120 = float(np.prod(1 + r[-120:]) - 1)
+        neg = r[-20:][r[-20:] < 0]
+        downside = max(float(np.std(neg)) if len(neg) > 1 else v20, 0.006)
+        data[symbol] = {"r": r, "v": v20,
+            "failure": -(ret120 - ret60) / v60,
+            "consistency": (float(np.mean(r[-30:] > 0)) - 0.5) / v30,
+            "beta": 0.0, "relative": ret20 / v20,
+            "downside": ret20 / downside, "dispersion": -ret20 / v30}
+    if len(data) < 10:
+        return
     market = data.get("000300.SH", data.get("SPX"))
-    if market is None: return
+    if market is None:
+        return
     mr = market["r"][-20:]
     var = max(float(np.var(mr)), 1e-8)
     for x in data.values():
         ar = x["r"][-20:]
-        beta = float(np.cov(ar, mr, ddof=0)[0, 1]) / var
-        x["beta"] = float(np.mean(ar - beta * mr) / x["v20"])
-    names = ["consistency", "beta", "failure", "relative", "dispersion", "lowrev"]
-    ranks = {n: rank({s: x[n] for s, x in data.items()}) for n in names}
-    score = {s: sum(w * ranks[n].get(s, .5) for n, w in zip(names, FACTOR_WEIGHTS)) for s in UNIVERSE}
+        beta = float(np.cov(ar, mr, ddof=0)[0, 1]) / var if len(ar) > 2 else 0.0
+        x["beta"] = float(np.mean(ar - beta * mr) / x["v"])
+    names = ["failure", "beta", "consistency", "relative", "downside", "dispersion"]
+    ranks = {n: rank_cs({s: x[n] for s, x in data.items()}) for n in names}
+    score = {s: sum(w * ranks[n][s] for w, n in zip(FACTOR_WEIGHTS, names)) for s in UNIVERSE}
     if _previous is not None:
-        score = {s: .70 * score[s] + .30 * _previous[s] for s in UNIVERSE}
+        score = {s: 0.80 * score[s] + 0.20 * _previous[s] for s in UNIVERSE}
     _previous = score.copy()
-    medvol = float(np.median([x["v20"] for x in data.values()]))
+    vols = [x["v"] for x in data.values()]
+    medvol = float(np.median(vols))
     breadth = float(np.mean([x["consistency"] > 0 for x in data.values()]))
-    stressed = medvol > .015 or float(np.prod(1+mr)-1) < -.06 or breadth < .40
-    invmean = float(np.mean([1/max(x["v20"], .006) for x in data.values()]))
+    market20 = float(np.prod(1 + mr) - 1)
+    stressed = medvol > 0.015 or market20 < -0.06 or breadth < 0.40
+    invmean = float(np.mean([1 / max(v, 0.006) for v in vols]))
     raw = {}
     for s in UNIVERSE:
-        x = data.get(s); vol = x["v20"] if x else medvol
-        damp = np.clip((1/max(vol, .006))/max(invmean, 1e-12), .78, 1.10)
-        raw[s] = max(score[s], .02) * (.88 + .12*damp)
-        raw[s] *= (2.15 if s in DEFENSIVE else (.30 if s in RISKY else .75)) if stressed else (1.10 if s in DEFENSIVE else (.86 if s in RISKY else 1.0))
-    target = bounded(raw)
-    forecast_returns = {s: float(np.clip((score[s]-.5)*.08, -.04, .04)) for s in UNIVERSE}
-    if all(np.isfinite(target[s]) and target[s] >= 0 for s in UNIVERSE) and abs(sum(target.values())-1.0) < 1e-8:
-        rebalance_to_weights(target, forecast_returns=forecast_returns, factor_ids=FACTOR_IDS)
+        x = data.get(s)
+        vol = x["v"] if x else medvol
+        damp = np.clip((1 / max(vol, 0.006)) / max(invmean, 1e-12), 0.70, 1.15)
+        tilt = (2.60 if s in DEFENSIVE else (0.18 if s in RISKY else 0.60)) if stressed else (1.15 if s in DEFENSIVE else (0.82 if s in RISKY else 1.0))
+        raw[s] = max(score[s], 0.03) * (0.85 + 0.15 * damp) * tilt
+    target = full_weights(raw)
+    forecast_returns = {s: float(np.clip((score[s] - 0.5) * 0.06, -0.03, 0.03)) for s in UNIVERSE}
+    rebalance_to_weights(target, forecast_returns=forecast_returns, factor_ids=FACTOR_IDS)

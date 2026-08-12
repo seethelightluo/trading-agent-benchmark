@@ -15,7 +15,7 @@ p=pd.DataFrame(D).sort_index().ffill(); r=p.pct_change()
 # with stronger signal when cross-asset dispersion is elevated; volatility normalized.
 r3=r.rolling(3).sum(); resid=r3.sub(r3.median(axis=1),axis=0)
 disp=resid.abs().median(axis=1); gate=disp/(disp.rolling(252).median()+1e-12)
-f=-resid/(r.rolling(20).std()*np.sqrt(3)+1e-12)*gate.clip(upper=3)
+f=-resid/(r.rolling(20).std()*np.sqrt(3)+1e-12).mul(gate.clip(upper=3),axis=0)
 def corr(a,b):
  z=pd.concat([a.rename('f'),b.rename('y')],axis=1).replace([np.inf,-np.inf],np.nan).dropna()
  return z.f.corr(z.y) if len(z)>=8 and z.f.std()>0 and z.y.std()>0 else np.nan
