@@ -74,6 +74,17 @@ Block 1013-1027: SOX was the rank-2 momentum name and delivered -12.5% on
 (Screener also flags XAU/BTC as top-4 trap names in 20d downtrends). Any of
 the top-2 momentum names (rank >= .86 of 15) is now capped at GUARD_CAP
 regardless of MA state, matching the empirical 9/10 top-pick reversal rate.
+
+v13 (2029-06-08): composite-rank top-2 weight cap (Screener-recommended).
+Block 0330-0413: NDX 11.5% / N225 10.8% were top-2 COMPOSITE weights but not
+top-2 momentum names, so the v12 momentum cap missed them; 2029-04-13
+feedback + 2029-06-08 screener both recommend a composite-rank cap beyond the
+momentum-rank guard. With 10 of the last 11 blocks showing a top-pick
+whipsaw (SOX -12.5%, WTI -18.4% twice, ETH -25.9%...), composite-score
+leaders carry fat-tailed reversal risk regardless of factor origin. The
+top-2 composite-score names are capped at COMP_TOP2_CAP (9.5%); excess is
+redistributed proportionally to remaining names. Factor-agnostic like
+v8/v9/v11; applied before the MA guards.
 """
 import json
 import math
@@ -96,6 +107,7 @@ GUARD_CAP = 0.06         # v7 cap for momentum top-picks below 20d MA
 COMP_GUARD_CAP = 0.08    # v8 cap for ANY below-20d-MA asset with weight > 8%
 CRYPTO_CAP = 0.12        # v9 combined BTC+ETH weight cap
 COMMOD_CAP = 0.14        # v11 combined WTI+COPPER weight cap
+COMP_TOP2_CAP = 0.095     # v13 composite-rank top-2 weight cap
 MOM_TOP_RANK = 0.60      # momentum rank threshold for the v7 guard
 MOM_TOP2_RANK = 0.86  # v12: top-2 momentum names (rank >= .86 of 15)
 TRAP_PENALTY = 0.50      # v8 value-trap score penalty as fraction of mom weight
@@ -341,6 +353,37 @@ def _weights(scores, assets, regime):
     return w
 
 
+def _composite_top2_cap(w, assets, scores):
+    """v13: cap the top-2 composite-score names at COMP_TOP2_CAP (9.5%).
+
+    Block 0330-0413: NDX 11.5% / N225 10.8% were top-2 COMPOSITE weights but
+    not top-2 momentum names, so the v12 momentum cap missed them. With 10 of
+    the last 11 blocks showing a top-pick whipsaw, composite-score leaders
+    carry fat-tailed reversal risk regardless of factor origin (momentum OR
+    reversal lifted). Factor-agnostic like v8/v9/v11; excess is redistributed
+    proportionally to the remaining names.
+    """
+    order = sorted(assets, key=lambda a: (scores[a], a))
+    top2 = set(order[-2:])
+    for _ in range(80):                    # iterate until cap invariant holds
+        penalized = {a for a in top2 if w[a] > COMP_TOP2_CAP + 1e-9}
+        if not penalized:
+            break
+        excess = sum(w[a] - COMP_TOP2_CAP for a in penalized)
+        for a in penalized:
+            w[a] = COMP_TOP2_CAP
+        room = [a for a in assets if a not in penalized]
+        if not room:
+            break
+        den = sum(w[a] for a in room) + 1e-12
+        for a in room:
+            w[a] += excess * w[a] / den
+    tot = sum(w.values())
+    w = {a: x / tot for a, x in w.items()}
+    w[assets[-1]] += 1.0 - sum(w.values())
+    return w
+
+
 def _de_rank_value_traps(scores, frames, assets, cur):
     """v8: penalize below-20d-MA assets that also have negative 120d momentum.
 
@@ -515,6 +558,7 @@ def strategy_hook():
     scores = _de_rank_value_traps(scores, frames, assets, cur)  # v8
     regime = _regime(frames, assets)
     w = _weights(scores, assets, regime)
+    w = _composite_top2_cap(w, assets, scores)                 # v13 (9.5% top-2)
     w = _composite_ma_guard(w, frames, assets)                  # v8 (8% cap)
     w = _ma_guard(w, frames, assets, cur)                       # v7 (6% cap)
     w = _crypto_cap(w, assets)                                  # v9 (12% crypto)

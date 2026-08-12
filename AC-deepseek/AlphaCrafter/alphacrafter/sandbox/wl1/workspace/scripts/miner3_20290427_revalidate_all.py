@@ -29,11 +29,11 @@ rng = (H - L).replace(0, np.nan)
 factors["nbody_1d"] = (C - L) / rng - 0.5
 factors["vol_of_vol20x60"] = R.rolling(20).std().rolling(60).std()
 M = panel["macro"]
-vix = M["VIX"]
+vix = M["VIX"].reindex(C.index).ffill()
 vix_ret = vix.pct_change()
 cov60 = R.rolling(60).cov(vix_ret)
 var60 = vix_ret.rolling(60).var()
-beta_vix = cov60 / var60
+beta_vix = cov60.div(var60, axis=0)
 cond = (vix > vix.rolling(20).mean()).astype(float)
 factors["vix_beta_cond_60x20"] = beta_vix * cond
 

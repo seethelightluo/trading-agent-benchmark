@@ -1,4 +1,111 @@
-"""Trader strategy v24 on top of v23 (fired 2028-11-06 after the 10-23..11-06
+"""Trader strategy v27 on top of v26 (fired 2029-04-09 after the 03-26..04-09 block
++1.35%, DD 0.83%, Sharpe 6.05 - POSITIVE block through CN10Y mean-reversion;
+03-26 proposal EXECUTED (gate passed, cost prices = 03-23 closes, last completed
+day before decision); winners CN10Y +17.90% (w~5.6%, +1.0% contrib), N225 +6.83%
+(w~10.6%), SOX +10.80% (w~3.3%), XAU +5.29% (w~8.7%), COPPER +1.38%, 000688
++0.81%; losers NDX -4.54% (w~8.7%), SPX -2.01% (w~9.0%), US10Y -2.01% (w~7.7%),
+SX5E -2.86% (w~5.5%), BTC -6.50% (w~2.3%, 7th cons neg), WTI -0.48%):
+  v27 changes (evidence from the 03-26..04-09 block; v26 watches fired):
+    1. BTC x0.30 -> x0.25 (PRE-AGREED DEEPEN FIRED: 7th consecutive negative 10d
+       block incl -6.50%; streak -18.91%/-14.25%/-6.50% over last 3; v26 watch
+       said deepen to x0.25 on 7th consecutive negative).
+    2. US10Y x1.25 -> x1.00 (SAFE-HAVEN DE-BOOST FIRED: 2 consecutive negative
+       blocks -3.86% (03-12..03-26) / -2.01% (03-26..04-09); v26 watch said
+       de-boost to x1.00 on 2nd cons neg; v18 precedent).
+    3. CN10Y x0.60 -> x0.70 (RE-BOOST FIRED: 2 consecutive positive blocks
+       +2.46% / +17.90% huge mean-reversion print; v26 watch said re-boost on
+       2 cons positives; rate_beta_cn10y_60d dir=-1 hedge now a drag while CN10Y
+       mean-reverts - flag to Screener for next-cycle IC check).
+  Kept: XAU x1.00 (+5.29% positive clears the de-boost watch), SOX x0.45 (+10.80%
+  single pos clears repeat-offender watch), NDX x0.75 (single -4.54% after 2 pos
+  -> cut only on 2nd cons neg), WTI x0.80 (mild -0.48% after +28.26%; x1.00 needs
+  2 stable blocks), SPX x0.85 (single -2.01% after 2 pos -> cut on 2nd cons neg),
+  000688.SH x0.70 (single +0.81% -> re-boost on 2 cons pos), SX5E x1.00 (single
+  -2.86% -> cut on 2nd cons neg or large print), ETH x0.75 (frozen), CAP 0.12,
+  SPREAD 0.06, vol exp 0.6, stale-guard.
+  New watches: BTC (x0.25 -> x0.20 on 8th cons neg or large print < -15%), NDX
+  (x0.75 -> x0.65 on 2nd cons neg), SPX (x0.85 -> x0.70 on 2nd cons neg), SX5E
+  (x1.00 -> x0.85 on 2nd cons neg or large print < -8%), WTI (x1.00 after 2
+  stable blocks), XAU (x1.00 -> x0.85 on 2nd cons neg or large print < -8%),
+  US10Y (x1.00 -> x1.25 re-boost on 2 cons pos), CN10Y (x0.70 -> x0.80 on 3rd
+  cons pos), 000688 (x0.70 -> x0.85 on 2 cons pos).
+
+Trader strategy v25 on top of v24 (fired 2029-02-12 after the 01-29..02-12
+block -0.04%, DD 0.5% - FLAT through a risk-off tape: BTC -18.9%, CN10Y
+-10.4%, COPPER -5.8%, SOX -2.5%, 000688 -2.5%, N225 -0.8%; winners SX5E
++6.3%, WTI +4.8%, XAU +4.5%, NDX +2.2%, SPX +1.5%, US10Y +0.1%; mean asset
+-1.42%, portfolio -0.04% => defensive cuts contained the air-pockets; v24
+proposal SKIPPED by the deterministic gate (gross edge <= turnover*3bp) ->
+holdings unchanged):
+  v25 changes (evidence from the 01-29..02-12 block):
+    1. XAU x0.85 -> x1.00 (PRE-AGREED RE-BOOST FIRED: 2 consecutive positive
+       10d blocks (+~2% 01-01..01-15, +4.50% this block); v24 watch said
+       re-boost on 2 consecutive positives; XAU functioning as safe haven
+       while BTC/CN10Y crash).
+    2. SX5E x0.85 -> x1.00 (RE-BOOST FIRED: 2 consecutive positive blocks
+       (+~2% 01-01..01-15, +6.28% this block); strongest relative performer).
+    3. NDX x0.65 -> x0.75 (RE-BOOST FIRED: 2 consecutive positive blocks
+       (top winner 01-01..01-15, +2.17% this block); v16/v22 2-stable-block
+       re-boost precedent).
+    4. BTC x0.40 -> x0.35 (PRE-AGREED DEEPEN FIRED: 5th consecutive negative
+       block (-1.20%/-3.95%/-7.96%/-small/-18.91%) with a large -18.91%
+       print; v24 watch said deepen to x0.35 on 4th consecutive negative;
+       drag still ~-0.35% of book at x0.40).
+    5. CN10Y x0.70 -> x0.60 (REPEAT-OFFENDER DEEPEN FIRED: 3 large prints in
+       4 traded blocks -10.42% (10-09..10-23) / -7.91% (10-23..11-06) /
+       -10.37% (01-29..02-12); mirrors the SOX repeat-offender escalation
+       chain; rate_beta_cn10y_60d dir=-1 w=0.24 keeps the factor hedge).
+  Kept: US10Y x1.25 (+0.12% flat but safe haven), SOX x0.55 (mild -2.52%),
+  ETH x0.75 (frozen), WTI x0.65 (+4.84% single positive after -12.79% large
+  print -> needs 2 stable blocks before re-boost), SPX x0.65 (+1.52% single
+  positive after 4 negatives -> re-boost needs 2 consecutive positives),
+  000688.SH x0.85 (-2.51% single -> watch: cut to x0.70 on 2nd consecutive
+  negative or large print), CAP 0.12, SPREAD 0.06, vol exp 0.6, stale-guard.
+  New watches: COPPER (single -5.75% after +4.85% -> cut only on 2nd
+  consecutive large), N225 (mild -0.76% -> large-print watch), BTC deepen
+  (6th consecutive negative -> x0.30), CN10Y deepen (another large print or
+  2nd consecutive negative -> x0.50), WTI re-boost (2 stable blocks ->
+  x0.80), SPX re-boost (2 consecutive positives -> x0.85).
+
+Trader strategy v26 on top of v25 (fired 2029-03-26 after the 03-12..03-26 block
+-0.02%, DD 1.0% - FLAT block; 03-12 proposal EXECUTED (80.1k notional migrated,
+cost 24.03, 3bps); WTI +28.26% huge winner (w~6.7%), NDX +6.85%, CN10Y +2.46%,
+SPX +2.20%, SX5E +0.56%; losers BTC -14.25% (w~2.9%, drag ~-0.41% contained by
+x0.35), SOX -8.53% (w~2.6%), XAU -5.15% (w~5.3%), 000688 -5.26% (w~5.5%),
+US10Y -3.86% (w~11.5%), N225 -2.11%, COPPER -2.80%):
+  v26 changes (evidence from the 03-12..03-26 block; v25 watches fired):
+    1. BTC x0.35 -> x0.30 (PRE-AGREED DEEPEN FIRED: 6th consecutive negative
+       10d block incl -14.25% large print; drag still ~-0.41% of book at x0.35;
+       v25 watch said deepen to x0.30 on 6th consecutive negative).
+    2. 000688.SH x0.85 -> x0.70 (WATCH-CUT FIRED: 2nd consecutive negative
+       -2.51% (01-29..02-12) / -5.26% (03-12..03-26); v25 watch said cut to
+       x0.70 on 2nd consecutive negative or large print).
+    3. SPX x0.65 -> x0.85 (PRE-AGREED RE-BOOST FIRED: 2 consecutive positive
+       blocks +1.52% (01-29..02-12) / +2.20% (03-12..03-26); v25 watch said
+       re-boost on 2 consecutive positives; SPX recovered from the 4-neg streak).
+    4. WTI x0.65 -> x0.80 (RE-BOOST FIRED: air-pocket pattern abated - 2
+       consecutive positive blocks +4.84% (01-29..02-12) / +28.26% (03-12..03-26)
+       after the -12.79% large print; v25 watch said re-boost on 2 stable
+       blocks; +28% is a huge single print so keep the x0.80 depth (not x1.00)).
+    5. SOX x0.55 -> x0.45 (REPEAT-OFFENDER DEEPEN FIRED: 2nd consecutive
+       negative -2.52% / -8.53% large print; mirrors the v11/v15/v19 repeat-
+       offender escalation chain; drag contained at ~-0.22% this block).
+  Kept: XAU x1.00 (single -5.15% after the 2-cons-positive re-boost; de-boost
+  only on a 2nd consecutive negative or large print < -8%), US10Y x1.25
+  (single -3.86%; de-boost only on 2nd consecutive negative, v18 precedent),
+  CN10Y x0.60 (+2.46% positive - deepen watch cleared; rate_beta_cn10y_60d
+  dir=-1 hedge intact), NDX x0.75 (2nd consecutive positive, keep), ETH x0.75
+  (frozen), SX5E x1.00 (3rd consecutive positive, keep), CAP 0.12, SPREAD
+  0.06, vol exp 0.6, stale-guard.
+  New watches: XAU (de-boost x1.00->x0.85 on 2nd cons neg or large print),
+  US10Y (de-boost x1.25->x1.00 on 2nd cons neg), BTC (deepen x0.30->x0.25 on
+  7th consecutive negative), SOX (deepen x0.45->x0.40 on 3rd consecutive
+  negative or another large print), N225 (mild -2.11%, 2nd cons mild neg ->
+  large-print watch), COPPER (mild -2.80% -> watch cleared), CN10Y (re-boost
+  x0.60->x0.70 only on 2 consecutive positives), WTI (x1.00 re-boost only
+  after 2 more stable blocks).
+
+Trader strategy v24 on top of v23 (fired 2028-11-06 after the 10-23..11-06
 block -2.95%, DD ~2.5%, broad risk-off: 000688 -10.9%, N225 -7.1%, WTI -12.8%,
 BTC -8.0%, CN10Y -7.9%, NDX -6.5%, SOX -7.0%, SPX -1.9%; winners XAU +4.4%,
 COPPER +4.9%, SX5E +3.7%, US10Y +0.7%):
@@ -214,6 +321,60 @@ v11 changes (triggered 2027-10-11 - pre-agreed SOX contingency FIRED):
 v13 changes (triggered 2028-01-31 - pre-agreed BTC contingency FIRED):
   BTC x1.00 -> x0.75 (deeper crypto cut).
 
+Trader strategy v28 on top of v27 (fired 2029-06-18 after the 06-04..06-18 block
+-1.98%, DD 1.98% - NEGATIVE block in the VIX 62 stress tape; 06-04 proposal EXECUTED
+(first rebalance since 04-09; migrated to the 0.45/0.35/0.20 ensemble target; cost
+prices = 06-04 closes); block winners WTI +5.11% (w~5.2%), CN10Y +5.32% (w~2.6%),
+000688 +2.75% (w~3.9%), SOX +2.83% (w~3.1%); losers SPX -6.47% (w~9.1%, MAIN DRAG
+~-0.59%), US10Y -4.33% (w~11.7%, ~-0.51%), N225 -9.46% (w~4.3%, ~-0.41%), XAU -2.95%
+(w~11.9%, ~-0.35%), BTC -14.90% (w~1.7%, ~-0.26%), COPPER -1.67%, NDX -2.75%,
+SX5E -0.64%; broad equity/rate selloff partially offset by WTI/CN10Y/000688/SOX;
+defensive cuts contained the single-name air-pockets (N225/BTC on small weights)):
+  v28 changes (evidence from the 06-04..06-18 block; v27 watches fired):
+    1. BTC x0.25 -> x0.20 (PRE-AGREED DEEPEN FIRED: 8th consecutive negative 10d
+       block incl -14.90% large print; drag ~-0.26% at x0.25 on ~1.7% wt).
+    2. SPX x0.85 -> x0.70 (WATCH-CUT FIRED: 2nd consecutive negative -2.01%
+       (03-26..04-09) / -6.47% (06-04..06-18) large print; biggest block drag).
+    3. NDX x0.75 -> x0.65 (WATCH-CUT FIRED: 2nd consecutive negative -4.54% /
+       -2.75%).
+    4. SX5E x1.00 -> x0.85 (WATCH-CUT FIRED: 2nd consecutive negative -2.86% /
+       -0.64%).
+    5. WTI x0.80 -> x1.00 (RE-BOOST FIRED: 2 stable blocks -0.48% / +5.11% after
+       the +28.26% air-pocket; v16 2-stable-block precedent; block top winner).
+    6. CN10Y x0.70 -> x0.80 (RE-BOOST FIRED: 3rd consecutive positive +2.46% /
+       +17.90% / +5.32%; note rate_beta_cn10y_60d dir=-1 w=0.45 keeps the factor
+       short leg dominant - CN10Y weight ~0.024, re-boost nearly a no-op).
+    7. 000688.SH x0.70 -> x0.85 (RE-BOOST FIRED: 2 consecutive positives +0.81% /
+       +2.75%).
+  Kept: XAU x1.00 (single -2.95% after +5.29% - de-boost only on 2nd cons neg or
+  large <-8%), US10Y x1.00 (3rd cons neg -4.33% large print but NO pre-agreed
+  deeper cut; NEW watch x1.00->x0.85 on 4th cons neg), SOX x0.45 (+2.83% pos
+  clears repeat-offender watch), ETH x0.75 (frozen), CAP 0.12, SPREAD 0.06, vol
+  exp 0.6, stale-guard.
+  New watches: US10Y (x1.00->x0.85 on 4th consecutive negative), BTC (x0.20->x0.15
+  on 9th cons neg or another large print), SPX (x0.70->x0.55 on 3rd cons neg or
+  large print <-5%), NDX (x0.65->x0.55 on 3rd cons neg), SX5E (x0.85->x0.70 on 3rd
+  cons neg or large print <-8%), XAU (de-boost on 2nd cons neg or large <-8%),
+  N225 (large-print watch: -9.46% single after +6.83% -> cut to x0.85 on a 2nd
+  consecutive large air-pocket), COPPER (single -1.67% after +1.38% -> cut only on
+  2nd consecutive large), CN10Y (x0.80->x0.90 on 4th cons pos), WTI (keep x1.00;
+  cut on large air-pocket <-10%).
+
+SCREENER RE-TILT 2029-06-04 (quality_ic_tilt; root + factors/ synced
+byte-identical; loader reads factors/factor_ensemble.json live -> no code change):
+  rate_beta_cn10y_60d      w=0.24 -> 0.45  dir=-1  PRIMARY (best realized IC/ICIR in
+    every recent window; rate-hedge dominates while CN10Y drives cross-asset
+    dispersion; cap 0.45 vs 86% pure-tilt to preserve diversification)
+  vol_adj_mom_accel_20x60  w=0.44 -> 0.35  dir=+1  (trimmed on recent weakness; long-run
+    momentum engine, adds contrarian tilt: long SX5E/COPPER/BTC/SOX, short CN10Y/N225)
+  dn_mkt_beta_60d          w=0.32 -> 0.20  dir=+1  (demoted on ~zero recent IC; kept as
+    defensive floor / tail-capture given VIX 62 stress regime)
+Kept v27 DEFENSIVE_MULT (BTC x0.25, US10Y x1.00, CN10Y x0.70, XAU x1.00, SOX x0.45,
+NDX x0.75, ETH x0.75, WTI x0.80, SPX x0.85, SX5E x1.00, 000688.SH x0.70), CAP 0.12,
+SPREAD 0.06, vol exp 0.6, stale-guard, full-investment 15-asset cross-section, 10-day
+cadence. Holdings unchanged since the 03-26 execution; 05-07/06-04 were safety
+advances (no trades). First rebalance opportunity since 04-09 (v27 target persisted).
+
 Full-investment long-only 15-asset cross-sectional strategy; non-negative
 weights sum to 1 (cash=0). Rebalance cadence 10 trading days (handled by
 rebalance_to_weights horizon_days). Bearish views expressed by defensive tilt,
@@ -241,7 +402,17 @@ CORR_WIN = 20       # vol-price corr window
 CORR_MIN = 10       # min obs for corr
 VOL_EXP = 0.6       # inverse-vol exponent (v5: 0.5 -> 0.6)
 STALE_N = 5         # consecutive identical closes => stale quote
-# v24 defensive multipliers (fired 2028-11-06). Prior v23 (2028-10-23):
+# v27 defensive multipliers (fired 2029-04-09 after the 03-26..04-09 block +1.35%):
+#   BTC x0.30 -> x0.25 (7th cons neg incl -6.50%), US10Y x1.25 -> x1.00 (2 cons neg
+#   -3.86%/-2.01%), CN10Y x0.60 -> x0.70 (2 cons pos +2.46%/+17.90% mean-reversion)
+# Kept: XAU x1.00 (+5.29% pos), SOX x0.45 (+10.80% pos), NDX x0.75 (single -4.54%),
+#   WTI x0.80 (mild -0.48% after +28.26%), SPX x0.85 (single -2.01%), 000688.SH x0.70
+#   (single +0.81%), SX5E x1.00 (single -2.86%), ETH x0.75 (frozen)
+# Prior v26 (2029-03-26): BTC x0.35->x0.30, SOX x0.55->x0.45, SPX x0.65->x0.85,
+#   WTI x0.65->x0.80, 000688 x0.85->x0.70
+# Prior v25 (2029-02-12): XAU x0.85->x1.00, SX5E x0.85->x1.00, NDX x0.65->x0.75,
+#   BTC x0.40->x0.35, CN10Y x0.70->x0.60
+# Prior v24 (2028-11-06). Prior v23 (2028-10-23):
 #   XAU x1.00 -> x0.85 (6th consecutive neg), BTC x0.55 -> x0.45 (2nd cons neg),
 #   SPX x0.85 -> x0.65 (3rd consecutive neg)
 # Prior v22 (2028-10-09): SPX x1.00 -> x0.85 (2nd cons neg), WTI x0.65 -> x0.80
@@ -253,9 +424,9 @@ STALE_N = 5         # consecutive identical closes => stale quote
 # Prior v17 (2028-06-05): XAU x1.00 -> x1.25, US10Y x1.25 -> x1.00,
 #   BTC x0.75 -> x0.65, SX5E x1.00 -> x0.85
 DEFENSIVE_MULT = {
-    "XAU": 0.85, "US10Y": 1.25, "CN10Y": 0.70,   # safe havens (v24: CN10Y cut to x0.70 - 2nd consecutive large -10.42%/-7.91%; XAU kept x0.85 +4.36% well-timed bottom; US10Y kept x1.25 +0.68%)
-    "SOX": 0.55, "NDX": 0.65, "ETH": 0.75, "WTI": 0.65, "BTC": 0.40,  # high-beta cuts (v24: SOX x0.65->x0.55 2nd cons -3.50%/-7.02%; NDX x0.75->x0.65 2nd cons -3.25%/-6.53%; WTI x0.80->x0.65 large -12.79% after re-boost; BTC x0.45->x0.40 3rd cons -1.20%/-3.95%/-7.96%)
-    "SX5E": 0.85, "SPX": 0.65, "000688.SH": 0.85,  # v24: 000688.SH new x0.85 - 2nd cons -4.18%/-10.88% large air-pocket; SPX kept x0.65 4th cons mild; SX5E kept x0.85 +3.73% watch cleared
+    "XAU": 1.00, "US10Y": 1.00, "CN10Y": 0.80,   # safe havens (v28: XAU kept x1.00 single -2.95% after +5.29% -> de-boost on 2nd cons neg or large <-8%; US10Y kept x1.00 3rd cons neg -4.33% large print, NO pre-agreed deeper cut -> NEW watch: x1.00->x0.85 on 4th cons neg; CN10Y x0.70->x0.80 RE-BOOST 3rd cons pos +2.46%/+17.90%/+5.32%)
+    "SOX": 0.45, "NDX": 0.65, "ETH": 0.75, "WTI": 1.00, "BTC": 0.20,  # high-beta cuts (v28: SOX kept x0.45 +2.83% pos clears repeat-offender watch; NDX x0.75->x0.65 2nd cons neg -4.54%/-2.75%; WTI x0.80->x1.00 RE-BOOST 2 stable blocks -0.48%/+5.11% after +28.26% print (v16 precedent); BTC x0.25->x0.20 8th cons neg incl -14.90% large print)
+    "SX5E": 0.85, "SPX": 0.70, "000688.SH": 0.85,  # v28: SX5E x1.00->x0.85 2nd cons neg -2.86%/-0.64%; SPX x0.85->x0.70 2nd cons neg -2.01%/-6.47% large print; 000688 x0.70->x0.85 2 cons pos +0.81%/+2.75%
 }
 
 

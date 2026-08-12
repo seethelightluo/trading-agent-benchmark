@@ -244,7 +244,17 @@ for fid in results:
         flip = (w['ic'] > 0) != (ol['ic'] > 0)
         print(f"{fid:26s} warmIC={w['ic']:+.4f} oosLiveIC={ol['ic']:+.4f} flipped={flip}")
 
-json.dump({k: {kk: (vv if vv is None else {**vv}) for kk, vv in v.items()}
-           for k, v in results.items()},
-          open('scripts/miner_2_20290531_revalidate_results.json', 'w'), indent=1, default=str)
+def _plain(x):
+    if isinstance(x, dict):
+        return {kk: _plain(vv) for kk, vv in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_plain(vv) for vv in x]
+    if x is None:
+        return None
+    if isinstance(x, (int, float, str, bool)):
+        return x
+    return str(x)
+
+json.dump({k: _plain(v) for k, v in results.items()},
+          open('scripts/miner_2_20290531_revalidate_results.json', 'w'), indent=1)
 print(f"\nsaved scripts/miner_2_20290531_revalidate_results.json; total {time.time()-t0:.1f}s")
