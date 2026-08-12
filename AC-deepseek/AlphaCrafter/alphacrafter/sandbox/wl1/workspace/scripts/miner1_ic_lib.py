@@ -1,5 +1,6 @@
 """
 miner1 2028-05-26: shared panel loader + IC evaluation helpers.
+Updated 2028-06-09: END -> 2028-06-08 (most recent completed trading day).
 """
 import pandas as pd, numpy as np, json, os
 
@@ -7,6 +8,7 @@ WATCH = ['000300.SH', 'SPX', 'HSI', 'N225', 'SX5E', '000688.SH', 'SOX', 'NDX',
          'XAU', 'COPPER', 'WTI', 'BTC', 'ETH', 'US10Y', 'CN10Y']
 MACRO = ['DXY', 'USDCNY', 'USDJPY', 'EURUSD', 'VIX']
 END = '2028-06-08'  # most recent completed trading day at decision date 2028-06-09
+
 
 def load_panel():
     with open('scripts/panel_cache.pkl', 'rb') as f:
@@ -17,9 +19,9 @@ def load_panel():
             panel[k] = panel[k].loc[panel[k].index <= END]
     return panel
 
+
 def ic_series(factor_df, fwd_ret, min_valid=8):
-    """
-    Daily cross-sectional Spearman IC between factor (t) and forward return (t+1).
+    """Daily cross-sectional Spearman IC between factor (t) and forward return (t+1).
     factor_df: DataFrame indexed by date, columns = assets.
     fwd_ret: DataFrame of forward returns aligned to factor index (value at t = return t->t+1).
     Returns Series of daily IC indexed by date (only dates with >= min_valid valid pairs).
@@ -37,11 +39,13 @@ def ic_series(factor_df, fwd_ret, min_valid=8):
             out[t] = ic
     return pd.Series(out, dtype=float)
 
+
 def fwd_returns(close, horizons=(1, 2, 3, 5, 10)):
     out = {}
     for h in horizons:
         out[h] = close.shift(-h) / close - 1.0
     return out
+
 
 def summarize_ic(ic, label=''):
     if len(ic) == 0:
@@ -54,6 +58,7 @@ def summarize_ic(ic, label=''):
             'mean_ic': float(mean), 'std': float(std), 'icir': float(icir),
             'hit_rate': float(hit), 't_stat': float(mean / (std / np.sqrt(len(ic)))) if std > 0 else np.nan}
 
+
 def coverage_stats(factor_df, min_valid=8):
     valid_cnt = factor_df.notna().sum(axis=1)
     dates_ok = int((valid_cnt >= min_valid).sum())
@@ -62,11 +67,13 @@ def coverage_stats(factor_df, min_valid=8):
             'min_valid': int(valid_cnt.min()), 'max_valid': int(valid_cnt.max()),
             'coverage_frac': float((valid_cnt >= min_valid).mean())}
 
+
 def turnover_rank(factor_df):
     """Mean absolute daily change in cross-sectional rank (normalized 0..1)."""
     ranks = factor_df.rank(axis=1) / factor_df.notna().sum(axis=1)
     d = ranks.diff().abs().mean().mean()
     return float(d)
+
 
 def turnover_signal(factor_df):
     """Mean absolute daily change in standardized factor value."""

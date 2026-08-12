@@ -50,6 +50,8 @@ def fwd_returns(panel, h=10):
 
 
 def rank_ic_series(factor, fwd, min_valid=8):
+    if isinstance(factor, pd.Series):
+        factor = pd.DataFrame({c: factor for c in fwd.columns})
     dates = factor.index.intersection(fwd.index)
     ics = {}
     for dt in dates:
@@ -89,7 +91,7 @@ def evaluate(factor, panel, h=10, min_valid=8, label="f", valid_from=None, valid
 def rolling_beta(ret, bench, win=60, minp=40):
     cov = ret.rolling(win, min_periods=minp).cov(bench)
     var = bench.rolling(win, min_periods=minp).var()
-    return cov / var
+    return cov.div(var, axis=0)
 
 
 def lib_corr_series(cand, lib, min_valid=8):

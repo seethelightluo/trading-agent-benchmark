@@ -50,7 +50,7 @@ LIVE_FIDS = {
 }
 ARTIFACT_START = "2020-01-01"
 LIVE_MIN_FINITE = 10    # of 15 assets required to trust a live factor row
-INERTIA = 0.5        # blend weight on the live-factor target (1-INERTIA on current holdings)
+INERTIA = 1.0        # inertia disabled: pure live-factor target (v5.1 blend backtested worse)
 
 
 def _load_ensemble():
@@ -264,8 +264,11 @@ def _fit_weights(pref, cap=CAP, floor=FLOOR, cap_map=None):
     """Iterative cap/floor normalization of a non-negative preference vector.
 
     cap_map optionally overrides the cap per asset (e.g., trend-failing assets).
-    Preserves sum-to-1 (pref is normalized internally; excess above caps is
-    redistributed only up to each asset's headroom).
+    Preserves sum-to-1: excess above caps is taken from capped assets and
+    redistributed to assets below cap (proportional to pref); assets below
+    floor are raised by taking from donors above floor. Fixed 2026-09-24:
+    the previous implementation never reduced capped assets, so it inflated
+    the total and renormalized everything to ~equal weight.
     """
     total_pref = sum(max(0.0, float(x)) for x in pref.values())
     if total_pref <= 0.0:
@@ -274,33 +277,66 @@ def _fit_weights(pref, cap=CAP, floor=FLOOR, cap_map=None):
     w = {a: max(0.0, float(x)) / total_pref for a, x in pref.items()}
     cap_a = {a: (cap_map.get(a, cap) if cap_map else cap) for a in w}
     n = len(w)
-    for _ in range(500):
-        excess = sum(max(0.0, w[a] - cap_a[a]) for a in w)
-        if excess > 1e-12:
+    for _ in range(200):
+        excess = 0.0
+        for a in w:
+            if w[a] > cap_a[a]:
+                excess += w[a] - cap_a[a]
+                w[a] = cap_a[a]
+        short = 0.0
+        for a in w:
+            if w[a] < floor:
+                short += floor - w[a]
+                w[a] = floor
+        s = sum(w.values())
+        need = 1.0 - s
+        if need > 1e-12:
             room = [a for a in w if w[a] < cap_a[a] - 1e-12]
-            if not room:
+            remaining = need
+            while remaining > 1e-12 and room:
+                den = sum(max(0.0, pref.get(a, 0.0)) for a in room)
+                if den <= 1e-12:
+                    given = 0.0
+                    for a in room:
+                        add = min(remaining / len(room), cap_a[a] - w[a])
+                        w[a] += add
+                        given += add
+                    remaining -= given
+                    break
+                given = 0.0
+                for a in room:
+                    share = remaining * pref.get(a, 0.0) / den
+                    add = min(share, cap_a[a] - w[a])
+                    if add > 1e-14:
+                        w[a] += add
+                        given += add
+                remaining -= given
+                room = [a for a in room if w[a] < cap_a[a] - 1e-12]
+                if given <= 1e-12:
+                    break
+            if remaining > 1e-12:
                 break
-            den = sum(max(0.0, pref.get(a, 0.0)) for a in room)
-            moved = 0.0
-            for a in room:
-                add = excess * (max(0.0, pref.get(a, 0.0)) / den if den > 1e-12 else 1.0 / len(room))
-                add = min(add, cap_a[a] - w[a])  # never exceed per-asset cap
-                if add > 1e-14:
-                    w[a] += add
-                    moved += add
-            if moved <= 1e-12:
-                break  # headroom exhausted -> fall back to normalization
-        short = sum(max(0.0, floor - x) for x in w.values())
-        if short > 1e-12:
+        elif need < -1e-12:
             donors = [a for a in w if w[a] > floor + 1e-12]
-            avail = sum(w[a] - floor for a in donors)
-            if avail > 1e-12:
+            remaining = -need
+            while remaining > 1e-12 and donors:
+                avail = sum(w[a] - floor for a in donors)
+                if avail <= 1e-12:
+                    break
+                removed = 0.0
                 for a in donors:
-                    w[a] -= short * (w[a] - floor) / avail
-            for a in w:
-                if w[a] < floor:
-                    w[a] = floor
-        if excess <= 1e-12 and short <= 1e-12:
+                    share = remaining * (w[a] - floor) / avail
+                    cut = min(share, w[a] - floor)
+                    if cut > 1e-14:
+                        w[a] -= cut
+                        removed += cut
+                remaining -= removed
+                donors = [a for a in w if w[a] > floor + 1e-12]
+                if removed <= 1e-12:
+                    break
+            if remaining > 1e-12:
+                break
+        if excess <= 1e-12 and short <= 1e-12 and abs(need) <= 1e-12:
             break
     total = sum(w.values())
     if total <= 0.0:
@@ -361,10 +397,7 @@ def build_target(assets, date_state, ensemble, current_weights=None):
         else:
             pref[a] = base[a] * (1.0 - delta)
 
-    # v5.1 inertia blend: keep a share of current holdings so fresh ensemble
-    # signals rotate the book gradually instead of churning winners away
-    # (60d backtest of pure live factors was flat w/ 7.4% DD; blended book
-    # preserves the accumulated momentum edge while adapting to new signals).
+    # inertia disabled (v5.1 blend backtested -1.1% vs -0.06% pure; see 2026-09-24).
     lam = INERTIA
     if current_weights:
         pref = {a: lam * pref.get(a, 0.0) + (1.0 - lam) * max(0.0, current_weights.get(a, 0.0))

@@ -144,7 +144,13 @@ summ = summarize(ics, dates, "orth_mom20", HORIZON)
 cov_ad, cov_d8 = coverage_stats(mat)
 to = turnover_10d_rank(rank_mat)
 dec = decay_curve(mat, fwd)
-corrs, mx_name, mx_abs = library_pairwise_corr(mat)
+corrs_full, mx_name, mx_abs = library_pairwise_corr(mat)
+# exclude self artifact (just persisted) from the admission correlation snapshot
+corrs = {k: v for k, v in corrs_full.items() if k != "orth_mom20"}
+if corrs:
+    mx_name, mx_abs = max(corrs.items(), key=lambda kv: abs(kv[1]))
+else:
+    mx_name, mx_abs = None, 0.0
 top = sorted(corrs.items(), key=lambda kv: abs(kv[1]), reverse=True)[:6]
 ic, icir = summ["ic"], summ["icir"]
 print(f"IC={ic:+.4f} ICIR={icir:+.4f} hit={summ['hit']:.3f} n={summ['n_ic_dates']} "
@@ -165,6 +171,7 @@ for f in sorted(os.listdir("factors")):
             KEPT.add(d.get("factor_id"))
     except Exception:
         pass
+KEPT.discard("orth_mom20")
 lib_snapshot = {k: round(v, 4) for k, v in corrs.items() if k in KEPT}
 print("kept-library snapshot keys:", len(lib_snapshot))
 

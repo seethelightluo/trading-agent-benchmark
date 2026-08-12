@@ -1,13 +1,24 @@
-"""Trader strategy v13 (BTC x0.75) on top of v12-TEST: defensive escalation + deeper
+"""Trader strategy v15 on top of v14: PRE-AGREED WTI CONTINGENCY FIRED
+2028-03-27 - WTI printed a SECOND consecutive large air-pocket (-12.4% in
+02-28..03-13, -10.5% in 03-13..03-27) while already at x0.80; deepened the cut
+x0.80 -> x0.65 (same depth as the SOX repeat-offender cut).
+
+v14 history: Screener RE-TILT 2028-03-13 dropped
+vol_price_corr_20 and promoted vol_adj_mom_accel_20x60 (w=0.50) to PRIMARY;
+dn_mkt_beta_60d w=0.36->0.28, rate_beta_cn10y_60d w=0.28->0.22. Code change:
+added vol_adj_mom_accel_20x60 computation. Kept v13 defensive multipliers
+(BTC x0.75, WTI x0.65, SOX x0.65, NDX/ETH x0.75, XAU/US10Y/CN10Y x1.25).
+
+Legacy header: v13 (BTC x0.75) on top of v12-TEST: defensive escalation + deeper
 SOX cut (pre-agreed contingency fired 2027-10-11 after SOX 3rd air-pocket
 +11%/-12.6%/-15.7% despite x0.75) + BTC cut (pre-agreed contingency fired
 2028-01-31 after BTC 2nd consecutive large air-pocket: -20.1% in 01-17..01-31,
 -17.6% MTD per Screener).
 
-Ensemble from factors/factor_ensemble.json (quality-IC tilt, re-tilted 2028-01-31):
-  vol_price_corr_20     w=0.36  dir=+1  volume-confirmed price moves
-  dn_mkt_beta_60d       w=0.36  dir=+1  low downside-market-beta (safe-haven) -- PRIMARY
-  rate_beta_cn10y_60d   w=0.28  dir=-1  low CN10Y-beta tilt (rate-hedge)
+Ensemble from factors/factor_ensemble.json (quality-IC tilt, re-tilted 2028-03-13):
+  vol_adj_mom_accel_20x60  w=0.50  dir=+1  vol-adjusted momentum acceleration -- PRIMARY
+  dn_mkt_beta_60d          w=0.28  dir=+1  low downside-market-beta (safe-haven)
+  rate_beta_cn10y_60d      w=0.22  dir=-1  low CN10Y-beta tilt (rate-hedge)
   Loader reads JSON live; root + factors/ synced byte-identical.
 
 v5 changes (triggered 2026-11-09 after 3 consecutive negative live blocks):
@@ -120,7 +131,7 @@ STALE_N = 5         # consecutive identical closes => stale quote
 # consecutive negative block): stronger safe-haven boost, deeper high-beta cut
 DEFENSIVE_MULT = {
     "XAU": 1.25, "US10Y": 1.25, "CN10Y": 1.25,   # safe havens: boost (v9: 1.15)
-    "SOX": 0.65, "NDX": 0.75, "ETH": 0.75, "WTI": 0.80, "BTC": 0.75,  # high-beta tech/crypto + WTI + BTC air-pocket cuts (v13)
+    "SOX": 0.65, "NDX": 0.75, "ETH": 0.75, "WTI": 0.65, "BTC": 0.75,  # high-beta tech/crypto + WTI + BTC air-pocket cuts (v13)
 }
 
 
@@ -175,6 +186,22 @@ def is_stale(closes, a, n=STALE_N):
     return bool((tail.diff().dropna().abs() < 1e-12).all())
 
 
+def vol_adj_mom_accel(c, fast=20, slow=60, vol_win=20):
+    """(close/close.shift(20)-1 - (close/close.shift(60)-1)) / rolling_std(ret,20).
+    Positive = recently accelerating per unit risk; last valid value."""
+    r = c.pct_change()
+    mom_fast = c / c.shift(fast) - 1.0
+    mom_slow = c / c.shift(slow) - 1.0
+    vol = r.rolling(vol_win).std()
+    z = (mom_fast - mom_slow) / vol
+    z = z.dropna()
+    if len(z) < 1:
+        return None
+    val = float(z.iloc[-1])
+    return val if isfinite(val) else None
+
+
+
 def compute_factor_values(assets, stale, closes, panel, eurusd_ret, cn10y_ret, vol):
     """Raw cross-sectional factor values for the 3-factor ensemble.
     Stale assets get no entries -> neutral rank 0.5 downstream."""
@@ -185,6 +212,7 @@ def compute_factor_values(assets, stale, closes, panel, eurusd_ret, cn10y_ret, v
         "eurusd_beta_60d": {},
         "rate_beta_cn10y_60d": {},
         "dn_mkt_beta_60d": {},
+        "vol_adj_mom_accel_20x60": {},
     }
     for a in assets:
         if a in stale:
@@ -198,6 +226,11 @@ def compute_factor_values(assets, stale, closes, panel, eurusd_ret, cn10y_ret, v
                 _c = z.r.corr(z.v)
                 if _c is not None and isfinite(float(_c)):
                     vals["vol_price_corr_20"][a] = float(_c)
+        c2 = closes.get(a)
+        if c2 is not None:
+            ma = vol_adj_mom_accel(c2)
+            if ma is not None:
+                vals["vol_adj_mom_accel_20x60"][a] = ma
         y = panel[a]
         vals["dn_mkt_beta_60d"][a] = rolling_beta(y, dn_x)
         if eurusd_ret is not None:

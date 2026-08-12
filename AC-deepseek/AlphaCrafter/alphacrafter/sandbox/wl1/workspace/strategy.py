@@ -1,8 +1,10 @@
 """Trader strategy v10 - Screener 5-factor quality_ic_tilt ensemble.
 
-Ensemble (2028-05-26): mom_120d_skip5 (.27,+) | vix_beta_cond_60x20 (.24,-)
-| vol_of_vol20x60 (.22,+) | miner2_20260715_nclv_1d (.17,+)
-| miner2_20260715_rev_2d (.10,+).
+Ensemble (2028-06-09): vix_beta_cond_60x20 (.26,-) | vol_of_vol20x60 (.24,+)
+| mom_120d_skip5 (.20,+) | miner2_20260715_nclv_1d (.18,+)
+| miner2_20260715_rev_2d (.12,+). Momentum anchor trimmed again per WTI
+whipsaw (+14.0 then -5.7 on 11% weight); vix_beta risk guard now the top
+weight.
 
 Momentum anchor (trimmed from .42 per COPPER whipsaw) + two decorrelated
 reversal members + vol-of-vol regime + VIX-beta risk guard. Cross-sectional
