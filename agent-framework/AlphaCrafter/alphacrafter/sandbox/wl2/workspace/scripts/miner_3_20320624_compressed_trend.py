@@ -1,0 +1,28 @@
+import numpy as np,pandas as pd
+from alphacrafter.sim.utils import get_index_daily_data,get_stock_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+def get(s):
+ try:d=get_index_daily_data(s,days=5000)
+ except:d=None
+ if d is None or len(d)<80:
+  try:d=get_stock_daily_data(s,days=5000)
+  except:d=None
+ if d is None:return None
+ d=d.copy();d.date=pd.to_datetime(d.date);return d.drop_duplicates('date').set_index('date').close.astype(float)
+p={s:get(s) for s in U};p={s:v for s,v in p.items() if v is not None}; px=pd.DataFrame(p).sort_index();r=px.pct_change()
+# Volatility-compressed trend: medium risk-adjusted momentum receives a smooth boost when recent vol is below its long-run level.
+v20=r.rolling(20).std();v60=r.rolling(60).std(); mom=px.pct_change(20)/(v60*np.sqrt(20)); compression=(v20/v60).replace([np.inf,-np.inf],np.nan)
+# bounded, monotonic boost; no future data
+f=mom*(1.5/(1+np.exp(8*(compression-1))))
+def ics(h):
+ rr=px.pct_change(h).shift(-h);z=[]
+ for d in f.index:
+  q=pd.concat([f.loc[d],rr.loc[d]],axis=1).dropna()
+  if len(q)>=8 and q.iloc[:,0].nunique()>1 and q.iloc[:,1].nunique()>1:z.append((d,q.iloc[:,0].rank().corr(q.iloc[:,1].rank()),len(q)))
+ return pd.DataFrame(z,columns=['date','ic','n']).set_index('date')
+o=ics(1);print('assets',len(p),'dates',len(px),'IC_dates',len(o),'avg_n',round(o.n.mean(),2),'coverage',round(o.n.mean()/15,4));print('IC %.6f ICIR %.6f hit %.4f'%(o.ic.mean(),o.ic.mean()/o.ic.std(),(o.ic>0).mean()))
+for a,b in [('2020','2022'),('2023','2025'),('2026','2029'),('2030','2032')]:
+ q=o.loc[a:b].ic;print(a+'-'+b,'dates',len(q),'IC %.6f ICIR %.6f hit %.4f'%(q.mean(),q.mean()/q.std() if len(q)>1 else np.nan,(q>0).mean() if len(q) else np.nan))
+for h in [3,5,10]:
+ q=ics(h);print('decay',h,round(q.ic.mean(),6),len(q))
+q=o.tail(120).ic;print('recent',round(q.mean(),6),round(q.mean()/q.std(),6),len(q));f.to_csv('scripts/miner_3_20320624_compressed_trend_signal.csv',index_label='date')

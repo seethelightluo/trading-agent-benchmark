@@ -1,11 +1,13 @@
-"""Trader strategy v12 - Screener 5-factor quality_ic_tilt ensemble.
+"""Trader strategy v13 - Screener 5-factor quality_ic_tilt ensemble.
 
-Ensemble (2028-11-10): mom_120d_skip5 (.26,+) | vol_of_vol20x60 (.23,+)
-| vix_beta_cond_60x20 (.20,-) | miner2_20260715_rev_2d (.16,+)
-| miner2_20260715_nclv_1d (.15,+). Screener re-tilted momentum up (.22->.26)
-on a regime shift toward persistent momentum leaders with extreme dispersion
-while trimming the vol/defensive block (vol_of_vol .25->.23, vix_beta .24
-->.20); reversal pair reweighted (rev_2d .13->.16, nclv_1d .16->.15).
+Ensemble (2031-03-28 refresh): miner2_20260715_nclv_1d (.22,+)
+| vix_beta_cond_60x20 (.20,-) | miner2_20260715_rev_2d (.20,+)
+| mom_120d_skip5 (.20,+) | vol_of_vol20x60 (.18,+). Same 5-factor
+cross-category core as 2030-08-16; modest regime tilt: nclv_1d .20->.22
+(top quality, revalidation PASS), vix_beta .24->.20 (VIX pinned at 9.0
+flat artifact degrades conditioning signal; keep as risk guard), vol_of_vol
+.16->.18 (elevated asset-level vol dispersion). Live weights are loaded from
+factor_ensemble.json at import, so this header is documentation only.
 
 Momentum anchor (trimmed from .42 per COPPER whipsaw) + two decorrelated
 reversal members + vol-of-vol regime + VIX-beta risk guard. Cross-sectional
@@ -561,8 +563,9 @@ def strategy_hook():
     w = _composite_top2_cap(w, assets, scores)                 # v13 (9.5% top-2)
     w = _composite_ma_guard(w, frames, assets)                  # v8 (8% cap)
     w = _ma_guard(w, frames, assets, cur)                       # v7 (6% cap)
-    w = _crypto_cap(w, assets)                                  # v9 (12% crypto)
-    w = _commod_cap(w, assets)                                  # v11 (14% comm)
+    for _ in range(6):                                           # v9/v11 cap convergence
+        w = _commod_cap(w, assets)                              # v11 (14% comm)
+        w = _crypto_cap(w, assets)                              # v9 (12% crypto)
     f = _forecasts(scores, assets)
     rebalance_to_weights(
         w,

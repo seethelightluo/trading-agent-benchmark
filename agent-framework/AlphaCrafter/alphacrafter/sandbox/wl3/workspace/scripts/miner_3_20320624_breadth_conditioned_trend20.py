@@ -1,0 +1,20 @@
+import numpy as np,pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; D={}
+for s in U:
+    try: x=get_stock_daily_data(s,days=5000)
+    except Exception: x=None
+    if x is not None and len(x): D[s]=x.assign(date=pd.to_datetime(x.date)).sort_values('date').drop_duplicates('date').set_index('date').close.astype(float)
+p=np.log(pd.DataFrame(D).sort_index().ffill()); r=p.diff(); ret20=p-p.shift(20); vol20=r.rolling(20,min_periods=20).std()*np.sqrt(20)
+breadth=ret20.gt(0).mean(axis=1).rolling(5,min_periods=5).mean(); gate=(0.5+(breadth-0.5)*1.5).clip(0.15,0.85)
+f=((ret20/vol20).mul(gate,axis=0)).rolling(5,min_periods=5).mean().shift(1); fr=p.shift(-10)-p; rows=[]
+for dt in f.index:
+ a,b=f.loc[dt],fr.loc[dt]; ok=a.notna()&b.notna()
+ if ok.sum()>=8: rows.append((dt,a[ok].corr(b[ok]),ok.sum()))
+z=pd.DataFrame(rows,columns=['date','ic','n']).set_index('date'); q=z.ic
+print('dates',len(z),'avgN',z.n.mean(),'assets',len(D),'coverage',z.n.mean()/len(D),'IC',q.mean(),'ICIR',q.mean()/q.std(ddof=1),'hit',(q>0).mean(),'turnover',f.rank(pct=True).diff().abs().mean(axis=1).mean())
+for n in [120,252,756]:
+ x=q.tail(n); print('recent',n,len(x),x.mean(),x.mean()/x.std(ddof=1))
+for a,b in [('2020','2022'),('2023','2025'),('2026','2028'),('2029','2030'),('2031','2032')]:
+ x=q.loc[a:b]; print(a,b,len(x),x.mean(),x.mean()/x.std(ddof=1) if len(x)>1 else np.nan)
+f.to_csv('scripts/miner_3_20320624_breadth_conditioned_trend20_signal.csv'); z.to_csv('scripts/miner_3_20320624_breadth_conditioned_trend20_ic.csv')

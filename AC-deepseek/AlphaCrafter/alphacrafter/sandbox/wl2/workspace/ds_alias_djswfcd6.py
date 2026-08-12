@@ -1,0 +1,1 @@
+print(open('scripts/miner_3_20290823_revalidate_library.py').read()[:6000])

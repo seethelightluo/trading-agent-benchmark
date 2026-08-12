@@ -24,7 +24,11 @@ v6 changes (2026-11-19):
    cross-sectional rankings; they still receive a portfolio weight via the
    sum-to-1 normalizer.
 v5 heritage: live factor recompute (artifacts froze 2026-07-29); v4 trend-sanity
-cap (20d return < -4% -> per-asset cap 0.09) retained.
+cap (20d return < -4% -> per-asset cap 0.09) retained; v8 China-specific gate
+(000300.SH/000688.SH capped at 0.09 when 20d return < -2%) added cycle56; v9
+momentum-add gate (SOX/N225 capped at 0.09 when 20d return < -2%) added cycle57
+-- SOX/N225 momentum adds whipsawed 4+/2 times (cycles 52-56); evidence review
+per cycle-55 plan completed after cycle-56 block.
 """
 import json
 import math
@@ -50,6 +54,12 @@ FLOOR = 0.012
 TREND_CAP = 0.09        # per-asset cap when live 20d return < TREND_THRESH
 MAX_TURNOVER = 0.30    # dampener: max one-way turnover per rebalance (reversal-tape risk control)
 TREND_THRESH = -0.04    # 20d return threshold triggering the trend cap
+CHINA = {"000300.SH", "000688.SH"}
+CHINA_TREND_THRESH = -0.02   # China-specific 20d threshold (soft-China de-weight, cycle56)
+CHINA_TREND_CAP = 0.09       # China cap when 20d return < CHINA_TREND_THRESH
+MOMENTUM_ADD = {"SOX", "N225"}   # whipsaw-prone momentum adds (cycles 52-56 evidence)
+MOM_TREND_THRESH = -0.02         # 20d threshold triggering the momentum-add cap
+MOM_TREND_CAP = 0.09
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 AGGRESSIVE = {"SOX", "NDX", "ETH", "BTC", "000688.SH", "N225"}
 EMBEDDED = {"spx_corr60"}
@@ -442,6 +452,12 @@ def build_target(assets, date_state, ensemble, current_weights=None):
         c = closes.get(a)
         r20[a] = float(c.iloc[-1] / c.iloc[-21] - 1.0) if (c is not None and len(c) >= 21) else 0.0
     cap_map = {a: TREND_CAP for a in assets if r20[a] < TREND_THRESH}
+    for a in CHINA:
+        if r20[a] < CHINA_TREND_THRESH:
+            cap_map[a] = min(cap_map.get(a, CAP), CHINA_TREND_CAP)
+    for a in MOMENTUM_ADD:
+        if r20[a] < MOM_TREND_THRESH:
+            cap_map[a] = min(cap_map.get(a, CAP), MOM_TREND_CAP)
     weights = _fit_weights(pref, cap=CAP, floor=FLOOR, cap_map=cap_map or None)
 
     # v7 rotation dampener: cap one-way turnover so a single block's wrong bet

@@ -1,45 +1,49 @@
 import numpy as np
-from alphacrafter.sim.utils import (register_hook, get_stock_daily_data,
-    get_index_daily_data, get_account_dict, rebalance_to_weights)
+from alphacrafter.sim.utils import (
+    register_hook, get_stock_daily_data, get_index_daily_data,
+    get_account_dict, rebalance_to_weights,
+)
 
-U = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX",
-     "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
-F = [
-    "miner_3_20290628_residual_momentum_volscaled_20",
-    "miner_3_20310724_relative_momentum_acceleration_20d",
-    "recovery_downside_trend_20_60",
-    "miner_1_20280323_vix_conditioned_efficiency_trend",
-    "breadth_vol_quality_40d",
+UNIVERSE = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
+FACTOR_IDS = [
     "miner_1_20281116_defensive_relative_lead_20d",
-    "drift_vol_compression_20_10_40",
-    "miner_1_20311113_residual_momentum_20d",
+    "miner_1_20281005_vix_shock_resilient_momentum_20d",
+    "miner_1_20320624_path_stability_lead_10d",
+    "breadth_vol_quality_40d",
+    "miner_3_20280907_downside_asymmetry_quality_30d",
+    "miner_2_20310626_trend_acceleration_quality",
+    "miner_3_20310724_relative_momentum_acceleration_20d",
     "macro_stress_resilience_20d",
+    "miner_3_20310904_recovery_pullback_20d",
+    "miner_1_20311211_exhaustion_contrarian_20d",
 ]
-W = [0.18, 0.17, 0.14, 0.12, 0.11, 0.10, 0.08, 0.06, 0.04]
+WEIGHTS = np.array([.15, .12, .14, .11, .09, .09, .05, .10, .08, .07])
 WAIT = 0
 
 
-def rank(x):
-    a = sorted(x, key=lambda s: (x[s], s))
-    n = float(len(a))
-    return {s: (i + 1.0) / n for i, s in enumerate(a)}
+def rank_cs(x):
+    ordered = sorted(x, key=lambda s: (x[s], s))
+    n = float(len(ordered))
+    return {s: (i + 1.0) / n for i, s in enumerate(ordered)}
 
 
-def capped(raw, cap=0.15):
-    out, free, left = {}, set(U), 1.0
-    while free:
-        z = sum(max(raw[s], 1e-8) for s in free)
-        hit = [s for s in free if left * max(raw[s], 1e-8) / z > cap]
+def capped(raw, cap=.15):
+    out = {s: 0.0 for s in UNIVERSE}
+    active = set(UNIVERSE)
+    left = 1.0
+    while active:
+        denom = sum(max(raw[s], 1e-8) for s in active)
+        hit = [s for s in active if left * max(raw[s], 1e-8) / denom > cap]
         if not hit:
-            for s in free:
-                out[s] = left * max(raw[s], 1e-8) / z
+            for s in active:
+                out[s] = left * max(raw[s], 1e-8) / denom
             break
         for s in hit:
             out[s] = cap
             left -= cap
-            free.remove(s)
-    z = sum(out.values())
-    return {s: out.get(s, 0.0) / z for s in U}
+            active.remove(s)
+    total = sum(out.values())
+    return {s: out[s] / total for s in UNIVERSE}
 
 
 @register_hook
@@ -48,81 +52,72 @@ def cross_asset_strategy():
     if WAIT:
         WAIT -= 1
         return
-
-    px = {}
-    for s in U:
-        d = get_stock_daily_data(symbol=s, days=280)
-        if d is None:
+    prices = {}
+    for s in UNIVERSE:
+        df = get_stock_daily_data(symbol=s, days=280)
+        if df is None:
             continue
-        c = np.asarray(d.sort_values("date")["close"], dtype=float)[:-1]
-        if len(c) >= 125 and np.all(np.isfinite(c)) and np.all(c > 0):
-            px[s] = c
-    names = [s for s in U if s in px]
-    if len(names) < 12:
+        close = np.asarray(df.sort_values("date")["close"], dtype=float)[:-1]
+        if len(close) >= 125 and np.all(np.isfinite(close)) and np.all(close > 0):
+            prices[s] = close
+    if len(prices) < 12:
         WAIT = 9
         return
-
-    ret = {s: px[s][1:] / px[s][:-1] - 1.0 for s in names}
-    r10 = {s: px[s][-1] / px[s][-11] - 1.0 for s in names}
-    r20 = {s: px[s][-1] / px[s][-21] - 1.0 for s in names}
-    r60 = {s: px[s][-1] / px[s][-61] - 1.0 for s in names}
-    v20 = {s: max(float(np.std(ret[s][-20:])), .008) for s in names}
-    v40 = {s: max(float(np.std(ret[s][-40:])), .008) for s in names}
-    med20 = float(np.median(list(r20.values())))
-    breadth = float(np.mean([r20[s] > 0 for s in names]))
-
-    vix, vix_med = 20.0, 20.0
-    vd = get_index_daily_data(symbol="VIX", days=65)
-    if vd is not None:
-        vc = np.asarray(vd.sort_values("date")["close"], dtype=float)[:-1]
+    ret = {s: prices[s][1:] / prices[s][:-1] - 1.0 for s in prices}
+    r5 = {s: prices[s][-1] / prices[s][-6] - 1 for s in prices}
+    r10 = {s: prices[s][-1] / prices[s][-11] - 1 for s in prices}
+    r20 = {s: prices[s][-1] / prices[s][-21] - 1 for s in prices}
+    r40 = {s: prices[s][-1] / prices[s][-41] - 1 for s in prices}
+    r60 = {s: prices[s][-1] / prices[s][-61] - 1 for s in prices}
+    v10 = {s: max(float(np.std(ret[s][-10:])), .008) for s in prices}
+    v20 = {s: max(float(np.std(ret[s][-20:])), .008) for s in prices}
+    v40 = {s: max(float(np.std(ret[s][-40:])), .008) for s in prices}
+    down = {s: max(float(np.std(np.minimum(ret[s][-40:], 0))), .003) for s in prices}
+    breadth = {s: float(np.mean(ret[s][-40:] > 0)) for s in prices}
+    defensive = [s for s in ("XAU", "US10Y", "CN10Y") if s in prices]
+    dlead = float(np.mean([r20[s] for s in defensive])) if defensive else 0.0
+    stress = sum(r20[s] > 0 for s in prices) / len(prices) < .40
+    vix = get_index_daily_data(symbol="VIX", days=65)
+    if vix is not None:
+        vc = np.asarray(vix.sort_values("date")["close"], dtype=float)[:-1]
         if len(vc) >= 22 and np.all(np.isfinite(vc)):
-            vix, vix_med = float(vc[-1]), float(np.median(vc[-60:]))
-    stressed = breadth < .40 or vix > max(22.0, 1.25 * vix_med)
-    defensive = {"XAU", "US10Y", "CN10Y"}
-    dlead = float(np.mean([r20[s] for s in defensive if s in r20]))
+            stress = stress or vc[-1] > max(22., 1.25 * float(np.median(vc[-60:])))
 
-    vals = {s: [] for s in names}
-    for s in names:
-        x20, x40 = ret[s][-20:], ret[s][-40:]
-        downside = max(float(np.mean(np.maximum(-x40, 0.0))), .002)
-        path_eff = abs(r20[s]) / max(float(np.sum(np.abs(x20))), .02)
-        breadth40 = float(np.mean(x40 > 0.0))
-        # These are lagged, transparent proxies for the persisted factor IDs.
-        vals[s] = [
-            (r20[s] - .35 * r10[s]) / v20[s],
-            (r20[s] - r10[s]) / v20[s],
-            (r20[s] - .35 * r60[s]) / downside,
-            (1.0 if not stressed else -1.0) * (r20[s] / v20[s]) * path_eff,
-            ((breadth40 - .5) * 2.0) / max(v40[s] * np.sqrt(252), .01),
-            (r20[s] - dlead) / max(v40[s], .008),
-            (r20[s] - r10[s]) / max(v40[s], .008),
-            (r20[s] - med20) / v20[s],
-            ((r20[s] - dlead) / max(v40[s], .008)) if stressed else breadth40,
+    # Proxies preserve the ensemble's directions while using only lagged prices.
+    sig = {}
+    for s in prices:
+        sig[s] = [
+            (r20[s] - dlead) / v40[s],
+            (r20[s] - .5 * max(-r40[s], 0)) / v40[s],
+            (breadth[s] - .50) / v20[s] - .25 * v40[s] / v20[s],
+            (breadth[s] - .50) / v20[s] - .25 * v40[s] / v20[s],
+            (r20[s] - .5 * max(-r40[s], 0)) / down[s],
+            (r10[s] + .5 * r20[s] - .25 * r60[s]) / v20[s],
+            (r10[s] + .5 * r20[s] - .25 * r60[s]) / v20[s],
+            (r20[s] - dlead) / v40[s] + breadth[s] - .5,
+            (-r5[s] + .25 * r10[s]) / v10[s],
+            (-r5[s] + .10 * r20[s]) / v10[s],
         ]
-    rr = [rank({s: vals[s][j] for s in names}) for j in range(len(F))]
-    score = {s: sum(W[j] * (rr[j][s] - .5) for j in range(len(F))) for s in names}
-    score.update({s: 0.0 for s in U if s not in score})
-
-    tilt = {s: 1.0 for s in U}
-    if stressed:
-        tilt.update({"XAU": 1.28, "US10Y": 1.20, "CN10Y": 1.12,
-                     "BTC": .82, "ETH": .80, "WTI": .90, "COPPER": .92})
-    raw = {s: tilt[s] * max(.51 + score[s], .03) / max(v20.get(s, .02), .008) ** .20 for s in U}
+    ranks = [rank_cs({s: sig[s][j] for s in prices}) for j in range(10)]
+    score = {s: sum(WEIGHTS[j] * (ranks[j][s] - .5) for j in range(10)) for s in prices}
+    score.update({s: 0.0 for s in UNIVERSE if s not in score})
+    tilt = {s: 1.0 for s in UNIVERSE}
+    if stress:
+        tilt.update({"XAU": 1.35, "US10Y": 1.25, "CN10Y": 1.18, "BTC": .72, "ETH": .70, "WTI": .84, "COPPER": .88})
+    raw = {s: tilt[s] * max(.51 + score[s], .03) / max(v20.get(s, .02), .008) ** .20 for s in UNIVERSE}
     target = capped(raw)
 
     account = get_account_dict()
     assets = max(float(account.get("total_assets", 0.0)), 1.0)
-    old = {s: 0.0 for s in U}
+    old = {s: 0.0 for s in UNIVERSE}
     for p in account.get("positions", []):
         s = p.get("symbol")
-        if s in old and float(p.get("quantity", 0.0)) > 0:
-            old[s] = max(float(p.get("market_value", 0.0)), 0.0) / assets
+        if s in old and float(p.get("quantity", 0)) > 0:
+            old[s] = max(float(p.get("market_value", 0)), 0.0) / assets
     if sum(old.values()) > .001:
-        target = {s: (.35 * target[s] + .65 * old[s]) for s in U}
+        target = {s: (.35 * target[s] + .65 * old[s]) for s in UNIVERSE}
         z = sum(target.values())
-        target = {s: target[s] / z for s in U}
-
-    # Deterministic 10-day forecast is required by the migration-cost gate.
-    forecast = {s: float(.012 * score[s] * (.80 if stressed else 1.0)) for s in U}
-    rebalance_to_weights(target, forecast_returns=forecast, factor_ids=F, horizon_days=10)
+        target = {s: target[s] / z for s in UNIVERSE}
+    forecast = {s: float(.012 * score[s] * (.85 if stress else 1.0)) for s in UNIVERSE}
+    rebalance_to_weights(target, forecast_returns=forecast, factor_ids=FACTOR_IDS, horizon_days=10)
     WAIT = 9
