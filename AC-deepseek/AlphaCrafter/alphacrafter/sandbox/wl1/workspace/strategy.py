@@ -1,7 +1,8 @@
-"""Trader strategy v7 - Screener 5-factor quality_ic_tilt ensemble.
+"""Trader strategy v10 - Screener 5-factor quality_ic_tilt ensemble.
 
-Ensemble (2027-07-23): mom_120d_skip5 (.30,+) | vol_of_vol20x60 (.20,+)
-| miner2_nclv_1d (.19,+) | miner2_rev_2d (.17,+) | vix_beta_cond_60x20 (.14,-).
+Ensemble (2028-05-26): mom_120d_skip5 (.27,+) | vix_beta_cond_60x20 (.24,-)
+| vol_of_vol20x60 (.22,+) | miner2_20260715_nclv_1d (.17,+)
+| miner2_20260715_rev_2d (.10,+).
 
 Momentum anchor (trimmed from .42 per COPPER whipsaw) + two decorrelated
 reversal members + vol-of-vol regime + VIX-beta risk guard. Cross-sectional
@@ -24,6 +25,36 @@ reversal pair raised (.15/.14 -> .19/.17), vix_beta .13->.14. Added Screener
 recommended portfolio-level guard: momentum top-picks trading below their 20d
 MA are weight-capped (extended names that broke short-term MA, e.g. COPPER),
 excess redistributed to remaining names.
+
+v8 (2028-01-07): two portfolio-construction fixes after 2 consecutive blocks
+of top-3 crypto drag (BTC/ETH below 20d MA with 9-10% weights):
+  1. Composite-score MA guard: ANY asset whose weight exceeds 8% while its
+     price is below its 20d MA is capped at 8% regardless of which factor
+     lifted it (reversal/nclv can no longer bypass the momentum-only v7 cap).
+  2. Value-trap de-rank: assets below 20d MA with negative 120d momentum are
+     penalized in the composite score before ranking (reversal-family lifts of
+     broken-trend names, e.g. ETH rank 14/15 momentum with 9.4% weight).
+Both keep the v7 momentum-top-pick 6% cap as the stricter inner guard.
+
+v9 (2028-03-31): combined crypto cap after 3 consecutive blocks of crypto
+top-weight drag (block 0317-0331: ETH -25.9% on ~8% weight accounted for the
+entire block loss; ETH was above its 20d MA with positive 120d momentum at the
+decision so the v8 guards could not catch it). BTC+ETH combined weight is
+capped at 12% regardless of factor scores or trend state; excess is
+redistributed proportionally to the 13 non-crypto names. This is a
+portfolio-level risk guard (like v7/v8), not a factor change, and keeps
+crypto slightly below its 2/15 fair share while preserving upside in strong
+rallies.
+
+v10 (2028-04-14): extend the v7 momentum guard to close the above-MA20 hole.
+Block 0331-0414: WTI was the top 120d-momentum name, above its 20d MA (so v7
+did not cap it) and carried 8.9% weight into a -21% crash - the dominant block
+drag (7th distinct momentum top-pick whipsaw block). Empirical replay over 45
+decision dates shows the top momentum name is a coin flip with fat tails
+(avg fwd 10d +0.7% vs universe median -0.2%, underperformed in 22/45 blocks).
+v10 caps the single top momentum name (rank >= MOM_TOP_RANK_STRICT) at
+GUARD_CAP regardless of MA state; the v7 below-MA20 top-6 rule and v8/v9
+guards are unchanged.
 """
 import json
 import math
@@ -39,9 +70,14 @@ STATE_FILE = "trader_state.json"
 DATA_DAYS = 170          # enough for mom_120d_skip5 (shift(125)) + buffers
 MIN_ROWS = 140
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
+CRYPTO = {"BTC", "ETH"}
 CAP_W = 0.16
-GUARD_CAP = 0.06         # cap for momentum top-picks below 20d MA
-MOM_TOP_RANK = 0.60      # momentum rank threshold for the guard
+GUARD_CAP = 0.06         # v7 cap for momentum top-picks below 20d MA
+COMP_GUARD_CAP = 0.08    # v8 cap for ANY below-20d-MA asset with weight > 8%
+CRYPTO_CAP = 0.12        # v9 combined BTC+ETH weight cap
+MOM_TOP_RANK = 0.60      # momentum rank threshold for the v7 guard
+MOM_TOP_RANK_STRICT = 0.95  # v10: top-1 momentum name (rank >= .95 of 15)
+TRAP_PENALTY = 0.50      # v8 value-trap score penalty as fraction of mom weight
 
 _VIX_CACHE = {}
 
@@ -54,6 +90,13 @@ def _load_ensemble():
 
 
 FACTORS = _load_ensemble()
+
+
+def _mom_weight():
+    for fid, w, _ in FACTORS:
+        if "mom_120d_skip5" in fid:
+            return w
+    return 0.30
 
 
 def _today_and_calendar():
@@ -228,6 +271,19 @@ def _regime(frames, assets):
     return "bull" if m > 0.010 else ("bear" if m < -0.010 else "side")
 
 
+def _below_ma(frames, assets):
+    """Assets whose last close is below their 20d simple moving average."""
+    out = set()
+    for a in assets:
+        df = frames.get(a)
+        if df is not None and len(df) >= 25:
+            close = float(df["close"].iloc[-1])
+            ma20 = float(df["close"].rolling(20).mean().iloc[-1])
+            if math.isfinite(ma20) and close < ma20:
+                out.add(a)
+    return out
+
+
 def _weights(scores, assets, regime):
     order = sorted(assets, key=lambda a: (scores[a], a))
     n = len(assets)
@@ -264,38 +320,105 @@ def _weights(scores, assets, regime):
     return w
 
 
-def _ma_guard(w, frames, assets, cur):
-    """Cap momentum top-picks that broke their 20d MA (Screener guard).
+def _de_rank_value_traps(scores, frames, assets, cur):
+    """v8: penalize below-20d-MA assets that also have negative 120d momentum.
 
-    Extended momentum names below short-term MA (e.g. COPPER) are the main
-    post-rebalance whipsaw drag. Cap their weight at GUARD_CAP and
-    redistribute the excess proportionally to the remaining names.
+    Reversal/nclv factors can lift broken-trend names (ETH had momentum rank
+    14/15 yet carried 9.4% weight). A score penalty proportional to the
+    momentum factor weight de-ranks them before weighting.
     """
     mom_vals = _factor_values(frames, "mom_120d_skip5", cur)
-    mom_rank = _ranks(mom_vals, assets)
-    below_ma = set()
+    below = _below_ma(frames, assets)
+    pen = TRAP_PENALTY * _mom_weight()
     for a in assets:
-        df = frames.get(a)
-        if df is not None and len(df) >= 25:
-            close = float(df["close"].iloc[-1])
-            ma20 = float(df["close"].rolling(20).mean().iloc[-1])
-            if math.isfinite(ma20) and close < ma20:
-                below_ma.add(a)
-    penalized = {a for a in assets if mom_rank[a] >= MOM_TOP_RANK and a in below_ma}
-    if not penalized:
-        return w
-    excess = sum(max(0.0, w[a] - GUARD_CAP) for a in penalized)
-    if excess <= 1e-12:
-        return w
-    for a in penalized:
-        w[a] = min(w[a], GUARD_CAP)
-    room = [a for a in assets if w[a] < GUARD_CAP - 1e-12 and a not in penalized]
-    if room:
+        mv = mom_vals.get(a)
+        if a in below and mv is not None and mv < 0:
+            scores[a] -= pen
+    return scores
+
+
+def _composite_ma_guard(w, frames, assets):
+    """v8: cap ANY asset with weight > 8% that trades below its 20d MA.
+
+    Factor-origin agnostic: catches reversal/nclv-lifted names the momentum
+    -only v7 guard misses (BTC 10.1%, ETH 9.4% both below MA20 last block).
+    Excess is redistributed proportionally to the remaining names.
+    """
+    below = _below_ma(frames, assets)
+    for _ in range(80):                    # iterate until cap invariant holds
+        penalized = {a for a in assets if w[a] > COMP_GUARD_CAP + 1e-9 and a in below}
+        if not penalized:
+            break
+        excess = sum(w[a] - COMP_GUARD_CAP for a in penalized)
+        for a in penalized:
+            w[a] = COMP_GUARD_CAP
+        room = [a for a in assets if w[a] < COMP_GUARD_CAP - 1e-12 and a not in penalized]
+        if not room:                       # no room: spread over all non-penalized
+            room = [a for a in assets if a not in penalized]
         den = sum(w[a] for a in room) + 1e-12
         for a in room:
             w[a] += excess * w[a] / den
-    else:                                  # no room: spread over all non-penalized
-        room = [a for a in assets if a not in penalized]
+    tot = sum(w.values())
+    w = {a: x / tot for a, x in w.items()}
+    w[assets[-1]] += 1.0 - sum(w.values())
+    return w
+
+
+def _ma_guard(w, frames, assets, cur):
+    """v7+v10: cap momentum top-picks.
+
+    v7 (Screener guard): extended momentum names below their short-term MA
+    (e.g. COPPER) are the main post-rebalance whipsaw drag - cap at GUARD_CAP.
+    v10: the single top momentum name (rank >= MOM_TOP_RANK_STRICT) is capped
+    at GUARD_CAP regardless of MA state, closing the above-MA20 hole that WTI
+    exploited in block 0331-0414 (top momentum name, above MA20, -21% crash on
+    8.9% weight). Excess is redistributed proportionally to remaining names.
+    """
+    mom_vals = _factor_values(frames, "mom_120d_skip5", cur)
+    mom_rank = _ranks(mom_vals, assets)
+    below = _below_ma(frames, assets)
+    for _ in range(80):                    # iterate until cap invariant holds
+        penalized = {a for a in assets if w[a] > GUARD_CAP + 1e-9 and (
+            (mom_rank[a] >= MOM_TOP_RANK and a in below) or
+            (mom_rank[a] >= MOM_TOP_RANK_STRICT)
+        )}
+        if not penalized:
+            break
+        excess = sum(w[a] - GUARD_CAP for a in penalized)
+        for a in penalized:
+            w[a] = GUARD_CAP
+        room = [a for a in assets if w[a] < GUARD_CAP - 1e-12 and a not in penalized]
+        if not room:                       # no room: spread over all non-penalized
+            room = [a for a in assets if a not in penalized]
+        den = sum(w[a] for a in room) + 1e-12
+        for a in room:
+            w[a] += excess * w[a] / den
+    tot = sum(w.values())
+    w = {a: x / tot for a, x in w.items()}
+    w[assets[-1]] += 1.0 - sum(w.values())
+    return w
+
+
+def _crypto_cap(w, assets):
+    """v9: cap combined BTC+ETH weight at 12%.
+
+    Three consecutive blocks ended with a crypto top-weight drag (block
+    0317-0331: ETH -25.9% on ~8% weight = entire block loss). ETH sat above
+    its 20d MA with positive 120d momentum at the decision, so the v8 MA
+    guards could not cap it. This guard is factor- and trend-agnostic: the
+    combined crypto weight can never exceed CRYPTO_CAP; excess is
+    redistributed proportionally to the 13 non-crypto names.
+    """
+    crypto = [a for a in assets if a in CRYPTO and a in w]
+    csum = sum(w[a] for a in crypto)
+    if csum <= CRYPTO_CAP + 1e-12:
+        return w
+    scale = CRYPTO_CAP / csum
+    for a in crypto:
+        w[a] *= scale
+    excess = csum - CRYPTO_CAP
+    room = [a for a in assets if a not in crypto]
+    if room:
         den = sum(w[a] for a in room) + 1e-12
         for a in room:
             w[a] += excess * w[a] / den
@@ -335,9 +458,12 @@ def strategy_hook():
         rebalance_to_weights(w)
         _persist_proposal(cur)
         return
+    scores = _de_rank_value_traps(scores, frames, assets, cur)  # v8
     regime = _regime(frames, assets)
     w = _weights(scores, assets, regime)
-    w = _ma_guard(w, frames, assets, cur)   # v7: momentum-top-pick MA guard
+    w = _composite_ma_guard(w, frames, assets)                  # v8 (8% cap)
+    w = _ma_guard(w, frames, assets, cur)                       # v7 (6% cap)
+    w = _crypto_cap(w, assets)                                  # v9 (12% crypto)
     f = _forecasts(scores, assets)
     rebalance_to_weights(
         w,

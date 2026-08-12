@@ -1,10 +1,14 @@
-"""Trader strategy v8: defensive re-weight on top of v4 ensemble.
+"""Trader strategy v13 (BTC x0.75) on top of v12-TEST: defensive escalation + deeper
+SOX cut (pre-agreed contingency fired 2027-10-11 after SOX 3rd air-pocket
++11%/-12.6%/-15.7% despite x0.75) + BTC cut (pre-agreed contingency fired
+2028-01-31 after BTC 2nd consecutive large air-pocket: -20.1% in 01-17..01-31,
+-17.6% MTD per Screener).
 
-Ensemble from factors/factor_ensemble.json (unchanged, quality-IC tilt):
-  vol_price_corr_20     w=0.3851 dir=+1  volume-confirmed price moves
-  dn_mkt_beta_60d       w=0.2445 dir=+1  low downside-market-beta (safe-haven)
-  eurusd_beta_60d       w=0.2062 dir=-1  low EURUSD-beta tilt (risk-appetite hedge)
-  rate_beta_cn10y_60d   w=0.1642 dir=-1  low CN10Y-beta tilt (rate-hedge)
+Ensemble from factors/factor_ensemble.json (quality-IC tilt, re-tilted 2028-01-31):
+  vol_price_corr_20     w=0.36  dir=+1  volume-confirmed price moves
+  dn_mkt_beta_60d       w=0.36  dir=+1  low downside-market-beta (safe-haven) -- PRIMARY
+  rate_beta_cn10y_60d   w=0.28  dir=-1  low CN10Y-beta tilt (rate-hedge)
+  Loader reads JSON live; root + factors/ synced byte-identical.
 
 v5 changes (triggered 2026-11-09 after 3 consecutive negative live blocks):
   1. Inverse-vol exponent 0.5 -> 0.6 (stronger vol dampening)
@@ -24,7 +28,7 @@ v7 changes (triggered 2027-03-01 after the 02-15..03-01 negative block: the
 pre-agreed N225 trigger fired - factor score stayed high while price fell
 another -6.7%; 000688.SH also dropped -13.8% on a high score; COPPER +13.9%
 despite a negative forecast => high-score concentration is the main risk):
-  1. SPREAD 0.10 -> 0.08 (further flatten score-driven spread; reduces weight
+  1. SPREAD 0.10 -> 0.08 (further flatten score-driven dispersion; reduces weight
      on top-scored names so a single air pocket damages the book less).
 
 v8 changes (triggered 2027-04-12 after the 4th consecutive negative live block
@@ -35,6 +39,55 @@ the WTI -30% crash worked but book still bled -0.60%):
      tilt shrinks so a single reversal damages the book less).
   Kept: vol exp 0.6, cap 0.15, stale-quote guard, full-investment 15-asset
   cross-section, 10-trading-day cadence.
+
+v9 changes (triggered 2027-06-07 after the 05-24..06-07 negative block - first
+negative after 3 consecutive positives, per the pre-agreed defensive-tilt
+contingency: NDX -8.4%, WTI -8.4%, BTC -6.2% were the block losers while the
+tape stayed rotational rather than directional):
+  1. Per-asset cap 0.15 -> 0.13 (lower concentration again).
+  2. Defensive multiplier on base weights: XAU/US10Y/CN10Y x1.15 (safe-haven
+     boost), SOX/NDX/ETH x0.85 (high-beta cut). Full investment preserved
+     (weights re-normalized); expresses the bearish/air-pocket view by tilting
+     toward defensives, never by cash or shorts.
+
+v10 changes (triggered 2027-06-21 - pre-agreed escalation contingency FIRED:
+SPX closed 6860 vs 20d MA ~7250 (-5.4% below MA) after the 2nd consecutive
+negative block 06-07..06-21; VIX spiked to ~14 intra-block; dn_mkt_beta was
+re-tilted to w=0.31 primary by the Screener):
+  1. Per-asset cap 0.13 -> 0.12 (tighter concentration under trend breakdown).
+  2. Defensive multiplier escalation: XAU/US10Y/CN10Y x1.15 -> x1.25 (stronger
+     safe-haven boost), SOX/NDX/ETH x0.85 -> x0.75 (deeper high-beta cut).
+  Full investment preserved; bearish view via defensive tilt, never cash/shorts.
+
+v11 changes (triggered 2027-10-11 - pre-agreed SOX contingency FIRED: SOX posted a
+THIRD consecutive large air-pocket in 4 blocks (+11.0% in 08-30..09-13, -12.6% in
+09-13..09-27, -15.7% in 09-27..10-11) despite the v10 x0.75 defensive cut; the
+09-27..10-11 block was the 2nd consecutive negative block with SOX the main drag
+(-0.81% on ~5% weight)):
+  1. Defensive multiplier SOX x0.75 -> x0.65 (deeper high-beta tech cut).
+  Kept: CAP 0.12, XAU/US10Y/CN10Y x1.25, NDX/ETH x0.75, SPREAD 0.06, vol exp 0.6,
+  stale-quote guard, full-investment 15-asset cross-section, 10-day cadence.
+
+v13 changes (triggered 2028-01-31 - pre-agreed BTC contingency FIRED: BTC posted a
+SECOND consecutive large air-pocket -20.1% in 01-17..01-31 (largest single-name
+air-pocket in book history, main drag ~-1.2% on ~6% weight) and -17.6% MTD per
+Screener with VIX climbing 28.4->34.2):
+  1. Defensive multiplier BTC x1.00 -> x0.75 (deeper crypto cut; high-vol
+     air-pocket repeater watch: BTC was +9.9% winner in 12-20..01-03 then
+     -20.1% in 01-17..01-31).
+  Kept: CAP 0.12, XAU/US10Y/CN10Y x1.25, SOX x0.65, NDX/ETH x0.75, WTI x0.80,
+  SPREAD 0.06, vol exp 0.6, stale-quote guard, full-investment 15-asset
+  cross-section, 10-day cadence.
+
+2027-11-08: Screener re-tilted to 3-factor ensemble (dn_mkt_beta_60d 0.31->0.38
+PRIMARY, vol_price_corr_20 0.24->0.34, rate_beta_cn10y_60d 0.22->0.28,
+eurusd_beta_60d dropped). Loader reads JSON live - no code change; v12-TEST
+(WTI x0.80, SOX x0.65, CAP 0.12) kept for the 11-08 block.
+
+2028-01-31: Screener re-tilted (vol_price_corr_20 0.36, dn_mkt_beta_60d 0.36
+PRIMARY, rate_beta_cn10y_60d 0.28; VIX 34.2, BTC 2nd consecutive air-pocket,
+CN10Y whipsaw 1.63->1.50->1.57). Loader reads JSON live - no code change for
+weights; v13 (BTC x0.75 added) active for the 01-31 block.
 
 Full-investment long-only 15-asset cross-sectional strategy; non-negative
 weights sum to 1 (cash=0). Rebalance cadence 10 trading days (handled by
@@ -55,7 +108,7 @@ from alphacrafter.sim.utils import (
 )
 
 N_ASSETS = 15
-CAP = 0.15          # per-asset weight cap (v5: 0.18 -> 0.15)
+CAP = 0.12          # per-asset weight cap (v10: 0.13 -> 0.12; v11 kept)
 FLOOR = 0.5 / N_ASSETS
 SPREAD = 0.06       # max score-driven spread above floor before vol tilt (v8: 0.08 -> 0.06)
 MIN_OBS = 40        # min obs for 60d beta factors
@@ -63,6 +116,12 @@ CORR_WIN = 20       # vol-price corr window
 CORR_MIN = 10       # min obs for corr
 VOL_EXP = 0.6       # inverse-vol exponent (v5: 0.5 -> 0.6)
 STALE_N = 5         # consecutive identical closes => stale quote
+# v10 defensive escalation (pre-agreed contingency after SPX broke 20d MA + 2nd
+# consecutive negative block): stronger safe-haven boost, deeper high-beta cut
+DEFENSIVE_MULT = {
+    "XAU": 1.25, "US10Y": 1.25, "CN10Y": 1.25,   # safe havens: boost (v9: 1.15)
+    "SOX": 0.65, "NDX": 0.75, "ETH": 0.75, "WTI": 0.80, "BTC": 0.75,  # high-beta tech/crypto + WTI + BTC air-pocket cuts (v13)
+}
 
 
 def stock(a, n=170):
@@ -117,7 +176,7 @@ def is_stale(closes, a, n=STALE_N):
 
 
 def compute_factor_values(assets, stale, closes, panel, eurusd_ret, cn10y_ret, vol):
-    """Raw cross-sectional factor values for the 4-factor ensemble.
+    """Raw cross-sectional factor values for the 3-factor ensemble.
     Stale assets get no entries -> neutral rank 0.5 downstream."""
     mkt = panel.mean(axis=1)
     dn_x = mkt.clip(upper=0.0)
@@ -234,8 +293,12 @@ def compute_target(assets):
     for a in stale:
         vol20[a] = med_vol  # frozen quotes: neutral average risk
 
-    # base weight: floor + score-driven spread; then inverse-vol tilt (v5 exp 0.6)
+    # base weight: floor + score-driven spread (v10: defensive multiplier applied
+    # here, before the inverse-vol tilt; weights re-normalized downstream)
     base = {a: FLOOR + SPREAD * ((score[a] - lo) / (hi - lo + 1e-12)) for a in assets}
+    for a, m in DEFENSIVE_MULT.items():
+        if a in base:
+            base[a] *= m
     tilted = {a: base[a] / (vol20[a] ** VOL_EXP) for a in assets}
     weights = capped_normalize(tilted)
 

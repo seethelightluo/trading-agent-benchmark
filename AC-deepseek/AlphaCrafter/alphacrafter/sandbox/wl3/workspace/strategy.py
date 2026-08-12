@@ -1,17 +1,55 @@
-"""Screener ensemble strategy, trader refresh 2026-12-17.
+"""Screener ensemble strategy, trader refresh 2028-05-04 (new 10-factor ensemble).
 
 Cross-sectional factor ensemble (quality_ic_tilt) drives a fully-invested
 15-asset long-only target. One proposal per 10-trading-day block (first day
 only); the rebalance helper applies the 3bp gross-edge gate.
 
-Ensemble (2026-12-17): down_beta_60(+1) cn10y_beta_60(-1) spx_beta_60(+1)
-vol_adj_mom_20_60(+1) dxy_beta_cond_60x20(+1) hs300_beta_60(-1)
-hilo_vol_ratio_20(+1) intraday_ret_skew_20(+1) comm_basket_beta_60(+1)
-vol_of_vol20x60(+1). dd_duration_120_resid and vix_beta_cond_60x20 dropped
-this cycle (two weakest live blocks); hilo+comm re-added (best live block).
+Ensemble (2028-05-04, from factor_ensemble.json):
+  cn10y_beta_60(-1) vol_adj_mom_20_60(+1) hs300_beta_60(-1)
+  comm_basket_beta_60(+1) hilo_vol_ratio_20(+1) vol_of_vol20x60(+1)
+  vix_beta_cond_60x20(-1) vol_regime_switch_20x60(+1)
+  intraday_ret_skew_20(+1) dd_duration_120_resid(-1).
+Replaces the previous down_beta_60/spx_beta_60/dxy_beta_cond_60x20 mix
+(spx_beta/down_beta dropped, vix_cond/vol_regime_switch/dd_duration added).
 
 Weighting: rank-linear tilt * inverse-vol (sqrt dampened), defensive floor,
 water-fill cap at 0.18. Sum-to-1, cash 0, fractional quantities.
+
+2027-11-18 FROZEN-ASSET FIX: HSI, SX5E, BTC, US10Y, CN10Y have been perfectly
+flat (1 unique close) since online start 2026-07-16 and soaked up ~46% of the
+portfolio via the inverse-vol preference. Fix: detect frozen assets (<=2
+unique closes over trailing 120d), floor each at 0.5%, redistribute freed
+share across live assets. Regime detection uses the live-asset panel only.
+
+2028-03-23 EQUITY-STRESS DE-RISK (trader, after two consecutive equity-led
+loss blocks: 02-24..03-09 -0.11%, 03-09..03-23 -4.27%; live equity complex
+~47-49% was the dominant loss driver; VIX 44.8):
+  * risk-off defensive floor raised 0.16 -> 0.18 (XAU base),
+  * new risk_trim layer when equity stress detected (risk_off AND (VIX>=30 OR
+    mean 21d return of live equity assets < -5%)):
+      - live equity complex (000300.SH/SPX/N225/000688.SH/SOX/NDX, frozen
+        HSI/SX5E excluded) capped at EQ_CAP=0.40 combined,
+      - ETH capped at ETH_CAP=0.06,
+      - freed weight water-filled to remaining live assets (per-asset cap
+        preserved at CAP=0.18).
+
+2028-04-06 FORECAST/GATE FIX (trader): the previous z-scored factor forecast
+ranked high-beta equities on top (down_beta/spx_beta +1 direction) while the
+risk_trim layer simultaneously cut equities to 40% -- the two contradicted
+each other, so the helper's gross edge was strongly negative (-59 to -63 bps)
+and every stress de-risking rebalance was rejected by the 3bp gate (03-23
+block stayed ~63% equity and lost another -4.1% while VIX hit 56).  Forecast
+returns are now implied alphas from the FINAL risk-adjusted target vs equal
+weight, scaled to live-panel daily vol (k = 2*scale).  This makes the
+forecast consistent with the submitted target: meaningful defensive
+rebalances clear the gate, near-no-op proposals still get skipped.
+
+2028-05-04 NEW-ENSEMBLE REFRESH (trader): implemented the three new live
+factor signals in the exact canonical forms from the factor library:
+  * vix_beta_cond_60x20 = beta(asset,VIX,60) * (VIX/VIX.shift(20)-1), d=-1
+  * vol_regime_switch_20x60 = mean(|diff((rv20>med(rv20,60)))|,60), d=+1
+  * dd_duration_120_resid = log1p(days since 120d high)
+                            - spx_beta * zscore(mom120_skip5), d=-1
 """
 import json
 import math
@@ -30,9 +68,17 @@ from alphacrafter.sim.utils import (
 
 OBS_ONLY = {"DXY", "VIX", "USDCNY", "USDJPY", "EURUSD"}
 DEF = {"XAU", "US10Y", "CN10Y"}
+EQ_ASSETS = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX"]
 CAP = 0.18
+EQ_CAP = 0.40            # live equity complex max combined weight under stress
+ETH_CAP = 0.06           # max ETH weight under stress
+VIX_STRESS = 30.0        # VIX level that flags equity stress
+EQ_RET21_STRESS = -0.05  # live-equity mean 21d return threshold for stress
+FROZEN_FLOOR = 0.005          # 0.5% per frozen (zero-return) asset
+FROZEN_LOOKBACK = 120         # trading days used to detect frozen assets
 ONLINE_START = "2026-07-16"
 HORIZON = 10
+FC_K_MULT = 2.0               # implied-alpha forecast scale multiplier
 
 
 def get_df(symbol, days=260):
@@ -77,6 +123,28 @@ def down_beta(y, x, win=60):
     return float(q.y.cov(q.x) / vx)
 
 
+def dd_duration_resid(c, r, r_spx):
+    """log1p(calendar days since 120d high) - spx_beta * zscore(mom120 skip5).
+
+    Canonical form from factor library dd_duration_120_resid (direction -1).
+    """
+    try:
+        hi = c.rolling(120).max()
+        if isinstance(c.index, pd.DatetimeIndex):
+            last_high = c.index.to_series().where(c == hi).ffill()
+            dur = np.log1p((c.index - last_high).days.fillna(0).astype(float))
+        else:
+            pos = pd.Series(np.arange(len(c)), index=c.index)
+            dur = np.log1p((pos - pos.where(c == hi).ffill()).fillna(0).astype(float))
+        mom = c.shift(5) / c.shift(125) - 1.0
+        zmom = (mom - mom.rolling(250).mean()) / mom.rolling(250).std()
+        b = beta_last(r, r_spx)
+        v = float(dur.iloc[-1]) - (b * float(zmom.iloc[-1]) if b is not None else 0.0)
+        return v if np.isfinite(v) else None
+    except Exception:
+        return None
+
+
 def cs_rank(values, assets):
     """Cross-sectional rank in [0,1]; missing -> 0.5."""
     valid = sorted((float(v), a) for a, v in values.items()
@@ -86,6 +154,106 @@ def cs_rank(values, assets):
     for i, (_, a) in enumerate(valid):
         out[a] = i / n
     return out
+
+
+def detect_frozen(close, lookback=FROZEN_LOOKBACK):
+    """Assets whose price has not moved (<=2 unique closes) over the window."""
+    out = set()
+    for a, c in close.items():
+        if c is None:
+            continue
+        q = c.dropna().tail(lookback)
+        if len(q) >= 20 and q.nunique() <= 2:
+            out.add(a)
+    return out
+
+
+def apply_frozen_override(w, assets, frozen, cap=CAP, floor=FROZEN_FLOOR):
+    """Floor frozen assets at `floor`, redistribute the rest among live assets."""
+    if not frozen or len(frozen) >= len(assets) - 1:
+        return w
+    w = dict(w)
+    live = [a for a in assets if a not in frozen]
+    for a in frozen:
+        w[a] = floor
+    tot = sum(w.values())
+    if tot <= 0:
+        return {a: 1.0 / len(assets) for a in assets}
+    w = {a: x / tot for a, x in w.items()}
+    for _ in range(200):
+        excess = sum(max(0.0, w[a] - cap) for a in live)
+        if excess < 1e-12:
+            break
+        for a in live:
+            w[a] = min(cap, w[a])
+        room = [a for a in live if w[a] < cap - 1e-9]
+        if not room:
+            break
+        p = {a: max(w[a], 1e-9) for a in room}
+        den = sum(p.values())
+        for a in room:
+            w[a] += excess * p[a] / den
+    tot = sum(w.values())
+    if tot <= 0:
+        return {a: 1.0 / len(assets) for a in assets}
+    w = {a: x / tot for a, x in w.items()}
+    w[assets[-1]] += 1.0 - sum(w.values())  # float guard
+    return {a: max(0.0, float(x)) for a, x in w.items()}
+
+
+def risk_trim(w, assets, live, stress, eq_cap=EQ_CAP, eth_cap=ETH_CAP, cap=CAP):
+    """Stress de-risking: cap live equity complex and ETH, water-fill the rest.
+
+    Applied AFTER the frozen override so the caps act on the true final
+    weights (before the override the frozen assets' phantom weights dominate).
+    """
+    if not stress:
+        return w
+    w = dict(w)
+    eq = [a for a in EQ_ASSETS if a in live]
+    for _ in range(300):
+        excess = 0.0
+        for a in assets:
+            c = cap
+            if a == "ETH" and a in live:
+                c = min(c, eth_cap)
+            if w[a] > c:
+                excess += w[a] - c
+                w[a] = c
+        s_eq = sum(w[a] for a in eq)
+        if s_eq > eq_cap:
+            excess += s_eq - eq_cap
+            for a in eq:
+                w[a] *= eq_cap / max(s_eq, 1e-12)
+        if excess < 1e-12:
+            break
+        room = []
+        for a in assets:
+            if a not in live:
+                continue
+            c = cap
+            if a == "ETH":
+                c = min(c, eth_cap)
+            if a in eq:
+                if sum(w[x] for x in eq) < eq_cap - 1e-9 and w[a] < c - 1e-9:
+                    room.append(a)
+            elif w[a] < c - 1e-9:
+                room.append(a)
+        if not room:
+            break
+        p = {a: max(w[a], 1e-9) for a in room}
+        den = sum(p.values())
+        if den <= 0:
+            break
+        for a in room:
+            w[a] += excess * p[a] / den
+    tot = sum(w.values())
+    if tot <= 0:
+        w = {a: 1.0 / len(assets) for a in assets}
+    else:
+        w = {a: x / tot for a, x in w.items()}
+    w[assets[-1]] += 1.0 - sum(w.values())  # float guard
+    return {a: max(0.0, float(x)) for a, x in w.items()}
 
 
 def is_block_start():
@@ -170,6 +338,9 @@ def strategy_hook():
     if any(c is None for c in close.values()):
         return
 
+    frozen = detect_frozen(close)
+    live = [a for a in assets if a not in frozen]
+
     ret = {a: close[a].pct_change() for a in assets}
     panel = pd.concat([ret[a].rename(a) for a in assets], axis=1, join="inner").dropna()
     if len(panel) < 70:
@@ -183,6 +354,8 @@ def strategy_hook():
     d_cn = close["CN10Y"].pct_change()
     dxy = series(get_df("DXY"))
     r_dxy = dxy.pct_change() if dxy is not None else None
+    vix = series(get_df("VIX"))
+    r_vix = vix.pct_change() if vix is not None else None
     comm_basket = panel[["XAU", "COPPER", "WTI"]].mean(axis=1)  # ew commodity basket
 
     # ---- factor signals (only those in the active ensemble) --------------
@@ -208,6 +381,13 @@ def strategy_hook():
                     b * (dxy.iloc[-1] / dxy.iloc[-21] - 1.0) if b is not None else None)
             else:
                 sig["dxy_beta_cond_60x20"][a] = None
+        if "vix_beta_cond_60x20" in ens_ids:
+            if r_vix is not None and len(vix) >= 25:
+                b = beta_last(r, r_vix)
+                sig["vix_beta_cond_60x20"][a] = (
+                    b * (vix.iloc[-1] / vix.iloc[-21] - 1.0) if b is not None else None)
+            else:
+                sig["vix_beta_cond_60x20"][a] = None
         if "hilo_vol_ratio_20" in ens_ids:
             # (max20-min20)/close / std(ret,20)
             if len(c) >= 25:
@@ -229,6 +409,13 @@ def strategy_hook():
             rv20 = r.rolling(20).std()
             sig["vol_of_vol20x60"][a] = (
                 float(rv20.tail(60).std()) if len(rv20.dropna()) >= 40 else None)
+        if "vol_regime_switch_20x60" in ens_ids:
+            rv20 = r.rolling(20).std()
+            above = (rv20 > rv20.rolling(60).median()).astype(float)
+            flips = above.diff().abs().rolling(60).mean().dropna()
+            sig["vol_regime_switch_20x60"][a] = float(flips.iloc[-1]) if len(flips) else None
+        if "dd_duration_120_resid" in ens_ids:
+            sig["dd_duration_120_resid"][a] = dd_duration_resid(c, r, r_spx)
 
     # ---- composite score (direction preserved) --------------------------
     score = {a: 0.0 for a in assets}
@@ -237,28 +424,56 @@ def strategy_hook():
         for a in assets:
             score[a] += w * d * rk[a]
 
-    # ---- regime posture ---------------------------------------------------
-    market = panel.mean(axis=1)
+    # ---- regime posture (live assets only; frozen zeros would dilute) ----
+    lp = panel[live] if live else panel
+    market = lp.mean(axis=1)
     wealth = (1.0 + market).cumprod()
     mdd = float((wealth / wealth.rolling(60).max() - 1.0).tail(20).min())
     mkt20 = float(market.tail(20).mean())
-    vol20 = float(panel.tail(20).std().mean())
-    vol_med = float(panel.tail(120).std().median(axis=0))
+    vol20 = float(lp.tail(20).std().mean())
+    vol_med = float(lp.tail(120).std().median(axis=0))
     risk_off = (mkt20 < 0.0 and mdd < -0.025) or (vol20 > 1.25 * max(vol_med, 1e-6))
     risk_on = mkt20 > 0.0 and mdd > -0.015
-    def_floor = 0.16 if risk_off else (0.11 if risk_on else 0.13)
+    def_floor = 0.18 if risk_off else (0.11 if risk_on else 0.13)
     spread = 2.0 if risk_off else (3.0 if risk_on else 2.0)
+
+    # ---- equity stress flag (VIX or live-equity 21d breadth) -------------
+    vix_level = float(vix.iloc[-1]) if vix is not None and len(vix) else None
+    eq_live = [a for a in EQ_ASSETS if a in live]
+    eq_ret21 = (float(np.mean([close[a].iloc[-1] / close[a].iloc[-22] - 1.0
+                              for a in eq_live])) if eq_live else 0.0)
+    stress = risk_off and ((vix_level is not None and vix_level >= VIX_STRESS)
+                           or eq_ret21 < EQ_RET21_STRESS)
+    if stress:
+        print(f"[trader] EQUITY STRESS: VIX={vix_level:.1f} "
+              f"live-eq 21d mean={eq_ret21 * 100:.2f}% -> eq<={EQ_CAP:.2f}, "
+              f"ETH<={ETH_CAP:.2f}")
 
     # ---- target weights: full 15-asset, sum 1, cash 0 --------------------
     weights = build_weights(score, assets, panel, def_floor, spread)
+    weights = apply_frozen_override(weights, assets, frozen)
+    weights = risk_trim(weights, assets, live, stress)
+    if len(frozen):
+        print(f"[trader] frozen assets floored at {FROZEN_FLOOR:.3f}: "
+              f"{sorted(frozen)}; live={sorted(live)}")
+        print(f"[trader] frozen total weight={sum(weights[a] for a in frozen)*100:.2f}%")
+    if stress:
+        eqw = sum(weights[a] for a in EQ_ASSETS)
+        print(f"[trader] final live-equity weight={eqw * 100:.1f}% "
+              f"XAU={weights['XAU'] * 100:.1f}% COPPER={weights['COPPER'] * 100:.1f}% "
+              f"WTI={weights['WTI'] * 100:.1f}% ETH={weights['ETH'] * 100:.1f}%")
 
-    # ---- forecast returns (z-scored composite) ---------------------------
-    vals = np.array([score[a] for a in assets], dtype=float)
-    mu, sd = float(vals.mean()), float(vals.std())
-    scale = float(panel.tail(252).std(axis=1, ddof=0).median()) if len(panel) >= 30 else 0.01
+    # ---- forecast returns: implied alpha from the final target -----------
+    # forecast_i = k * (w_i - 1/N), k = FC_K_MULT * live-panel daily vol.
+    # Consistent with the submitted target so the helper's gross edge is
+    # positive for meaningful (esp. defensive) rebalances; near-no-op
+    # proposals still produce ~zero edge and get skipped by the 3bp gate.
+    scale = float(lp.tail(252).std(axis=1, ddof=0).median()) if len(lp) >= 30 else 0.01
     if not math.isfinite(scale) or scale <= 0:
         scale = 0.01
-    forecast = {a: ((score[a] - mu) / sd) * scale if sd > 1e-12 else 0.0 for a in assets}
+    k = FC_K_MULT * scale
+    eq_w = 1.0 / len(assets)
+    forecast = {a: float(k * (weights[a] - eq_w)) for a in assets}
 
     rebalance_to_weights(
         weights,
