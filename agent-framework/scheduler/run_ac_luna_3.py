@@ -52,6 +52,7 @@ if not 1 <= ONLINE_WORLDLINES <= 9:
     raise SystemExit("AC_LUNA_WORLDLINES must be between 1 and 9")
 RETRY_DELAYS = (60, 120, 300, 600, 900)
 RETRY_JITTER = 0.20
+MAX_RETRY_ATTEMPTS = int(os.environ.get("AC_LUNA_MAX_RETRIES", "6"))
 SESSION_PREFIX = os.environ.get("AC_LUNA_SESSION_PREFIX", "wl")
 
 
@@ -319,6 +320,28 @@ def main() -> int:
                     retry_message = "paused by 429 marker"
                 else:
                     attempt = retry_attempt.get(wl, 0)
+                    if attempt >= MAX_RETRY_ATTEMPTS:
+                        # Retry budget exhausted: auto-pause this WL so queued
+                        # WLs can take its slot. Operator must remove the
+                        # marker to resume it manually.
+                        marker = pause_marker(wl)
+                        marker.write_text(
+                            f"auto-paused at {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                            f"after {attempt} retries (budget {MAX_RETRY_ATTEMPTS})\n",
+                            encoding="utf-8",
+                        )
+                        entry.update({
+                            "status": "paused_retry_budget",
+                            "paused_marker": str(marker),
+                            "retry_attempt": attempt,
+                        })
+                        retry_message = f"auto-paused after {attempt} retries (budget exhausted)"
+                        print(
+                            f"[luna-ac] WL{wl} rc={rc}, {retry_message}",
+                            flush=True,
+                        )
+                        save_state(state)
+                        continue
                     base_delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
                     delay = base_delay * random.uniform(
                         1.0 - RETRY_JITTER, 1.0 + RETRY_JITTER

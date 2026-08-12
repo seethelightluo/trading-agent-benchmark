@@ -164,7 +164,7 @@ def main() -> int:
                 prev = last_seen.get(key)
                 if prev is not None and running:
                     ts0, adv0, stale0, prev_running = prev
-                    if met["adv"] == adv0 and now - ts0 > STALL_MIN * 60:
+                    if prev_running and met["adv"] == adv0 and now - ts0 > STALL_MIN * 60:
                         flags.append(f"{key}:STALL(date={met['date']})")
                         if AUTO_PAUSE and not (PAUSE_DIRS[fam] / f"pause_{wl}_429").exists():
                             paused = pause_wl(
