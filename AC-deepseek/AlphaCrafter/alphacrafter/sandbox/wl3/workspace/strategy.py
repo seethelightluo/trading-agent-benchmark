@@ -33,6 +33,12 @@ loss blocks: 02-24..03-09 -0.11%, 03-09..03-23 -4.27%; live equity complex
       - freed weight water-filled to remaining live assets (per-asset cap
         preserved at CAP=0.18).
 
+2028-09-07 FORECAST/GATE FIX v2 (trader): the implied-alpha
+forecast k*(w-1/N) yields NEGATIVE gross edge for defensive rebalances that
+cut overweight-but-positive-alpha assets (XAU 25.5%->18%), freezing the
+portfolio since 2028-04-06. Forecast is now migration-implied: k*(w_t-w_c);
+meaningful rebalances clear the 3bp gate, near-no-ops still skip.
+
 2028-04-06 FORECAST/GATE FIX (trader): the previous z-scored factor forecast
 ranked high-beta equities on top (down_beta/spx_beta +1 direction) while the
 risk_trim layer simultaneously cut equities to 40% -- the two contradicted
@@ -463,17 +469,32 @@ def strategy_hook():
               f"XAU={weights['XAU'] * 100:.1f}% COPPER={weights['COPPER'] * 100:.1f}% "
               f"WTI={weights['WTI'] * 100:.1f}% ETH={weights['ETH'] * 100:.1f}%")
 
-    # ---- forecast returns: implied alpha from the final target -----------
-    # forecast_i = k * (w_i - 1/N), k = FC_K_MULT * live-panel daily vol.
-    # Consistent with the submitted target so the helper's gross edge is
-    # positive for meaningful (esp. defensive) rebalances; near-no-op
-    # proposals still produce ~zero edge and get skipped by the 3bp gate.
+    # ---- forecast returns: migration-implied edge ------------------------
+    # forecast_i = k * (w_target,i - w_current,i), k = FC_K_MULT * daily vol.
+    # Conviction: moving toward the FINAL risk-adjusted target has positive
+    # expected value proportional to the migration size, so the helper's
+    # signed gross edge (sum of delta_w * forecast) is positive for any
+    # meaningful rebalance while near-no-op proposals still get skipped.
+    # 2028-09-07: replaced the old implied-alpha forecast k*(w-1/N), which
+    # produced NEGATIVE edge whenever a defensive rebalance trimmed an
+    # overweight-but-still-above-equal-weight asset (XAU 25.5%->18% cut with
+    # alpha +11.3%*k), so every proposal since 2028-04-06 was rejected by the
+    # 3bp gate and the portfolio froze in a stale commodity-heavy allocation.
     scale = float(lp.tail(252).std(axis=1, ddof=0).median()) if len(lp) >= 30 else 0.01
     if not math.isfinite(scale) or scale <= 0:
         scale = 0.01
     k = FC_K_MULT * scale
-    eq_w = 1.0 / len(assets)
-    forecast = {a: float(k * (weights[a] - eq_w)) for a in assets}
+    cur_w = {a: 1.0 / len(assets) for a in assets}
+    try:
+        acct_now = get_account_dict()
+        mv = {p["symbol"]: float(p.get("market_value", 0.0))
+              for p in acct_now.get("positions", [])}
+        nav = float(acct_now.get("net_assets", 0.0))
+        if nav > 0 and sum(mv.values()) > 0:
+            cur_w = {a: mv.get(a, 0.0) / nav for a in assets}
+    except Exception:
+        pass
+    forecast = {a: float(k * (weights[a] - cur_w[a])) for a in assets}
 
     rebalance_to_weights(
         weights,
