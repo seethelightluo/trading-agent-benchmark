@@ -1,21 +1,30 @@
-"""Trader strategy v5 -- Screener quality_ic_tilt ensemble (9 factors) LIVE-computed.
+"""Trader strategy v6 -- Screener quality_ic_tilt ensemble (10 factors) LIVE-computed.
 
-Cross-sectional factor composite (CS rank -> z-score -> winsorize 3 sigma, dir +1),
-fully-invested 15-asset long-only target, one atomic rebalance per 10-trading-day block.
-Risk-off regime tilts toward defensive tradable assets (XAU/US10Y/CN10Y); never cash.
+Cross-sectional factor composite (CS rank -> z-score -> winsorize 3 sigma, dir
+applied), fully-invested 15-asset long-only target, one atomic rebalance per
+10-trading-day block. Risk-off regime tilts toward defensive tradable assets
+(XAU/US10Y/CN10Y); never cash.
 
-Ensemble (2026-08-13, quality_ic_tilt, <=10 cap): max_consec_gain_20 .208,
-mom20_volproxy60 .165, spx_corr60 .115, mom_20d_skip5 .110, gain_loss_20 .108,
-downbeta_spx_60 .093, usdjpy_beta_cond_120x60 .083, volcluster_60 .059, calmness_20 .058.
-All directions +1.
+Ensemble (2026-11-19, quality_ic_tilt, 10f cap): downbeta_spx_60 .1361(+1),
+max_consec_gain_20 .1309(+1), mom20_volproxy60 .1050(+1), gain_loss_20 .0990(+1),
+vol_of_vol20x60 .0975(+1), spx_corr60 .0972(+1), usdjpy_beta_cond_120x60 .0868(+1),
+mom30_vol60 .0840(+1), days_since_high_60 .0826(-1), max_consec_loss_20 .0809(-1).
 
-v5 change (2026-09-24): factor artifacts froze at 2026-07-29 (~40 td stale), giving
-static z-ranks and negative gross edge at the 08-27 and 09-10 block starts (gate
-correctly skipped both). Instead of waiting for a miner artifact refresh, compute the
-9 ensemble factor signals LIVE from price data visible at each decision date (same
-formulas/directions as the persisted artifacts; recomputation cross-checked in
-scripts/trader_20260924_validate_livefactors.py). Persisted artifact rows are kept
-only as a fallback when live data is insufficient. v4 trend-sanity cap retained.
+v6 changes (2026-11-19):
+1. ENSEMBLE_PATH -> factors/factor_ensemble.json (screener persists there; the
+   root copy was the stale 2026-08-13 9f ensemble).
+2. LIVE_FIDS -> new 10-factor set; live computation added for vol_of_vol20x60
+   (20d rv std over 60d), mom30_vol60 (30d skip-5 momentum / 60d vol),
+   days_since_high_60 (days since last touch of trailing 60d high, dir -1),
+   max_consec_loss_20 (longest 21d down-run, dir -1). Dropped mom_20d_skip5 /
+   calmness_20 / volcluster_60 from live set (no longer selected).
+3. Feed-artifact guard: SX5E/BTC/US10Y/CN10Y price series are perfectly flat
+   since ~2026-11-03 (std of trailing 15d returns == 0). Such assets get NaN
+   (neutral rank 0.5) on every live factor so the clamped feed cannot distort
+   cross-sectional rankings; they still receive a portfolio weight via the
+   sum-to-1 normalizer.
+v5 heritage: live factor recompute (artifacts froze 2026-07-29); v4 trend-sanity
+cap (20d return < -4% -> per-asset cap 0.09) retained.
 """
 import json
 import math
@@ -31,7 +40,7 @@ from alphacrafter.sim.utils import (
 )
 
 BASE = Path(__file__).parent
-ENSEMBLE_PATH = BASE / "factor_ensemble.json"
+ENSEMBLE_PATH = BASE / "factors" / "factor_ensemble.json"
 DATE_PATH = BASE.parent / "persistent" / "date.json"
 
 ONLINE_START = "2026-07-16"
@@ -42,11 +51,12 @@ TREND_CAP = 0.09        # per-asset cap when live 20d return < TREND_THRESH
 TREND_THRESH = -0.04    # 20d return threshold triggering the trend cap
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 AGGRESSIVE = {"SOX", "NDX", "ETH", "BTC", "000688.SH", "N225"}
-EMBEDDED = {"mom_20d_skip5", "range_pos_252", "spx_corr60"}
+EMBEDDED = {"spx_corr60"}
 LIVE_FIDS = {
-    "mom_20d_skip5", "mom20_volproxy60", "calmness_20", "volcluster_60",
-    "max_consec_gain_20", "gain_loss_20", "spx_corr60", "downbeta_spx_60",
-    "usdjpy_beta_cond_120x60",
+    "downbeta_spx_60", "max_consec_gain_20", "mom20_volproxy60",
+    "gain_loss_20", "vol_of_vol20x60", "spx_corr60",
+    "usdjpy_beta_cond_120x60", "mom30_vol60", "days_since_high_60",
+    "max_consec_loss_20",
 }
 ARTIFACT_START = "2020-01-01"
 LIVE_MIN_FINITE = 10    # of 15 assets required to trust a live factor row
@@ -165,7 +175,8 @@ def _current_weights(account, assets):
 def _live_factors(assets):
     """Recompute ensemble factor signals live from price data visible at the
     decision date. Returns {fid: [value per asset]} with NaN where unavailable.
-    Formulas match the persisted artifacts (cross-checked 2026-09-24)."""
+    Formulas match the persisted factor JSONs (v3.0.0, cross-checked 2026-11-19).
+    Perfectly-flat trailing 15d series (feed artifact) -> NaN (neutral rank)."""
     import numpy as np
     import pandas as pd
     closes = {}
@@ -187,35 +198,45 @@ def _live_factors(assets):
     spx_ret = spx.pct_change() if spx is not None else None
     usdjpy_ret = usdjpy.pct_change() if usdjpy is not None else None
 
+    def longest_run(x):
+        m = 0.0
+        cur = 0
+        for v in x:
+            if v == 1:
+                cur += 1
+                if cur > m:
+                    m = cur
+            else:
+                cur = 0
+        return m
+
     per = {a: {} for a in assets}
     for a, c in closes.items():
         ret = c.pct_change()
         f = per[a]
-        f["mom_20d_skip5"] = c.shift(5) / c.shift(25) - 1.0
-        raw20 = c.shift(5) / c.shift(25) - 1.0
-        mom60 = c / c.shift(60) - 1.0
-        f["mom20_volproxy60"] = raw20 / (1.0 + mom60.abs())
-        std20 = ret.rolling(20, min_periods=10).std()
-        f["calmness_20"] = (ret.abs() < 0.5 * std20).rolling(20, min_periods=10).mean()
-        f["volcluster_60"] = ret.abs().rolling(60, min_periods=40).corr(ret.abs().shift(1))
+        flat = bool(len(ret) >= 15 and float(ret.tail(15).std()) < 1e-12)
+        f["_flat"] = flat
+        if flat:
+            continue  # all live factor values stay NaN -> neutral rank
+        f["mom20_volproxy60"] = (c.shift(5) / c.shift(25) - 1.0) / (1.0 + (c / c.shift(60) - 1.0).abs())
         pos = (ret > 0).astype(int)
-
-        def longest_run(x):
-            m = 0.0
-            cur = 0
-            for v in x:
-                if v == 1:
-                    cur += 1
-                    if cur > m:
-                        m = cur
-                else:
-                    cur = 0
-            return m
-
+        neg = (ret < 0).astype(int)
         f["max_consec_gain_20"] = pos.rolling(21, min_periods=10).apply(longest_run, raw=True)
+        f["max_consec_loss_20"] = neg.rolling(21, min_periods=10).apply(longest_run, raw=True)
         g = ret.clip(lower=0).rolling(20, min_periods=10).sum()
         l = ret.clip(upper=0).abs().rolling(20, min_periods=10).sum()
         f["gain_loss_20"] = g / l.replace(0, np.nan)
+        vol60 = ret.rolling(60, min_periods=15).std()
+        f["mom30_vol60"] = (c.shift(5) / c.shift(35) - 1.0) / vol60.replace(0, np.nan)
+        f["vol_of_vol20x60"] = ret.rolling(20, min_periods=5).std().rolling(60, min_periods=15).std()
+        # days since last touch of the trailing 60d high (window 60, min_periods 40)
+        w60 = c.tail(60)
+        if len(w60) >= 40:
+            mx = float(w60.max())
+            idx = np.where((w60.values == mx))[0]
+            f["days_since_high_60"] = float(len(w60) - 1 - int(idx[-1]))
+        else:
+            f["days_since_high_60"] = float("nan")
         if spx_ret is not None:
             f["spx_corr60"] = ret.rolling(60, min_periods=15).corr(spx_ret)
             m2 = pd.concat([ret, spx_ret], axis=1, join="inner").dropna()
@@ -249,10 +270,21 @@ def _live_factors(assets):
     for fid in LIVE_FIDS:
         vals = []
         for a in assets:
-            s = per[a].get(fid) if a in per else None
-            if s is not None and len(s) > 0:
-                v = float(s.iloc[-1])
-                vals.append(v if v == v else float("nan"))
+            f = per.get(a, {})
+            if f.get("_flat", False):
+                vals.append(float("nan"))
+                continue
+            s = f.get(fid)
+            if s is not None:
+                if hasattr(s, "iloc"):
+                    if len(s) > 0:
+                        v = float(s.iloc[-1])
+                        vals.append(v if v == v else float("nan"))
+                    else:
+                        vals.append(float("nan"))
+                else:
+                    v = float(s)
+                    vals.append(v if v == v else float("nan"))
             else:
                 vals.append(float("nan"))
         if sum(1 for v in vals if v == v) >= LIVE_MIN_FINITE:

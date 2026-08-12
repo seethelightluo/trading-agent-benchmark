@@ -1,7 +1,21 @@
-"""Trader strategy v15 on top of v14: PRE-AGREED WTI CONTINGENCY FIRED
-2028-03-27 - WTI printed a SECOND consecutive large air-pocket (-12.4% in
-02-28..03-13, -10.5% in 03-13..03-27) while already at x0.80; deepened the cut
-x0.80 -> x0.65 (same depth as the SOX repeat-offender cut).
+"""Trader strategy v16 on top of v15: SAFE-HAVEN REBALANCE + WTI DE-ESCALATION
+fired 2028-05-08 after the 04-24..05-08 block (-0.97%, DD 1.17%).
+
+v16 changes (evidence from 04-24..05-08 block + trailing 5 blocks):
+  1. XAU x1.25 -> x1.00 (safe-haven rebalance FIRED: XAU printed its 5th
+     consecutive negative 10d block 02-28..05-05 (-4.00/-2.78/-0.09/-3.17/-1.30%)
+     while US10Y confirmed as the functioning safe haven (+1.91%/+3.78% in the
+     last two blocks). Remove XAU's defensive boost; US10Y/CN10Y stay x1.25.
+  2. WTI x0.65 -> x0.80 (de-escalation FIRED: the pre-agreed x0.65 cut was
+     triggered by 2 consecutive large air-pockets; that pattern has abated -
+     WTI +4.66% (03-27..04-10), -3.60% (04-10..04-24), +5.48% (04-24..05-08),
+     no 4th air-pocket. Ease the haircut to recapture upside while keeping a
+     mild defensive discount on elevated-vol commodity.)
+
+v15 history: PRE-AGREED WTI CONTINGENCY FIRED 2028-03-27 - WTI printed a SECOND
+consecutive large air-pocket (-12.4% in 02-28..03-13, -10.5% in 03-13..03-27)
+while already at x0.80; deepened the cut x0.80 -> x0.65 (same depth as the SOX
+repeat-offender cut).
 
 v14 history: Screener RE-TILT 2028-03-13 dropped
 vol_price_corr_20 and promoted vol_adj_mom_accel_20x60 (w=0.50) to PRIMARY;
@@ -9,17 +23,17 @@ dn_mkt_beta_60d w=0.36->0.28, rate_beta_cn10y_60d w=0.28->0.22. Code change:
 added vol_adj_mom_accel_20x60 computation. Kept v13 defensive multipliers
 (BTC x0.75, WTI x0.65, SOX x0.65, NDX/ETH x0.75, XAU/US10Y/CN10Y x1.25).
 
+Ensemble from factors/factor_ensemble.json (quality-IC tilt, re-tilted 2028-04-24):
+  vol_adj_mom_accel_20x60  w=0.52  dir=+1  vol-adjusted momentum acceleration -- PRIMARY
+  dn_mkt_beta_60d          w=0.28  dir=+1  low downside-market-beta (safe-haven)
+  rate_beta_cn10y_60d      w=0.20  dir=-1  low CN10Y-beta tilt (rate-hedge)
+  Loader reads JSON live; root + factors/ synced byte-identical.
+
 Legacy header: v13 (BTC x0.75) on top of v12-TEST: defensive escalation + deeper
 SOX cut (pre-agreed contingency fired 2027-10-11 after SOX 3rd air-pocket
 +11%/-12.6%/-15.7% despite x0.75) + BTC cut (pre-agreed contingency fired
 2028-01-31 after BTC 2nd consecutive large air-pocket: -20.1% in 01-17..01-31,
 -17.6% MTD per Screener).
-
-Ensemble from factors/factor_ensemble.json (quality-IC tilt, re-tilted 2028-03-13):
-  vol_adj_mom_accel_20x60  w=0.50  dir=+1  vol-adjusted momentum acceleration -- PRIMARY
-  dn_mkt_beta_60d          w=0.28  dir=+1  low downside-market-beta (safe-haven)
-  rate_beta_cn10y_60d      w=0.22  dir=-1  low CN10Y-beta tilt (rate-hedge)
-  Loader reads JSON live; root + factors/ synced byte-identical.
 
 v5 changes (triggered 2026-11-09 after 3 consecutive negative live blocks):
   1. Inverse-vol exponent 0.5 -> 0.6 (stronger vol dampening)
@@ -90,16 +104,6 @@ Screener with VIX climbing 28.4->34.2):
   SPREAD 0.06, vol exp 0.6, stale-quote guard, full-investment 15-asset
   cross-section, 10-day cadence.
 
-2027-11-08: Screener re-tilted to 3-factor ensemble (dn_mkt_beta_60d 0.31->0.38
-PRIMARY, vol_price_corr_20 0.24->0.34, rate_beta_cn10y_60d 0.22->0.28,
-eurusd_beta_60d dropped). Loader reads JSON live - no code change; v12-TEST
-(WTI x0.80, SOX x0.65, CAP 0.12) kept for the 11-08 block.
-
-2028-01-31: Screener re-tilted (vol_price_corr_20 0.36, dn_mkt_beta_60d 0.36
-PRIMARY, rate_beta_cn10y_60d 0.28; VIX 34.2, BTC 2nd consecutive air-pocket,
-CN10Y whipsaw 1.63->1.50->1.57). Loader reads JSON live - no code change for
-weights; v13 (BTC x0.75 added) active for the 01-31 block.
-
 Full-investment long-only 15-asset cross-sectional strategy; non-negative
 weights sum to 1 (cash=0). Rebalance cadence 10 trading days (handled by
 rebalance_to_weights horizon_days). Bearish views expressed by defensive tilt,
@@ -127,11 +131,14 @@ CORR_WIN = 20       # vol-price corr window
 CORR_MIN = 10       # min obs for corr
 VOL_EXP = 0.6       # inverse-vol exponent (v5: 0.5 -> 0.6)
 STALE_N = 5         # consecutive identical closes => stale quote
-# v10 defensive escalation (pre-agreed contingency after SPX broke 20d MA + 2nd
-# consecutive negative block): stronger safe-haven boost, deeper high-beta cut
+# v16 defensive multipliers (safe-haven rebalance + WTI de-escalation, 2028-05-08):
+#   XAU x1.25 -> x1.00 (5 consecutive negative blocks 02-28..05-05; US10Y is the
+#   functioning safe haven, +1.91%/+3.78% last two blocks)
+#   WTI x0.65 -> x0.80 (air-pocket pattern abated: +4.66%/-3.60%/+5.48% last 3
+#   blocks, no 4th large air-pocket)
 DEFENSIVE_MULT = {
-    "XAU": 1.25, "US10Y": 1.25, "CN10Y": 1.25,   # safe havens: boost (v9: 1.15)
-    "SOX": 0.65, "NDX": 0.75, "ETH": 0.75, "WTI": 0.65, "BTC": 0.75,  # high-beta tech/crypto + WTI + BTC air-pocket cuts (v13)
+    "XAU": 1.00, "US10Y": 1.25, "CN10Y": 1.25,   # safe havens (v16: XAU boost removed)
+    "SOX": 0.65, "NDX": 0.75, "ETH": 0.75, "WTI": 0.80, "BTC": 0.75,  # high-beta tech/crypto + WTI (v16 eased) + BTC cuts
 }
 
 
