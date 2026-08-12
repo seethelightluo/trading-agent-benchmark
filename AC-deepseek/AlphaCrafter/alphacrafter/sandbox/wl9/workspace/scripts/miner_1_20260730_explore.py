@@ -33,7 +33,7 @@ def max_dd(x, win):
 
 candidates = {}
 candidates["dxy_beta_60d"] = beta_to(rets, mrets["DXY"], 60)
-candidates["rate_beta_60d"] = beta_to(rets, mrets["US10Y"], 60)
+candidates["rate_beta_60d"] = beta_to(rets, rets["US10Y"], 60)
 candidates["skew_20d"] = skew(rets, 20)
 candidates["vol_ratio_5_60"] = rets.rolling(5).std() / rets.rolling(60).std()
 candidates["downside_vol_60d"] = downside_dev(rets, 60)
@@ -42,10 +42,10 @@ candidates["range_pos_20d"] = ((closes - closes.rolling(20).min()) /
                                (closes.rolling(20).max() - closes.rolling(20).min()))
 candidates["autocorr_10d"] = rets.rolling(10).apply(lambda v: pd.Series(v).autocorr() if len(v) > 3 else np.nan, raw=True)
 candidates["vix_beta_plain_60d"] = beta_to(rets, mrets["VIX"], 60)
-candidates["crypto_beta_60d"] = beta_to(rets, mrets["BTC"], 60)
+candidates["crypto_beta_60d"] = beta_to(rets, rets["BTC"], 60)
 candidates["max_drawdown_60d"] = max_dd(rets, 60)
 candidates["mom60_vol_adj"] = rets.rolling(60).sum() / rets.rolling(60).std()
-candidates["oil_beta_60d"] = beta_to(rets, mrets["WTI"], 60)
+candidates["oil_beta_60d"] = beta_to(rets, rets["WTI"], 60)
 candidates["dxy_corr_change_20_60"] = (rets.rolling(20).corr(mrets["DXY"]) -
                                        rets.rolling(60).corr(mrets["DXY"]))
 

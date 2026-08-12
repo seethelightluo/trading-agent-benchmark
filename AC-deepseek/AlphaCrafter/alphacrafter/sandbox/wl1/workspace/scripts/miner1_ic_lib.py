@@ -1,10 +1,12 @@
-"""miner1 2028-05-26: shared panel loader + IC evaluation helpers."""
+"""
+miner1 2028-05-26: shared panel loader + IC evaluation helpers.
+"""
 import pandas as pd, numpy as np, json, os
 
 WATCH = ['000300.SH', 'SPX', 'HSI', 'N225', 'SX5E', '000688.SH', 'SOX', 'NDX',
          'XAU', 'COPPER', 'WTI', 'BTC', 'ETH', 'US10Y', 'CN10Y']
 MACRO = ['DXY', 'USDCNY', 'USDJPY', 'EURUSD', 'VIX']
-END = '2028-05-25'  # most recent completed trading day at decision date 2028-05-26
+END = '2028-06-08'  # most recent completed trading day at decision date 2028-06-09
 
 def load_panel():
     with open('scripts/panel_cache.pkl', 'rb') as f:
@@ -16,7 +18,8 @@ def load_panel():
     return panel
 
 def ic_series(factor_df, fwd_ret, min_valid=8):
-    """Daily cross-sectional Spearman IC between factor (t) and forward return (t+1).
+    """
+    Daily cross-sectional Spearman IC between factor (t) and forward return (t+1).
     factor_df: DataFrame indexed by date, columns = assets.
     fwd_ret: DataFrame of forward returns aligned to factor index (value at t = return t->t+1).
     Returns Series of daily IC indexed by date (only dates with >= min_valid valid pairs).

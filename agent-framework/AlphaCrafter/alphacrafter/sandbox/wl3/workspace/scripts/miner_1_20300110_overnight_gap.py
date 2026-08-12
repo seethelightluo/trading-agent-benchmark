@@ -14,7 +14,10 @@ for h in [1,3,5,10]:
  rows=[]
  for i,dt in enumerate(px.index[:-h]):
   a=f.iloc[i]; b=np.log(px.iloc[i+h]/px.iloc[i]); q=pd.DataFrame({'a':a,'b':b}).replace([np.inf,-np.inf],np.nan).dropna()
-  if len(q)>=8 and q.a.nunique()>1 and q.b.nunique()>1: rows.append((dt,len(q),q.a.corr(q.b,method='spearman')))
+  # Cross-sectional signals can be tied; retain valid dates and use Pearson fallback.
+  if len(q)>=8:
+   c=q.a.corr(q.b,method='spearman')
+   if np.isfinite(c): rows.append((dt,len(q),c))
  x=pd.DataFrame(rows,columns=['date','n','ic']).set_index('date')
  print('H',h,'obs',len(x),'avgN %.2f'%x.n.mean(),'IC %.6f ICIR %.6f hit %.4f'%(x.ic.mean(),x.ic.mean()/x.ic.std(),(x.ic>0).mean()))
  for lab,q in [('2020_22',x.loc['2020':'2022']),('2023_25',x.loc['2023':'2025']),('2026_27',x.loc['2026':'2027']),('2028_29',x.loc['2028':'2029']),('recent250',x.tail(250))]: print(lab,len(q),'IC %.6f ICIR %.6f'%(q.ic.mean(),q.ic.mean()/q.ic.std()))
