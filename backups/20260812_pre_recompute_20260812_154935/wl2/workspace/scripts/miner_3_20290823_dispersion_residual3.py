@@ -1,0 +1,37 @@
+import numpy as np,pandas as pd
+from alphacrafter.sim.utils import get_account_dict,get_stock_daily_data,get_index_daily_data
+U=get_account_dict().get('watch_list') or ['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+px={}
+for s in U:
+ d=get_stock_daily_data(s,1200)
+ if d is None or len(d)<100: d=get_index_daily_data(s,1200)
+ if d is not None: px[s]=d.set_index('date').close.astype(float)
+P=pd.DataFrame(px).sort_index(); R=P.pct_change(); m=R.mean(axis=1); disp=R.std(axis=1); ds=disp.rolling(20).mean()
+bw,lh=60,3; rows=[]; sigs=[]
+for t in range(bw+lh+20,len(P)-1):
+ intensity=disp.iloc[t]/ds.iloc[t]
+ if not np.isfinite(intensity): continue
+ vals={}
+ for s in P:
+  z=pd.concat([R[s].iloc[t-bw+1:t+1],m.iloc[t-bw+1:t+1]],axis=1).dropna()
+  if len(z)<20 or z.iloc[:,1].var()<=1e-12: continue
+  beta=z.iloc[:,0].cov(z.iloc[:,1])/z.iloc[:,1].var(); vol=z.iloc[:,0].std()
+  resid=(R[s].iloc[t-lh+1:t+1]-beta*m.iloc[t-lh+1:t+1]).sum()
+  if vol>1e-8: vals[s]=-resid/vol*max(0.,min(2.,float(intensity)))
+ q=pd.concat([pd.Series(vals),R.iloc[t+1].reindex(vals)],axis=1).dropna()
+ if len(q)>=8:
+  rows.append((P.index[t],q.iloc[:,0].corr(q.iloc[:,1]),len(q))); sigs.append(pd.Series(vals,name=P.index[t]))
+a=np.array([x[1] for x in rows]); ns=np.array([x[2] for x in rows])
+print('dates',len(a),'assets',len(P.columns),'avgN',round(ns.mean(),2),'coverage',round(ns.mean()/len(P.columns),4),'IC %.6f ICIR %.6f hit %.4f'%(a.mean(),a.mean()/a.std(ddof=1),np.mean(a>0)))
+for lab,cut in [('2028+',pd.Timestamp('2028-01-01')),('2029+',pd.Timestamp('2029-01-01'))]:
+ b=a[[x[0]>=cut for x in rows]]; print(lab,'dates',len(b),'IC %.6f ICIR %.6f'%(b.mean(),b.mean()/b.std(ddof=1)))
+# signal turnover: rank changes, and decay horizons
+S=pd.DataFrame(sigs).reindex(columns=P.columns); ranks=S.rank(axis=1,pct=True); print('turnover',ranks.diff().abs().mean().mean())
+for h in [1,3,5,10]:
+ vals=[]
+ for t in range(len(P)-h):
+  if P.index[t] not in S.index: continue
+  q=pd.concat([S.loc[P.index[t]],(P.iloc[t+1:t+h+1].pct_change().add(1).prod()-1)],axis=1).dropna()
+  if len(q)>=8: vals.append(q.iloc[:,0].corr(q.iloc[:,1]))
+ print('decay',h,'n',len(vals),'IC',round(float(np.mean(vals)),6) if vals else None)
+pd.DataFrame(sigs).to_csv('scripts/miner_3_20290823_dispersion_residual3_signal.csv',index_label='date')

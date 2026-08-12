@@ -1,0 +1,1 @@
+print(open('scripts/miner2_20290105_build_panel.py').read())

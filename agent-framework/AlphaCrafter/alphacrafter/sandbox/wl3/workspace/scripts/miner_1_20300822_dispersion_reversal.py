@@ -1,0 +1,22 @@
+import numpy as np,pandas as pd
+from scipy.stats import spearmanr
+from alphacrafter.sim.utils import get_stock_daily_data,get_index_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; D={}
+for s in U:
+ d=get_stock_daily_data(s,4000)
+ if d is None or len(d)<300:
+  try:d=get_index_daily_data(s,4000)
+  except Exception:d=None
+ if d is not None and len(d):D[s]=d.set_index('date').close.astype(float)
+px=pd.DataFrame(D).sort_index().ffill(); r=np.log(px).diff(); csdisp=r.rolling(20).std().mean(axis=1)
+base=-r.rolling(3).sum()/(r.rolling(20).std()*np.sqrt(3)+1e-12)
+# high-dispersion conditional shock reversal, fully lagged
+f=base.mul((csdisp>csdisp.rolling(120).median()).astype(float),axis=0).shift(1)
+for h in [1,3,5]:
+ q=[]
+ for i,dt in enumerate(px.index[:-h]):
+  z=pd.concat([f.loc[dt],np.log(px.iloc[i+h]/px.iloc[i])],axis=1).dropna()
+  if len(z)>=8 and z.iloc[:,0].nunique()>1:q.append(spearmanr(z.iloc[:,0],z.iloc[:,1]).statistic)
+ q=pd.Series(q); print('H',h,'obs',len(q),'IC %.6f ICIR %.6f hit %.4f'%(q.mean(),q.mean()/(q.std(ddof=1)+1e-12),(q>0).mean()))
+print('dates',len(px),'instruments',len(D),'coverage',f.notna().mean().mean())
+f.stack().rename('signal').reset_index().rename(columns={'level_0':'date','level_1':'symbol'}).to_csv('scripts/miner_1_20300822_dispersion_reversal_signal.csv',index=False)

@@ -1,212 +1,79 @@
-"""Screener: compute recent (online-period) rank IC for the 4 active factors.
+import pandas as pd, numpy as np, glob, os
 
-Uses only data up to the last completed trading day (2027-02-26). No live-account
-backtest / step; pure factor analytics on persisted CSVs.
-"""
-import csv
-import math
-from collections import defaultdict
-from datetime import datetime, date
+files = sorted(glob.glob('../persistent/stock_data/*.csv'))
+px = {}
+for f in files:
+    sym = os.path.basename(f)[:-4]
+    df = pd.read_csv(f)
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.set_index('date').sort_index()
+    px[sym] = df['close']
+px = pd.DataFrame(px).dropna(how='all')
+px = px.loc[px.index <= '2028-08-25'].sort_index()
+rets = px.pct_change()
 
-ASSETS = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX",
-          "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
-CUTOFF = date(2027, 2, 26)  # last completed trading day before decision 2027-03-01
-START = date(2026, 7, 16)   # online start
+def rank_ic(factor_s, fwd, min_valid=8):
+    out = []
+    for t in factor_s.index:
+        if t not in fwd.index: continue
+        fs = factor_s.loc[t].dropna()
+        fr = fwd.loc[t].dropna()
+        common = fs.index.intersection(fr.index)
+        if len(common) < min_valid: continue
+        ic = np.corrcoef(fs[common].rank(), fr[common].rank())[0,1]
+        if np.isnan(ic): continue
+        out.append((t, ic))
+    if not out: return pd.Series(dtype=float)
+    s = pd.Series(dict(out)); return s
 
+# forward 10d return
+fwd10 = px.shift(-10)/px - 1.0
 
-def load_close(sym):
-    px = {}
-    vol = {}
-    with open(f"../persistent/stock_data/{sym}.csv") as f:
-        for row in csv.DictReader(f):
-            d = datetime.strptime(row["date"], "%Y-%m-%d").date()
-            if d > CUTOFF:
-                continue
-            try:
-                px[d] = float(row["close"])
-            except (TypeError, ValueError):
-                continue
-            try:
-                v = float(row["volume"])
-                vol[d] = v
-            except (TypeError, ValueError):
-                vol[d] = 0.0
-    return px, vol
+# Factor 1: vol_adj_mom_accel_20x60
+mom20 = px/px.shift(20)-1
+mom60 = px/px.shift(60)-1
+vol20 = rets.rolling(20).std()
+f1 = (mom20 - mom60)/vol20
 
-
-def load_obs(sym):
-    px = {}
-    with open(f"../persistent/index_data/{sym}.csv") as f:
-        for row in csv.DictReader(f):
-            d = datetime.strptime(row["date"], "%Y-%m-%d").date()
-            if d > CUTOFF:
-                continue
-            try:
-                px[d] = float(row["close"])
-            except (TypeError, ValueError):
-                continue
-    return px
-
-
-def daily_ret(px):
-    out = {}
-    ds = sorted(px)
-    for a, b in zip(ds, ds[1:]):
-        if px[a] and px[b]:
-            out[b] = px[b] / px[a] - 1.0
+# Factor 2: dn_mkt_beta_60d  (beta on down-market days)
+mkt = rets.mean(axis=1)
+down = mkt.where(mkt<0, 0.0)
+def roll_beta(y, x, w=60, min_obs=40):
+    out = pd.DataFrame(index=y.index, columns=y.columns, dtype=float)
+    for col in y.columns:
+        yy = y[col]; xx = x
+        b = []
+        for i in range(len(yy)):
+            if i < w-1:
+                b.append(np.nan); continue
+            ys = yy.iloc[i-w+1:i+1]; xs = xx.iloc[i-w+1:i+1]
+            m = ys.notna() & xs.notna()
+            if m.sum() < min_obs:
+                b.append(np.nan); continue
+            if xs[m].var()==0:
+                b.append(np.nan); continue
+            b.append(np.polyfit(xs[m], ys[m], 1)[0])
+        out[col] = b
     return out
+f2 = roll_beta(rets, down, 60, 40)
 
+# Factor 3: rate_beta_cn10y_60d (beta on CN10Y pct change)
+cn10y_chg = px['CN10Y'].pct_change()
+f3 = roll_beta(rets, cn10y_chg, 60, 40)
 
-def corr(xs, ys):
-    n = len(xs)
-    if n < 3:
-        return float("nan")
-    mx = sum(xs) / n
-    my = sum(ys) / n
-    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
-    sxx = sum((x - mx) ** 2 for x in xs)
-    syy = sum((y - my) ** 2 for y in ys)
-    if sxx <= 0 or syy <= 0:
-        return float("nan")
-    return sxy / math.sqrt(sxx * syy)
-
-
-def rolling_beta(asset_r, ref_r, win=60, min_obs=40, down_only=False):
-    """asset_r, ref_r: dict date->ret. Returns dict date->beta."""
-    out = {}
-    ds = sorted(set(asset_r) & set(ref_r))
-    for i in range(len(ds)):
-        d = ds[i]
-        window = ds[max(0, i - win + 1): i + 1]
-        xs, ys = [], []
-        for dd in window:
-            x = ref_r[dd]
-            if down_only and x >= 0:
-                continue
-            xs.append(x)
-            ys.append(asset_r[dd])
-        if len(xs) < min_obs:
-            continue
-        mx = sum(xs) / len(xs)
-        my = sum(ys) / len(ys)
-        num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
-        den = sum((x - mx) ** 2 for x in xs)
-        if den == 0:
-            continue
-        out[d] = num / den
-    return out
-
-
-# ---- load data ----
-closes = {}
-vols = {}
-for a in ASSETS:
-    px, v = load_close(a)
-    closes[a] = px
-    vols[a] = v
-
-rets = {a: daily_ret(closes[a]) for a in ASSETS}
-eurusd = load_obs("EURUSD")
-eurusd_ret = daily_ret(eurusd)
-cn10y_ret = daily_ret(closes["CN10Y"])
-
-# equal-weight market return
-all_dates = sorted(set().union(*[set(r) for r in rets.values()]))
-mkt_ret = {}
-for d in all_dates:
-    vals = [rets[a][d] for a in ASSETS if d in rets[a]]
-    if len(vals) >= 8:
-        mkt_ret[d] = sum(vals) / len(vals)
-
-# ---- factor signals ----
-def factor_vol_price_corr(a, win=20, min_obs=10):
-    out = {}
-    px, v = closes[a], vols[a]
-    ds = sorted(px)
-    for i in range(len(ds)):
-        d = ds[i]
-        window = ds[max(0, i - win + 1): i + 1]
-        rts, vv = [], []
-        for dd in window:
-            if dd in rets[a] and v.get(dd, 0) and v[dd] > 0:
-                rts.append(rets[a][dd])
-                vv.append(v[dd])
-        if len(rts) < min_obs:
-            continue
-        out[d] = corr(rts, vv)
-    return out
-
-sig = {f: {} for f in ["vol_price_corr_20", "dn_mkt_beta_60d", "eurusd_beta_60d", "rate_beta_cn10y_60d"]}
-for a in ASSETS:
-    sig["vol_price_corr_20"][a] = factor_vol_price_corr(a)
-    sig["dn_mkt_beta_60d"][a] = rolling_beta(rets[a], mkt_ret, 60, 40, down_only=True)
-    sig["eurusd_beta_60d"][a] = rolling_beta(rets[a], eurusd_ret, 60, 40)
-    sig["rate_beta_cn10y_60d"][a] = rolling_beta(rets[a], cn10y_ret, 60, 40)
-
-# ---- forward 10d returns (h=10) ----
-def forward_ret(px, h=10):
-    ds = sorted(px)
-    out = {}
-    for i, d in enumerate(ds):
-        j = i + h
-        if j < len(ds):
-            out[d] = px[ds[j]] / px[d] - 1.0
-    return out
-
-fwd = {a: forward_ret(closes[a], 10) for a in ASSETS}
-
-# ---- rank IC ----
-def rank_ic(factor_vals, fwd_vals, d):
-    xs, ys = [], []
-    for a in ASSETS:
-        if d in factor_vals.get(a, {}) and d in fwd_vals.get(a, {}):
-            fv = factor_vals[a][d]
-            rv = fwd_vals[a][d]
-            if fv == fv and rv == rv:  # not nan
-                xs.append(fv)
-                ys.append(rv)
-    if len(xs) < 8:
-        return None
-    def ranks(v):
-        idx = sorted(range(len(v)), key=lambda k: v[k])
-        r = [0] * len(v)
-        for rank, pos in enumerate(idx):
-            r[pos] = rank
-        return r
-    rx, ry = ranks(xs), ranks(ys)
-    n = len(rx)
-    mx = sum(rx) / n
-    my = sum(ry) / n
-    num = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
-    den = math.sqrt(sum((a - mx) ** 2 for a in rx) * sum((b - my) ** 2 for b in ry))
-    return num / den if den else None
-
-
-def summarize(factor_name, label):
-    ic_dates = []
-    for d in all_dates:
-        if d < START or d > CUTOFF:
-            continue
-        ic = rank_ic(sig[factor_name], fwd, d)
-        if ic is not None:
-            ic_dates.append((d, ic))
-    if not ic_dates:
-        print(f"{factor_name}: no IC dates")
-        return
-    ic_dates.sort()
-    n = len(ic_dates)
-    mean_all = sum(x[1] for x in ic_dates) / n
-    # last 120 and 60 trading days
-    for lab, k in [("all", n), ("last120", min(120, n)), ("last60", min(60, n))]:
-        sub = ic_dates[-k:]
-        m = sum(x[1] for x in sub) / len(sub)
-        sd = math.sqrt(sum((x[1] - m) ** 2 for x in sub) / len(sub)) if len(sub) > 1 else 0
-        icir = m / sd if sd else 0
-        hit = sum(1 for x in sub if x[1] > 0) / len(sub)
-        print(f"  {factor_name} [{label} {lab}]: n={len(sub)} meanIC={m:+.4f} ICIR={icir:+.3f} hit={hit:.2f}")
-    print(f"  last date: {ic_dates[-1][0]}, last IC={ic_dates[-1][1]:+.4f}")
-
-
-print("=== Recent rank IC (h=10, online period 2026-07-16..2027-02-26) ===")
-for f in ["vol_price_corr_20", "dn_mkt_beta_60d", "eurusd_beta_60d", "rate_beta_cn10y_60d"]:
-    summarize(f, f)
+for name, f, exp_dir in [('vol_adj_mom_accel_20x60', f1, 1),
+                          ('dn_mkt_beta_60d', f2, 1),
+                          ('rate_beta_cn10y_60d', f3, -1)]:
+    ic_all = rank_ic(f, fwd10)
+    ic_2028 = rank_ic(f.loc['2028-01-01':], fwd10)
+    ic_recent = rank_ic(f.loc['2028-05-01':], fwd10)
+    ic_last60 = rank_ic(f.loc['2028-06-15':], fwd10)
+    def stats(s):
+        if len(s)==0: return (np.nan,np.nan,np.nan)
+        return (s.mean(), s.mean()/s.std() if s.std()>0 else np.nan, (s>0).mean())
+    a=stats(ic_all); b=stats(ic_2028); c=stats(ic_recent); d=stats(ic_last60)
+    print(f'{name}  exp_dir={exp_dir:+d}')
+    print(f'  full:    IC={a[0]:+.4f} ICIR={a[1]:+.3f} hit={a[2]:.3f} n={len(ic_all)}')
+    print(f'  2028:    IC={b[0]:+.4f} ICIR={b[1]:+.3f} hit={b[2]:.3f} n={len(ic_2028)}')
+    print(f'  since5/1:IC={c[0]:+.4f} ICIR={c[1]:+.3f} hit={c[2]:.3f} n={len(ic_recent)}')
+    print(f'  last60:  IC={d[0]:+.4f} ICIR={d[1]:+.3f} hit={d[2]:.3f} n={len(ic_last60)}')

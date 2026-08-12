@@ -1,10 +1,11 @@
-"""Trader strategy v10 - Screener 5-factor quality_ic_tilt ensemble.
+"""Trader strategy v12 - Screener 5-factor quality_ic_tilt ensemble.
 
-Ensemble (2028-06-09): vix_beta_cond_60x20 (.26,-) | vol_of_vol20x60 (.24,+)
-| mom_120d_skip5 (.20,+) | miner2_20260715_nclv_1d (.18,+)
-| miner2_20260715_rev_2d (.12,+). Momentum anchor trimmed again per WTI
-whipsaw (+14.0 then -5.7 on 11% weight); vix_beta risk guard now the top
-weight.
+Ensemble (2028-11-10): mom_120d_skip5 (.26,+) | vol_of_vol20x60 (.23,+)
+| vix_beta_cond_60x20 (.20,-) | miner2_20260715_rev_2d (.16,+)
+| miner2_20260715_nclv_1d (.15,+). Screener re-tilted momentum up (.22->.26)
+on a regime shift toward persistent momentum leaders with extreme dispersion
+while trimming the vol/defensive block (vol_of_vol .25->.23, vix_beta .24
+->.20); reversal pair reweighted (rev_2d .13->.16, nclv_1d .16->.15).
 
 Momentum anchor (trimmed from .42 per COPPER whipsaw) + two decorrelated
 reversal members + vol-of-vol regime + VIX-beta risk guard. Cross-sectional
@@ -54,9 +55,25 @@ did not cap it) and carried 8.9% weight into a -21% crash - the dominant block
 drag (7th distinct momentum top-pick whipsaw block). Empirical replay over 45
 decision dates shows the top momentum name is a coin flip with fat tails
 (avg fwd 10d +0.7% vs universe median -0.2%, underperformed in 22/45 blocks).
-v10 caps the single top momentum name (rank >= MOM_TOP_RANK_STRICT) at
+v10/v12 cap the top-2 momentum names (rank >= MOM_TOP2_RANK) at
 GUARD_CAP regardless of MA state; the v7 below-MA20 top-6 rule and v8/v9
 guards are unchanged.
+
+v11 (2028-10-13): combined cyclical-commodity cap. Block 0929-1013: WTI 9.4% +
+COPPER 8.0% (17.4% combined) both fell ~-7% (est. -1.29 combined contribution)
+- the block's dominant drag, the 2nd block the commodity pair carried ~17%
+into a synchronized drawdown (WTI also 2nd time as momentum top-pick whipsaw).
+Commodities remain below their 20d MA with negative 20d momentum. WTI+COPPER
+combined weight is capped at 14% regardless of factor scores or trend state;
+excess is redistributed proportionally to the remaining names. XAU is
+deliberately excluded (defensive sleeve). Factor- and trend-agnostic like v9.
+
+v12 (2028-10-27): extend the v10 momentum cap to the top-2 momentum names.
+Block 1013-1027: SOX was the rank-2 momentum name and delivered -12.5% on
+7.4% weight - the 9th distinct momentum top-pick whipsaw block in 10
+(Screener also flags XAU/BTC as top-4 trap names in 20d downtrends). Any of
+the top-2 momentum names (rank >= .86 of 15) is now capped at GUARD_CAP
+regardless of MA state, matching the empirical 9/10 top-pick reversal rate.
 """
 import json
 import math
@@ -73,12 +90,14 @@ DATA_DAYS = 170          # enough for mom_120d_skip5 (shift(125)) + buffers
 MIN_ROWS = 140
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 CRYPTO = {"BTC", "ETH"}
+CYCLICAL_COMMOD = {"WTI", "COPPER"}
 CAP_W = 0.16
 GUARD_CAP = 0.06         # v7 cap for momentum top-picks below 20d MA
 COMP_GUARD_CAP = 0.08    # v8 cap for ANY below-20d-MA asset with weight > 8%
 CRYPTO_CAP = 0.12        # v9 combined BTC+ETH weight cap
+COMMOD_CAP = 0.14        # v11 combined WTI+COPPER weight cap
 MOM_TOP_RANK = 0.60      # momentum rank threshold for the v7 guard
-MOM_TOP_RANK_STRICT = 0.95  # v10: top-1 momentum name (rank >= .95 of 15)
+MOM_TOP2_RANK = 0.86  # v12: top-2 momentum names (rank >= .86 of 15)
 TRAP_PENALTY = 0.50      # v8 value-trap score penalty as fraction of mom weight
 
 _VIX_CACHE = {}
@@ -371,10 +390,12 @@ def _ma_guard(w, frames, assets, cur):
 
     v7 (Screener guard): extended momentum names below their short-term MA
     (e.g. COPPER) are the main post-rebalance whipsaw drag - cap at GUARD_CAP.
-    v10: the single top momentum name (rank >= MOM_TOP_RANK_STRICT) is capped
-    at GUARD_CAP regardless of MA state, closing the above-MA20 hole that WTI
+    v10/v12: the top-2 momentum names (rank >= MOM_TOP2_RANK) are capped at
+    GUARD_CAP regardless of MA state. v10 closed the above-MA20 hole that WTI
     exploited in block 0331-0414 (top momentum name, above MA20, -21% crash on
-    8.9% weight). Excess is redistributed proportionally to remaining names.
+    8.9% weight); v12 (2028-10-27) extended to rank-2 after SOX delivered
+    -12.5% on 7.4% weight (9th top-pick whipsaw block in 10). Excess is
+    redistributed proportionally to remaining names.
     """
     mom_vals = _factor_values(frames, "mom_120d_skip5", cur)
     mom_rank = _ranks(mom_vals, assets)
@@ -382,7 +403,7 @@ def _ma_guard(w, frames, assets, cur):
     for _ in range(80):                    # iterate until cap invariant holds
         penalized = {a for a in assets if w[a] > GUARD_CAP + 1e-9 and (
             (mom_rank[a] >= MOM_TOP_RANK and a in below) or
-            (mom_rank[a] >= MOM_TOP_RANK_STRICT)
+            (mom_rank[a] >= MOM_TOP2_RANK)  # v12: top-2, MA-agnostic
         )}
         if not penalized:
             break
@@ -430,6 +451,37 @@ def _crypto_cap(w, assets):
     return w
 
 
+def _commod_cap(w, assets):
+    """v11: cap combined cyclical-commodity weight (WTI+COPPER) at 14%.
+
+    Block 0929-1013: WTI 9.4% + COPPER 8.0% (17.4% combined) both fell ~-7%
+    (est. -1.29 combined contribution) - the block's dominant drag, the 2nd
+    block the commodity pair carried ~17% into a synchronized drawdown (WTI
+    also 2nd time as momentum top-pick whipsaw). Commodities remain below
+    their 20d MA with negative 20d momentum at this decision. This guard is
+    factor- and trend-agnostic: combined WTI+COPPER weight can never exceed
+    COMMOD_CAP; excess is redistributed proportionally to the remaining
+    names. XAU is deliberately excluded (defensive sleeve).
+    """
+    comm = [a for a in assets if a in CYCLICAL_COMMOD and a in w]
+    csum = sum(w[a] for a in comm)
+    if csum <= COMMOD_CAP + 1e-12:
+        return w
+    scale = COMMOD_CAP / csum
+    for a in comm:
+        w[a] *= scale
+    excess = csum - COMMOD_CAP
+    room = [a for a in assets if a not in comm]
+    if room:
+        den = sum(w[a] for a in room) + 1e-12
+        for a in room:
+            w[a] += excess * w[a] / den
+    tot = sum(w.values())
+    w = {a: x / tot for a, x in w.items()}
+    w[assets[-1]] += 1.0 - sum(w.values())
+    return w
+
+
 def _forecasts(scores, assets):
     vals = [scores[a] for a in assets]
     mean = float(np.mean(vals))
@@ -466,6 +518,7 @@ def strategy_hook():
     w = _composite_ma_guard(w, frames, assets)                  # v8 (8% cap)
     w = _ma_guard(w, frames, assets, cur)                       # v7 (6% cap)
     w = _crypto_cap(w, assets)                                  # v9 (12% crypto)
+    w = _commod_cap(w, assets)                                  # v11 (14% comm)
     f = _forecasts(scores, assets)
     rebalance_to_weights(
         w,

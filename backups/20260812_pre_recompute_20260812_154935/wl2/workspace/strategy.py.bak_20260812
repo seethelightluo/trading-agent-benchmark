@@ -1,0 +1,103 @@
+import numpy as np
+from alphacrafter.sim.utils import register_hook, get_stock_daily_data, rebalance_to_weights
+
+ASSETS = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
+# Current Screener ensemble (8 factors, <=10 active), quality-IC tilted.
+FW = {"quiet": .24, "relative": .18, "compression": .18, "breadth": .15,
+      "stress": .13, "leadlag": .07, "agreement": .03, "reversal": .02}
+CADENCE = 10
+_day = 0
+
+
+def ranks(vals):
+    good = sorted((s, v) for s, v in vals.items() if np.isfinite(v))
+    out = {s: .5 for s in ASSETS}
+    if len(good) > 1:
+        for i, (s, _) in enumerate(good):
+            out[s] = i / (len(good) - 1)
+    elif good:
+        out[good[0][0]] = .5
+    return out
+
+
+def bounded(raw):
+    # Full investment, diversified 15-asset portfolio for a high-risk range.
+    floor, cap = .035, .145
+    p = {s: max(float(raw.get(s, .5)), .05) for s in ASSETS}
+    w = {s: floor + (1 - floor * len(ASSETS)) * p[s] / sum(p.values()) for s in ASSETS}
+    for _ in range(30):
+        high = [s for s in ASSETS if w[s] > cap + 1e-12]
+        if not high:
+            break
+        excess = sum(w[s] - cap for s in high)
+        for s in high:
+            w[s] = cap
+        low = [s for s in ASSETS if s not in high]
+        den = sum(p[s] for s in low)
+        for s in low:
+            w[s] += excess * p[s] / max(den, 1e-12)
+    z = sum(w.values())
+    return {s: max(0.0, w[s] / z) for s in ASSETS}
+
+
+@register_hook
+def cross_asset_strategy():
+    global _day
+    _day += 1
+    if (_day - 1) % CADENCE != 0:
+        return
+
+    stats = {}
+    for s in ASSETS:
+        df = get_stock_daily_data(symbol=s, days=280)
+        if df is None or len(df) < 80:
+            continue
+        # Exclude the currently forming/latest bar: no look-ahead.
+        c = np.asarray(df.sort_values("date").iloc[:-1]["close"], dtype=float)
+        c = c[np.isfinite(c) & (c > 0)]
+        if len(c) < 65:
+            continue
+        r = c[1:] / c[:-1] - 1.0
+        neg = r[-60:][r[-60:] < 0]
+        dv = max(np.std(neg) if len(neg) >= 3 else np.std(r[-20:]), .003)
+        stats[s] = {"v20": max(np.std(r[-20:]), .003),
+                    "t5": c[-1] / c[-6] - 1, "t10": c[-1] / c[-11] - 1,
+                    "t20": c[-1] / c[-21] - 1, "t30": c[-1] / c[-31] - 1,
+                    "t60": c[-1] / c[-61] - 1, "dv": dv}
+    if len(stats) < 10:
+        return
+
+    med5 = np.median([x["t5"] for x in stats.values()])
+    med10 = np.median([x["t10"] for x in stats.values()])
+    med20 = np.median([x["t20"] for x in stats.values()])
+    dispersion = np.std([x["t10"] for x in stats.values()])
+    raw = {f: {} for f in FW}
+    for s, x in stats.items():
+        # Simple price/volatility proxies aligned to the submitted factors.
+        raw["quiet"][s] = x["t20"] / (x["v20"] + .01)
+        raw["relative"][s] = x["t20"] - med20
+        raw["compression"][s] = -x["v20"]
+        raw["breadth"][s] = x["t30"] / (x["dv"] + .01)
+        raw["stress"][s] = x["t10"] / (x["dv"] + .01)
+        raw["leadlag"][s] = x["t5"] - med5
+        raw["agreement"][s] = np.sign(x["t10"]) + np.sign(x["t20"]) + np.sign(x["t60"])
+        # Only a tiny, dispersion-gated reversal overlay; avoid crowded reversal risk.
+        raw["reversal"][s] = -(x["t10"] - med10) if dispersion > .025 else 0.0
+
+    rr = {f: ranks(v) for f, v in raw.items()}
+    score = {s: sum(FW[f] * rr[f][s] for f in FW) for s in ASSETS}
+    breadth = np.mean([x["t30"] > 0 for x in stats.values()])
+    market = stats.get("SPX", {"t30": 0.0})["t30"]
+    risk = float(np.clip(1.5 * (.60 - breadth) + max(0., -market / .12)
+                         + max(0., (dispersion - .025) / .05), 0., 1.))
+    # Defensive tradable assets express bearish/high-risk views; no cash sleeve.
+    for s in ("XAU", "US10Y", "CN10Y"):
+        score[s] *= 1.0 + 1.55 * risk
+    for s in ("BTC", "ETH", "WTI", "SOX", "NDX", "COPPER"):
+        score[s] *= max(.25, 1.0 - .70 * risk)
+    medv = np.median([x["v20"] for x in stats.values()])
+    for s in ASSETS:
+        score[s] *= np.clip(medv / max(stats.get(s, {"v20": medv})["v20"], .003), .80, 1.15)
+    target = bounded(score)
+    if np.isfinite(list(target.values())).all() and abs(sum(target.values()) - 1.0) < 1e-8:
+        rebalance_to_weights(target)

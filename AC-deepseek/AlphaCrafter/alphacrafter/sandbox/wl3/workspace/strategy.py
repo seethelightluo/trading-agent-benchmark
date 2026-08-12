@@ -138,7 +138,8 @@ def dd_duration_resid(c, r, r_spx):
         hi = c.rolling(120).max()
         if isinstance(c.index, pd.DatetimeIndex):
             last_high = c.index.to_series().where(c == hi).ffill()
-            dur = np.log1p((c.index - last_high).days.fillna(0).astype(float))
+            # pandas>=2: (DatetimeIndex - Series) -> Series of Timedelta; use .dt.days
+            dur = np.log1p((c.index - last_high).dt.days.fillna(0).astype(float))
         else:
             pos = pd.Series(np.arange(len(c)), index=c.index)
             dur = np.log1p((pos - pos.where(c == hi).ffill()).fillna(0).astype(float))

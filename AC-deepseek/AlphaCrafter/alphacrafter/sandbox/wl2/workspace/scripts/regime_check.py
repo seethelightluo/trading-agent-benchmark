@@ -1,164 +1,59 @@
-"""Market regime assessment for factor screening - data through visible date only."""
-import csv, os, math
-from datetime import datetime
+import pandas as pd, numpy as np, glob, os
 
-VISIBLE = '2026-08-12'
 TRADABLE = ['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
-OBS = ['VIX','DXY','USDJPY','EURUSD','USDCNY']
+CUTOFF = '2027-02-10'
 
-def load(path):
-    rows = {}
-    with open(path) as f:
-        r = list(csv.DictReader(f))
-    for x in r:
-        d = x['date']
-        if d > VISIBLE:
-            continue
-        try:
-            c = float(x['close'])
-        except (TypeError, ValueError):
-            continue
-        if c and c > 0:
-            rows[d] = c
-    return rows
-
-def rets(series, n):
-    ds = sorted(series.keys())
-    out = {}
-    for i in range(n, len(ds)):
-        out[ds[i]] = series[ds[i]] / series[ds[i-n]] - 1.0
-    return out
-
-def daily_rets(series):
-    ds = sorted(series.keys())
-    out = {}
-    for i in range(1, len(ds)):
-        out[ds[i]] = series[ds[i]] / series[ds[i-1]] - 1.0
-    return out
-
-def vol_ann(series, n=20):
-    dr = daily_rets(series)
-    ds = sorted(dr.keys())
-    out = {}
-    for i in range(n, len(ds)):
-        win = [dr[ds[j]] for j in range(i-n, i)]
-        m = sum(win)/len(win)
-        v = sum((x-m)**2 for x in win)/(len(win)-1)
-        out[ds[i]] = math.sqrt(v)*math.sqrt(252)
-    return out
-
-def ma(series, n):
-    ds = sorted(series.keys())
-    out = {}
-    s = 0.0
-    for i, d in enumerate(ds):
-        s += series[d]
-        if i >= n:
-            s -= series[ds[i-n]]
-        if i >= n-1:
-            out[d] = s/n
-    return out
-
-data = {}
-for s in TRADABLE:
-    data[s] = load(f'../persistent/stock_data/{s}.csv')
-for s in OBS:
-    data[s] = load(f'../persistent/index_data/{s}.csv')
-
-print('=== PRICE LEVELS & TREND (through', VISIBLE, ') ===')
-print(f'{"sym":8s} {"last":>12s} {"ret20":>9s} {"ret60":>9s} {"ret5":>8s} {"vol20_ann":>9s} {"above_ma60":>10s}')
 closes = {}
-for s in TRADABLE + OBS:
-    closes[s] = data[s]
-
-last_dates = {}
-for s in TRADABLE + OBS:
-    last_dates[s] = max(data[s].keys())
-
-# alignment: use last common date per series
-def last_ret(s, n):
-    r = rets(data[s], n)
-    ds = sorted(r.keys())
-    return r[ds[-1]] if ds else float('nan')
-
-def last_vol(s, n=20):
-    v = vol_ann(data[s], n)
-    ds = sorted(v.keys())
-    return v[ds[-1]] if ds else float('nan')
-
-def above_ma(s, n=60):
-    m = ma(data[s], n)
-    ds = sorted(m.keys())
-    if not ds:
-        return float('nan')
-    d = ds[-1]
-    return 1.0 if data[s][d] > m[d] else 0.0
-
 for s in TRADABLE:
-    print(f'{s:8s} {data[s][last_dates[s]]:12.1f} {last_ret(s,20)*100:8.1f}% {last_ret(s,60)*100:8.1f}% {last_ret(s,5)*100:7.1f}% {last_vol(s)*100:8.1f}% {above_ma(s):10.0f}')
+    df = pd.read_csv(f'../persistent/stock_data/{s}.csv', parse_dates=['date'])
+    df = df[df['date'] <= CUTOFF].sort_values('date').reset_index(drop=True)
+    closes[s] = df.set_index('date')['close']
 
-print()
-print('=== OBSERVATION SIGNALS ===')
-for s in OBS:
-    print(f'{s:8s} last={data[s][last_dates[s]]:10.2f} ret20={last_ret(s,20)*100:7.1f}% ret60={last_ret(s,60)*100:7.1f}%')
+px = pd.DataFrame(closes).dropna(how='all')
+print("data range:", px.index.min().date(), "->", px.index.max().date(), "rows:", len(px))
+ret = px.pct_change()
 
-# Cross-sectional stats on common dates
-common_dates = set(data['SPX'].keys())
+last = px.iloc[-1]
+print("\n=== LEVELS (close %s) ===" % px.index[-1].date())
 for s in TRADABLE:
-    common_dates &= set(data[s].keys())
-common_dates = sorted(common_dates)
-print()
-print('n_common_dates:', len(common_dates), 'last:', common_dates[-1])
+    print(f"{s:10s} {last[s]:12.2f}")
 
-# cross-sectional dispersion of 20d returns and mean pairwise corr of daily returns
-r20_by_date = {}
-dr_by_date = {}
-for d in common_dates:
-    r20_by_date[d] = {}
-    dr_by_date[d] = {}
+print("\n=== RETURNS (through %s) ===" % CUTOFF)
+out = {}
 for s in TRADABLE:
-    r20 = rets(data[s], 20)
-    dr = daily_rets(data[s])
-    for d in common_dates:
-        if d in r20: r20_by_date[d][s] = r20[d]
-        if d in dr: dr_by_date[d][s] = dr[d]
+    r5  = px[s].iloc[-1]/px[s].iloc[-6]-1 if len(px)>=6 else np.nan
+    r20 = px[s].iloc[-1]/px[s].iloc[-21]-1 if len(px)>=21 else np.nan
+    r60 = px[s].iloc[-1]/px[s].iloc[-61]-1 if len(px)>=61 else np.nan
+    vol20 = ret[s].iloc[-20:].std()*np.sqrt(252) if len(ret)>=20 else np.nan
+    vol60 = ret[s].iloc[-60:].std()*np.sqrt(252) if len(ret)>=60 else np.nan
+    ma20 = px[s].iloc[-20:].mean(); ma60 = px[s].iloc[-60:].mean()
+    slope20 = (px[s].iloc[-1]/px[s].iloc[-21]-1) if len(px)>=21 else np.nan
+    out[s] = dict(r5=r5, r20=r20, r60=r60, vol20=vol20, vol60=vol60,
+                  above_ma20 = px[s].iloc[-1] > ma20, above_ma60 = px[s].iloc[-1] > ma60)
+    print(f"{s:10s} r5={r5*100:7.2f}% r20={r20*100:7.2f}% r60={r60*100:7.2f}% vol20={vol20*100:5.1f}% vol60={vol60*100:5.1f}% aboveMA20={px[s].iloc[-1]>ma20} aboveMA60={px[s].iloc[-1]>ma60}")
 
-import statistics
-disp = []
-for d in common_dates:
-    vals = list(r20_by_date[d].values())
-    if len(vals) >= 10:
-        disp.append((d, statistics.pstdev(vals)))
-print('cross-sectional dispersion of 20d rets (last 5):', [(d, round(v*100,1)) for d,v in disp[-5:]])
+print("\n=== CROSS-SECTION ===")
+r20x = np.array([out[s]['r20'] for s in TRADABLE])
+r60x = np.array([out[s]['r60'] for s in TRADABLE])
+print("20d cross-section: mean %.2f%%  median %.2f%%  std %.2f%%  min %.2f%%  max %.2f%%" % (
+    r20x.mean()*100, np.median(r20x)*100, r20x.std()*100, r20x.min()*100, r20x.max()*100))
+print("60d cross-section: mean %.2f%%  median %.2f%%  std %.2f%%  min %.2f%%  max %.2f%%" % (
+    r60x.mean()*100, np.median(r60x)*100, r60x.std()*100, r60x.min()*100, r60x.max()*100))
 
-# pairwise correlation of daily returns over last 60 common days
-def corr(a, b):
-    n = min(len(a), len(b))
-    a = a[-n:]; b = b[-n:]
-    ma_ = sum(a)/n; mb = sum(b)/n
-    cov = sum((a[i]-ma_)*(b[i]-mb) for i in range(n))/(n-1)
-    va = sum((x-ma_)**2 for x in a)/(n-1)
-    vb = sum((x-mb)**2 for x in b)/(n-1)
-    if va == 0 or vb == 0: return 0.0
-    return cov/math.sqrt(va*vb)
+# correlation regime: mean pairwise corr of 20d returns over last 60d
+w = ret.iloc[-60:]
+corr = w.corr()
+mask = np.triu(np.ones(corr.shape), k=1).astype(bool)
+print("\nmean pairwise corr (60d window, 20d ret): %.3f" % corr.values[mask].mean())
+w2 = ret.iloc[-20:]
+corr2 = w2.corr()
+print("mean pairwise corr (20d window, 20d ret): %.3f" % corr2.values[mask].mean())
 
-# build last-60d daily return aligned series per asset
-import collections
-dr_series = {s: [] for s in TRADABLE}
-for d in common_dates[-60:]:
-    for s in TRADABLE:
-        if d in dr_by_date[d]:
-            dr_series[s].append(dr_by_date[d][s])
-pairs = []
-for i in range(len(TRADABLE)):
-    for j in range(i+1, len(TRADABLE)):
-        pairs.append(abs(corr(dr_series[TRADABLE[i]], dr_series[TRADABLE[j]])))
-print(f'mean pairwise |20d-ish corr| (last 60d): {sum(pairs)/len(pairs):.3f}')
+# dispersion: std of 20d returns across assets over time
+disp = ret[TRADABLE].std(axis=1)
+print("recent 20d dispersion mean: %.3f%%  last: %.3f%%" % (disp.iloc[-20:].mean()*100, disp.iloc[-1]*100))
 
-# VIX regime
-vix = data['VIX']
-vix_dates = sorted(vix.keys())
-vix_last = vix[vix_dates[-1]]
-vix_30d_ago = vix[vix_dates[-31]] if len(vix_dates) > 31 else vix[vix_dates[0]]
-vix_60d_ago = vix[vix_dates[-61]] if len(vix_dates) > 61 else vix[vix_dates[0]]
-print(f'VIX last={vix_last:.2f} 30d ago={vix_30d_ago:.2f} ({100*(vix_last/vix_30d_ago-1):+.1f}%) 60d ago={vix_60d_ago:.2f}')
+# momentum leaders/laggards
+rank20 = pd.Series({s: out[s]['r20'] for s in TRADABLE}).sort_values()
+print("\n20d leaders:", [(s, round(v*100,1)) for s,v in rank20.tail(5).items()])
+print("20d laggards:", [(s, round(v*100,1)) for s,v in rank20.head(5).items()])

@@ -1,0 +1,1 @@
+print(open('scripts/miner2_20281110_screen_novel.py').read()[:4500])
