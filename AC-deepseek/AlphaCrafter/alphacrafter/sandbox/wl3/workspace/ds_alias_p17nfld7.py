@@ -1,0 +1,1 @@
+print(open('scripts/factor_common.py').read()[10000:])

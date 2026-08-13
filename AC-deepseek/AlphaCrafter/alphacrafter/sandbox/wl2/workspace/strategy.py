@@ -5,10 +5,12 @@ applied), fully-invested 15-asset long-only target, one atomic rebalance per
 10-trading-day block. Risk-off regime tilts toward defensive tradable assets
 (XAU/US10Y/CN10Y); never cash.
 
-Ensemble (2026-11-19, quality_ic_tilt, 10f cap): downbeta_spx_60 .1361(+1),
-max_consec_gain_20 .1309(+1), mom20_volproxy60 .1050(+1), gain_loss_20 .0990(+1),
-vol_of_vol20x60 .0975(+1), spx_corr60 .0972(+1), usdjpy_beta_cond_120x60 .0868(+1),
-mom30_vol60 .0840(+1), days_since_high_60 .0826(-1), max_consec_loss_20 .0809(-1).
+Ensemble (2030-10-17, quality_ic_tilt, 5f cap): downbeta_spx_60 .3263(+1),
+max_consec_gain_20 .2657(+1), spx_corr60 .1739(+1), mom_180d_skip5 .1500(+1),
+range_pos_252 .0841(+1). First refreshed ensemble after ~37 stale cycles;
+the 2026-11-19 10f momentum set (mom20_volproxy60, gain_loss_20,
+vol_of_vol20x60, usdjpy_beta_cond_120x60, mom30_vol60, days_since_high_60,
+max_consec_loss_20) is DROPPED (miner_1 gate decay through 2030-10-16).
 
 v6 changes (2026-11-19):
 1. ENSEMBLE_PATH -> factors/factor_ensemble.json (screener persists there; the
@@ -26,7 +28,10 @@ v6 changes (2026-11-19):
 v5 heritage: live factor recompute (artifacts froze 2026-07-29); v4 trend-sanity
 cap (20d return < -4% -> per-asset cap 0.09) retained; v8 China-specific gate
 (000300.SH/000688.SH capped at 0.09 when 20d return < -2%) added cycle56; v9
-momentum-add gate (SOX/N225 capped at 0.09 when 20d return < -2%) added cycle57
+momentum-add gate (SOX/N225 capped at 0.09 when 20d return < -2%) added cycle57; v10
+commodity parabolic-move gate (WTI/COPPER capped at 0.09 when live 20d return > +15%)
+added cycle78 - commodity momentum rewards then inverts (cycles 75-77: COPPER -7.7% /
+WTI -2.9% add regrets after prior-block surges).
 -- SOX/N225 momentum adds whipsawed 4+/2 times (cycles 52-56); evidence review
 per cycle-55 plan completed after cycle-56 block.
 """
@@ -60,14 +65,15 @@ CHINA_TREND_CAP = 0.09       # China cap when 20d return < CHINA_TREND_THRESH
 MOMENTUM_ADD = {"SOX", "N225"}   # whipsaw-prone momentum adds (cycles 52-56 evidence)
 MOM_TREND_THRESH = -0.02         # 20d threshold triggering the momentum-add cap
 MOM_TREND_CAP = 0.09
+COMMODITY_PARABOLIC = {"WTI", "COPPER"}   # commodity momentum inversion guard (cycles 75-77 evidence; v10 2030-07-11)
+COMMODITY_PARABOLIC_THRESH = 0.15          # 20d return above which a commodity surge is 'parabolic'
+COMMODITY_PARABOLIC_CAP = 0.09
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 AGGRESSIVE = {"SOX", "NDX", "ETH", "BTC", "000688.SH", "N225"}
 EMBEDDED = {"spx_corr60"}
 LIVE_FIDS = {
-    "downbeta_spx_60", "max_consec_gain_20", "mom20_volproxy60",
-    "gain_loss_20", "vol_of_vol20x60", "spx_corr60",
-    "usdjpy_beta_cond_120x60", "mom30_vol60", "days_since_high_60",
-    "max_consec_loss_20",
+    "downbeta_spx_60", "max_consec_gain_20", "spx_corr60",
+    "mom_180d_skip5", "range_pos_252",
 }
 ARTIFACT_START = "2020-01-01"
 LIVE_MIN_FINITE = 10    # of 15 assets required to trust a live factor row
@@ -184,10 +190,11 @@ def _current_weights(account, assets):
 
 
 def _live_factors(assets):
-    """Recompute ensemble factor signals live from price data visible at the
-    decision date. Returns {fid: [value per asset]} with NaN where unavailable.
-    Formulas match the persisted factor JSONs (v3.0.0, cross-checked 2026-11-19).
-    Perfectly-flat trailing 15d series (feed artifact) -> NaN (neutral rank)."""
+    """Recompute the 5 ensemble factor signals live from price data visible at
+    the decision date (2030-10-17 ensemble: downbeta_spx_60, max_consec_gain_20,
+    spx_corr60, mom_180d_skip5, range_pos_252). Formulas match the persisted
+    factor JSONs (v2.0.0). Perfectly-flat trailing 15d series (feed artifact)
+    -> NaN (neutral rank 0.5)."""
     import numpy as np
     import pandas as pd
     closes = {}
@@ -200,14 +207,8 @@ def _live_factors(assets):
             closes[a] = df.set_index(pd.to_datetime(df["date"]))["close"].astype(float)
     if len(closes) < 8:
         return {}
-    try:
-        uf = get_index_daily_data("USDJPY", days=300)
-        usdjpy = uf.set_index(pd.to_datetime(uf["date"]))["close"].astype(float)
-    except Exception:
-        usdjpy = None
     spx = closes.get("SPX")
     spx_ret = spx.pct_change() if spx is not None else None
-    usdjpy_ret = usdjpy.pct_change() if usdjpy is not None else None
 
     def longest_run(x):
         m = 0.0
@@ -229,25 +230,12 @@ def _live_factors(assets):
         f["_flat"] = flat
         if flat:
             continue  # all live factor values stay NaN -> neutral rank
-        f["mom20_volproxy60"] = (c.shift(5) / c.shift(25) - 1.0) / (1.0 + (c / c.shift(60) - 1.0).abs())
         pos = (ret > 0).astype(int)
-        neg = (ret < 0).astype(int)
         f["max_consec_gain_20"] = pos.rolling(21, min_periods=10).apply(longest_run, raw=True)
-        f["max_consec_loss_20"] = neg.rolling(21, min_periods=10).apply(longest_run, raw=True)
-        g = ret.clip(lower=0).rolling(20, min_periods=10).sum()
-        l = ret.clip(upper=0).abs().rolling(20, min_periods=10).sum()
-        f["gain_loss_20"] = g / l.replace(0, np.nan)
-        vol60 = ret.rolling(60, min_periods=15).std()
-        f["mom30_vol60"] = (c.shift(5) / c.shift(35) - 1.0) / vol60.replace(0, np.nan)
-        f["vol_of_vol20x60"] = ret.rolling(20, min_periods=5).std().rolling(60, min_periods=15).std()
-        # days since last touch of the trailing 60d high (window 60, min_periods 40)
-        w60 = c.tail(60)
-        if len(w60) >= 40:
-            mx = float(w60.max())
-            idx = np.where((w60.values == mx))[0]
-            f["days_since_high_60"] = float(len(w60) - 1 - int(idx[-1]))
-        else:
-            f["days_since_high_60"] = float("nan")
+        f["mom_180d_skip5"] = c.shift(5) / c.shift(185) - 1.0
+        rng_min = c.rolling(252, min_periods=30).min()
+        rng_max = c.rolling(252, min_periods=30).max()
+        f["range_pos_252"] = (c - rng_min) / (rng_max - rng_min).replace(0, np.nan)
         if spx_ret is not None:
             f["spx_corr60"] = ret.rolling(60, min_periods=15).corr(spx_ret)
             m2 = pd.concat([ret, spx_ret], axis=1, join="inner").dropna()
@@ -263,19 +251,6 @@ def _live_factors(assets):
                 return float(sub["a"].cov(sub["s"]) / sub["s"].var())
 
             f["downbeta_spx_60"] = m2["a"].rolling(60, min_periods=20).apply(downbeta, raw=False)
-        if usdjpy_ret is not None:
-            m3 = pd.concat([ret, usdjpy_ret], axis=1, join="inner").dropna()
-            m3.columns = ["a", "u"]
-
-            def jpybeta(x):
-                sub = m3.loc[x.index]
-                if len(sub) < 60 or sub["u"].var() < 1e-12:
-                    return np.nan
-                return float(sub["a"].cov(sub["u"]) / sub["u"].var())
-
-            b = m3["a"].rolling(120, min_periods=60).apply(jpybeta, raw=False)
-            mom60j = usdjpy / usdjpy.shift(60) - 1.0
-            f["usdjpy_beta_cond_120x60"] = b * mom60j
 
     out = {}
     for fid in LIVE_FIDS:
@@ -458,6 +433,9 @@ def build_target(assets, date_state, ensemble, current_weights=None):
     for a in MOMENTUM_ADD:
         if r20[a] < MOM_TREND_THRESH:
             cap_map[a] = min(cap_map.get(a, CAP), MOM_TREND_CAP)
+    for a in COMMODITY_PARABOLIC:
+        if r20[a] > COMMODITY_PARABOLIC_THRESH:
+            cap_map[a] = min(cap_map.get(a, CAP), COMMODITY_PARABOLIC_CAP)
     weights = _fit_weights(pref, cap=CAP, floor=FLOOR, cap_map=cap_map or None)
 
     # v7 rotation dampener: cap one-way turnover so a single block's wrong bet

@@ -50,6 +50,8 @@ weight, scaled to live-panel daily vol (k = 2*scale).  This makes the
 forecast consistent with the submitted target: meaningful defensive
 rebalances clear the gate, near-no-op proposals still get skipped.
 
+2031-04-03 COMMODITY GUARD (trader, ensemble unchanged after Screener escalation): WTI_CAP=0.06, COMM_CAP=0.36 (XAU+COPPER+WTI) applied after risk_trim. Rationale: WTI -14% block (03-20..04-03), 3rd consecutive negative commodity-beta attribution.
+
 2028-05-04 NEW-ENSEMBLE REFRESH (trader): implemented the three new live
 factor signals in the exact canonical forms from the factor library:
   * vix_beta_cond_60x20 = beta(asset,VIX,60) * (VIX/VIX.shift(20)-1), d=-1
@@ -78,6 +80,8 @@ EQ_ASSETS = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX
 CAP = 0.18
 EQ_CAP = 0.40            # live equity complex max combined weight under stress
 ETH_CAP = 0.06           # max ETH weight under stress
+WTI_CAP = 0.06           # trader guard 2031-04-03: single-asset tail cap (WTI -14% block)
+COMM_CAP = 0.36          # XAU+COPPER+WTI combined cap (defensive XAU kept, cyclicals limited)
 VIX_STRESS = 30.0        # VIX level that flags equity stress
 EQ_RET21_STRESS = -0.05  # live-equity mean 21d return threshold for stress
 FROZEN_FLOOR = 0.005          # 0.5% per frozen (zero-return) asset
@@ -245,6 +249,60 @@ def risk_trim(w, assets, live, stress, eq_cap=EQ_CAP, eth_cap=ETH_CAP, cap=CAP):
                 if sum(w[x] for x in eq) < eq_cap - 1e-9 and w[a] < c - 1e-9:
                     room.append(a)
             elif w[a] < c - 1e-9:
+                room.append(a)
+        if not room:
+            break
+        p = {a: max(w[a], 1e-9) for a in room}
+        den = sum(p.values())
+        if den <= 0:
+            break
+        for a in room:
+            w[a] += excess * p[a] / den
+    tot = sum(w.values())
+    if tot <= 0:
+        w = {a: 1.0 / len(assets) for a in assets}
+    else:
+        w = {a: x / tot for a, x in w.items()}
+    w[assets[-1]] += 1.0 - sum(w.values())  # float guard
+    return {a: max(0.0, float(x)) for a, x in w.items()}
+
+
+def commodity_guard(w, assets, live, cap=CAP, wti_cap=WTI_CAP, comm_cap=COMM_CAP):
+    """Trader guard (2031-04-03): cap WTI and the live commodity complex.
+
+    Fired after WTI -14% in the 03-20..04-03 block and a third consecutive
+    negative attribution from the commodity-beta cluster (comm_basket_beta_60,
+    dxy_beta_cond_60x20) while the Screener ensemble stayed unchanged. Caps
+    WTI at 6% and XAU+COPPER+WTI combined at 36%; freed weight water-fills to
+    remaining live assets (per-asset cap preserved). Applied AFTER the frozen
+    override and risk_trim so it acts on the true final weights.
+    """
+    w = dict(w)
+    comm = [a for a in ("XAU", "COPPER", "WTI") if a in live]
+    for _ in range(300):
+        excess = 0.0
+        for a in assets:
+            c = cap
+            if a == "WTI" and a in live:
+                c = min(c, wti_cap)
+            if w[a] > c:
+                excess += w[a] - c
+                w[a] = c
+        s_comm = sum(w[a] for a in comm)
+        if s_comm > comm_cap:
+            excess += s_comm - comm_cap
+            for a in comm:
+                w[a] *= comm_cap / max(s_comm, 1e-12)
+        if excess < 1e-12:
+            break
+        room = []
+        for a in assets:
+            if a not in live:
+                continue
+            c = cap
+            if a == "WTI":
+                c = min(c, wti_cap)
+            if w[a] < c - 1e-9:
                 room.append(a)
         if not room:
             break
@@ -460,6 +518,11 @@ def strategy_hook():
     weights = build_weights(score, assets, panel, def_floor, spread)
     weights = apply_frozen_override(weights, assets, frozen)
     weights = risk_trim(weights, assets, live, stress)
+    weights = commodity_guard(weights, assets, live)
+    print(f"[trader] commodity guard: XAU={weights['XAU'] * 100:.1f}% "
+          f"COPPER={weights['COPPER'] * 100:.1f}% WTI={weights['WTI'] * 100:.1f}% "
+          f"complex={sum(weights[a] for a in ('XAU','COPPER','WTI')) * 100:.1f}% "
+          f"(WTI cap {WTI_CAP * 100:.0f}%, complex cap {COMM_CAP * 100:.0f}%)")
     if len(frozen):
         print(f"[trader] frozen assets floored at {FROZEN_FLOOR:.3f}: "
               f"{sorted(frozen)}; live={sorted(live)}")

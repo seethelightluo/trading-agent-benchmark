@@ -1,22 +1,22 @@
-"""Trader strategy v13 - Screener 5-factor quality_ic_tilt ensemble.
+"""Trader strategy v14 - Screener 5-factor quality_ic_tilt ensemble.
 
-Ensemble (2031-03-28 refresh): miner2_20260715_nclv_1d (.22,+)
-| vix_beta_cond_60x20 (.20,-) | miner2_20260715_rev_2d (.20,+)
-| mom_120d_skip5 (.20,+) | vol_of_vol20x60 (.18,+). Same 5-factor
-cross-category core as 2030-08-16; modest regime tilt: nclv_1d .20->.22
-(top quality, revalidation PASS), vix_beta .24->.20 (VIX pinned at 9.0
-flat artifact degrades conditioning signal; keep as risk guard), vol_of_vol
-.16->.18 (elevated asset-level vol dispersion). Live weights are loaded from
-factor_ensemble.json at import, so this header is documentation only.
+Ensemble (2031-04-25 refresh): miner2_20260715_nclv_1d (.22,+)
+| miner2_20260715_rev_2d (.21,+) | vol_of_vol20x60 (.21,+)
+| mom_120d_skip5 (.18,+) | vix_beta_cond_60x20 (.18,-). Same 5-factor
+cross-category core; HIGH-vol bear/risk-off tilt: nclv_1d .22 (unchanged),
+rev_2d .20->.21 (reversal 4th win in 5 blocks), vol_of_vol .18->.21
+(strongest recent IC ic10_20 0.266), mom_120d .20->.18 (ic10_20 fading,
+whipsaw risk), vix_beta .20->.18 (VIX pinned 9.0 flat artifact; risk guard
+only). Live weights are loaded from factor_ensemble.json at import, so this
+header is documentation only.
 
-Momentum anchor (trimmed from .42 per COPPER whipsaw) + two decorrelated
-reversal members + vol-of-vol regime + VIX-beta risk guard. Cross-sectional
-rank composite over the 15-name tradable panel; fully invested, non-negative
-weights sum to 1, no cash sleeve. One atomic rebalance proposal per
-10-trading-day block via rebalance_to_weights with aligned forecast returns so
-the execution gate (gross edge > one-way turnover * 3bp) decides. Bear regime
-adds a modest defensive tilt (XAU/US10Y/CN10Y). Factors are loaded from
-factor_ensemble.json at import.
+Momentum anchor + two decorrelated reversal members + vol-of-vol regime +
+VIX-beta risk guard. Cross-sectional rank composite over the 15-name tradable
+panel; fully invested, non-negative weights sum to 1, no cash sleeve. One
+atomic rebalance proposal per 10-trading-day block via rebalance_to_weights
+with aligned forecast returns so the execution gate (gross edge > one-way
+turnover * 3bp) decides. Bear regime adds a modest defensive tilt
+(XAU/US10Y/CN10Y). Factors are loaded from factor_ensemble.json at import.
 
 v4 cadence fix (2027-01-22): the harness invokes cycles at idx%10==4 while the
 fixed grid (idx%10==8 from ONLINE_START) is never hit, which froze proposals
@@ -87,6 +87,16 @@ leaders carry fat-tailed reversal risk regardless of factor origin. The
 top-2 composite-score names are capped at COMP_TOP2_CAP (9.5%); excess is
 redistributed proportionally to remaining names. Factor-agnostic like
 v8/v9/v11; applied before the MA guards.
+
+v14 (2031-04-25): combined China-equity cap (Screener-recommended after 2
+China drag blocks: 000300 -3.57 on 8.4% in 1025-1108, 000688 -12.4 on 8.19%
+in 0411-0425 - dominant block drag). 000688 sat just ABOVE its 20d MA at the
+0410 decision (8.19% weight > the 8% v8 MA cap threshold) and collapsed
+-12.4% during the block; 000300 also below MA20 with the pair correlated in
+China risk-off. 000300+000688 combined weight is capped at 12% regardless of
+factor scores or trend state (same pattern as v9 crypto cap; HSI/CN10Y
+excluded - HSI is HK with flat-data artifact, CN10Y is a flat defensive
+rate). Excess is redistributed proportionally to the remaining names.
 """
 import json
 import math
@@ -104,11 +114,13 @@ MIN_ROWS = 140
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 CRYPTO = {"BTC", "ETH"}
 CYCLICAL_COMMOD = {"WTI", "COPPER"}
+CHINA_EQ = {"000300.SH", "000688.SH"}   # v14: China equity pair (HSI/CN10Y excluded)
 CAP_W = 0.16
 GUARD_CAP = 0.06         # v7 cap for momentum top-picks below 20d MA
 COMP_GUARD_CAP = 0.08    # v8 cap for ANY below-20d-MA asset with weight > 8%
 CRYPTO_CAP = 0.12        # v9 combined BTC+ETH weight cap
 COMMOD_CAP = 0.14        # v11 combined WTI+COPPER weight cap
+CHINA_CAP = 0.12         # v14 combined 000300+000688 weight cap
 COMP_TOP2_CAP = 0.095     # v13 composite-rank top-2 weight cap
 MOM_TOP_RANK = 0.60      # momentum rank threshold for the v7 guard
 MOM_TOP2_RANK = 0.86  # v12: top-2 momentum names (rank >= .86 of 15)
@@ -281,8 +293,17 @@ def _ranks(values, assets):
 
 
 def _scores(frames, assets, cur):
+    """Composite score with dead-factor renormalization.
+
+    Factors with fewer than 8 valid cross-sectional values (e.g. the
+    vix_beta_cond_60x20 risk guard when VIX is pinned flat at 9.0 since
+    2031-02-13, which zeroes its 60d return variance) are dropped and the
+    surviving factor weights are renormalized to sum to 1, preserving the
+    Screener ensemble intent instead of degrading to equal weights.
+    """
     score = {a: 0.0 for a in assets}
     used = 0
+    used_w = 0.0
     for fid, w, direction in FACTORS:
         vals = _factor_values(frames, fid, cur)
         if sum(1 for v in vals.values() if v is not None) < 8:
@@ -291,6 +312,10 @@ def _scores(frames, assets, cur):
         for a in assets:
             score[a] += w * (r[a] if direction > 0 else 1.0 - r[a])
         used += 1
+        used_w += w
+    if used_w > 0:                      # renormalize to ensemble weights sum 1
+        for a in assets:
+            score[a] /= used_w
     return score, used
 
 
@@ -527,6 +552,37 @@ def _commod_cap(w, assets):
     return w
 
 
+def _china_cap(w, assets):
+    """v14: cap combined China-equity weight (000300+000688) at 12%.
+
+    Block 0411-0425: 000688 sat just ABOVE its 20d MA at the 0410 decision
+    (8.19% weight evaded the v8 8% below-MA cap) and collapsed -12.4% - the
+    dominant block drag; 000300 was -3.57 in 1025-1108 on 8.4%. Both are
+    China equity indices correlated in China risk-off. This guard is factor-
+    and trend-agnostic: combined 000300+000688 weight can never exceed
+    CHINA_CAP; excess is redistributed proportionally to the remaining names.
+    HSI/CN10Y are deliberately excluded (HSI is HK with a flat-data artifact,
+    CN10Y is a flat defensive rate).
+    """
+    cn = [a for a in assets if a in CHINA_EQ and a in w]
+    csum = sum(w[a] for a in cn)
+    if csum <= CHINA_CAP + 1e-12:
+        return w
+    scale = CHINA_CAP / csum
+    for a in cn:
+        w[a] *= scale
+    excess = csum - CHINA_CAP
+    room = [a for a in assets if a not in cn]
+    if room:
+        den = sum(w[a] for a in room) + 1e-12
+        for a in room:
+            w[a] += excess * w[a] / den
+    tot = sum(w.values())
+    w = {a: x / tot for a, x in w.items()}
+    w[assets[-1]] += 1.0 - sum(w.values())
+    return w
+
+
 def _forecasts(scores, assets):
     vals = [scores[a] for a in assets]
     mean = float(np.mean(vals))
@@ -551,7 +607,7 @@ def strategy_hook():
         return
     frames = _fetch(assets)
     scores, used = _scores(frames, assets, cur)
-    if used < 5:                            # degraded fallback: equal weight
+    if used == 0:                           # fully degraded: equal weight
         w = {a: 1.0 / len(assets) for a in assets}
         w[assets[-1]] += 1.0 - sum(w.values())
         rebalance_to_weights(w)
@@ -563,9 +619,10 @@ def strategy_hook():
     w = _composite_top2_cap(w, assets, scores)                 # v13 (9.5% top-2)
     w = _composite_ma_guard(w, frames, assets)                  # v8 (8% cap)
     w = _ma_guard(w, frames, assets, cur)                       # v7 (6% cap)
-    for _ in range(6):                                           # v9/v11 cap convergence
+    for _ in range(6):                                           # v9/v11/v14 cap convergence
         w = _commod_cap(w, assets)                              # v11 (14% comm)
         w = _crypto_cap(w, assets)                              # v9 (12% crypto)
+        w = _china_cap(w, assets)                               # v14 (12% China eq)
     f = _forecasts(scores, assets)
     rebalance_to_weights(
         w,

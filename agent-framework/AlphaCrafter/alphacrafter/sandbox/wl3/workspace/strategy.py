@@ -5,119 +5,88 @@ UNIVERSE = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX"
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 RISKY = {"BTC", "ETH", "WTI", "COPPER"}
 FACTOR_IDS = [
-    "miner_2_20320624_relative_momentum20",
-    "miner_3_20280601_beta_residual_momentum20",
-    "miner_2_20280615_volmanaged_consistency30",
-    "miner_2_20280629_breakout_distance60",
     "miner_2_20280907_breakout_failure_reversal",
-    "miner_3_20270211_volstate_reversal_3d",
     "miner_2_20270520_dispersion_conditioned_reversal",
+    "miner_3_20270211_volstate_reversal_3d",
+    "miner_2_20280615_volmanaged_consistency30",
+    "miner_2_20280727_breakout_distance120",
+    "miner_3_20280601_beta_residual_momentum20",
 ]
-FACTOR_WEIGHTS = [0.32, 0.14, 0.13, 0.11, 0.10, 0.10, 0.10]
-FACTOR_DIRECTIONS = [1, 1, 1, 1, 1, 1, 1]
+FACTOR_WEIGHTS = [0.32, 0.25, 0.20, 0.08, 0.08, 0.07]
+FACTOR_DIRECTIONS = [1, 1, 1, 1, 1, 1]
 CADENCE = 10
 _day = 0
-_previous_score = None
+_previous = None
 
-
-def rank(values):
+def ranks(vals):
     out = {s: 0.5 for s in UNIVERSE}
-    good = sorted((s, float(v)) for s, v in values.items() if np.isfinite(v))
+    good = sorted((s, float(v)) for s, v in vals.items() if np.isfinite(v))
     for i, (s, _) in enumerate(good):
-        out[s] = (i + 1.0) / len(good)
+        out[s] = (i + 1.0) / max(1, len(good))
     return out
 
-
-def capped_weights(raw):
-    w = np.array([max(float(raw.get(s, 0.0)), 0.02) for s in UNIVERSE], dtype=float)
+def capped(raw, cap=0.22):
+    w = np.array([max(float(raw.get(s, 0.01)), 0.005) for s in UNIVERSE])
     w /= w.sum()
-    for _ in range(20):
-        over = w > 0.25
-        if not np.any(over):
-            break
-        excess = float((w[over] - 0.25).sum())
-        w[over] = 0.25
-        under = ~over
-        w[under] += excess * w[under] / max(float(w[under].sum()), 1e-12)
+    for _ in range(30):
+        over = w > cap
+        if not np.any(over): break
+        excess = float((w[over] - cap).sum())
+        w[over] = cap
+        if np.any(~over): w[~over] += excess * w[~over] / max(float(w[~over].sum()), 1e-12)
     w /= w.sum()
-    return dict(zip(UNIVERSE, (float(x) for x in w)))
-
+    return dict(zip(UNIVERSE, w.tolist()))
 
 @register_hook
 def cross_asset_strategy():
-    global _day, _previous_score
+    global _day, _previous
     _day += 1
-    if _day != 1 and (_day - 1) % CADENCE:
+    if _day != 1 and (_day - 1) % CADENCE != 0:
         return
-
-    features = {}
-    for symbol in UNIVERSE:
-        df = get_stock_daily_data(symbol=symbol, days=320)
-        if df is None or len(df) < 140:
-            continue
-        close = np.asarray(df.sort_values("date")["close"], dtype=float)[:-1]
-        if len(close) < 130 or np.any(~np.isfinite(close)) or np.any(close <= 0):
-            continue
-        ret = close[1:] / close[:-1] - 1.0
-        v10 = max(float(np.std(ret[-10:])), 0.006)
-        v20 = max(float(np.std(ret[-20:])), 0.006)
-        v30 = max(float(np.std(ret[-30:])), 0.006)
-        v60 = max(float(np.std(ret[-60:])), 0.006)
-        m3 = float(np.prod(1 + ret[-3:]) - 1)
-        m5 = float(np.prod(1 + ret[-5:]) - 1)
-        m20 = float(np.prod(1 + ret[-20:]) - 1)
-        m30 = float(np.prod(1 + ret[-30:]) - 1)
-        h20 = max(float(np.max(close[-20:])), 1e-12)
-        h60 = max(float(np.max(close[-60:])), 1e-12)
-        features[symbol] = {"ret": ret, "v": v20, "relative": m20,
-            "rev3": -m3 / v10, "failrev": -((close[-1] / h20) - 1) / v20,
-            "consistency": m30 / v30 * np.mean(ret[-30:] > 0),
-            "break60": close[-1] / h60, "disprev": -m5 / v60}
-    if len(features) < 10:
-        return
-
-    benchmark = features.get("000300.SH", features.get("SPX"))["ret"]
-    bench_m20 = float(np.prod(1 + benchmark[-20:]) - 1)
-    for x in features.values():
-        n = min(60, len(x["ret"]), len(benchmark))
-        a, b = x["ret"][-n:], benchmark[-n:]
-        beta = float(np.cov(a, b, ddof=0)[0, 1]) / max(float(np.var(b)), 1e-8)
-        x["residual"] = float(np.sum(a[-20:] - beta * b[-20:])) / max(x["v"] * 4, 0.01)
-
-    raw = {
-        "relative": {s: x["relative"] - bench_m20 for s, x in features.items()},
-        "residual": {s: x["residual"] for s, x in features.items()},
-        "consistency": {s: x["consistency"] for s, x in features.items()},
-        "break60": {s: x["break60"] for s, x in features.items()},
-        "failrev": {s: x["failrev"] for s, x in features.items()},
-        "rev3": {s: x["rev3"] for s, x in features.items()},
-        "disprev": {s: x["disprev"] for s, x in features.items()},
-    }
-    ranks = {k: rank(v) for k, v in raw.items()}
-    score = {s: sum(w * ranks[k].get(s, 0.5) for w, k in zip(FACTOR_WEIGHTS, ranks)) for s in UNIVERSE}
-    if _previous_score is not None:
-        score = {s: 0.8 * score[s] + 0.2 * _previous_score[s] for s in UNIVERSE}
-    _previous_score = dict(score)
-
-    stressed = (float(np.median([x["v"] for x in features.values()])) > 0.015 or
-                np.mean([x["relative"] > 0 for x in features.values()]) < 0.40)
-    mean_invvol = float(np.mean([1.0 / x["v"] for x in features.values()]))
-    raw_weight = {}
+    stats = {}
     for s in UNIVERSE:
-        x = features.get(s)
-        invvol = 1.0 if x is None else np.clip((1.0 / x["v"]) / mean_invvol, 0.75, 1.15)
-        tilt = (1.45 if s in DEFENSIVE else 0.55 if s in RISKY else 0.85) if stressed else (1.15 if s in DEFENSIVE else 0.85 if s in RISKY else 1.0)
-        raw_weight[s] = max(score[s], 0.04) * (0.85 + 0.15 * invvol) * tilt
-    target = capped_weights(raw_weight)
-    forecast = {s: float(np.clip((score[s] - 0.5) * 0.06, -0.03, 0.03)) for s in UNIVERSE}
+        df = get_stock_daily_data(symbol=s, days=330)
+        if df is None or len(df) < 140: continue
+        df = df.sort_values("date")
+        c = np.asarray(df["close"], float)[:-1]
+        h = np.asarray(df["high"], float)[:-1]
+        l = np.asarray(df["low"], float)[:-1]
+        if len(c) < 125 or np.any(~np.isfinite(c)) or np.any(c <= 0): continue
+        r = c[1:] / c[:-1] - 1.0
+        v3, v20, v60 = max(float(np.std(r[-3:])), .004), max(float(np.std(r[-20:])), .006), max(float(np.std(r[-60:])), .006)
+        m3, m20, m30 = float(np.prod(1+r[-3:])-1), float(np.prod(1+r[-20:])-1), float(np.prod(1+r[-30:])-1)
+        atr = max(float(np.mean((h[-10:]-l[-10:])/c[-10:])), .003)
+        hi20, hi60, hi120 = [max(float(np.max(c[-n:])), 1e-12) for n in (20,60,120)]
+        stats[s] = {"r":r, "vol":v20,
+          "failure":((c[-1]/hi60-1)-(c[-1]/hi20-1))/atr,
+          "dispersion":-m3/v3*(1+abs(m20)/max(v20,.01)),
+          "volstate":-m3/v3*(1+min(v20/v60,2)),
+          "consistency":(m30/v20)*float(np.mean(r[-30:]>0)),
+          "breakout120":(c[-1]/hi120-1)/max(atr,.005), "momentum":m20}
+    if len(stats) < 10: return
+    bench = stats.get("000300.SH", stats.get("SPX"))["r"]
+    for x in stats.values():
+        n = min(60, len(x["r"]), len(bench))
+        beta = float(np.cov(x["r"][-n:], bench[-n:], ddof=0)[0,1]) / max(float(np.var(bench[-n:])),1e-8)
+        x["residual"] = float(np.sum(x["r"][-20:] - beta*bench[-20:]))
+    keys = ["failure","dispersion","volstate","consistency","breakout120","residual"]
+    rr = {k:ranks({s:x[k] for s,x in stats.items()}) for k in keys}
+    score = {s:sum(w*rr[k][s] for w,k in zip(FACTOR_WEIGHTS,keys)) for s in UNIVERSE}
+    if _previous is not None: score = {s:.8*score[s]+.2*_previous[s] for s in UNIVERSE}
+    _previous = dict(score)
+    median_vol = float(np.median([x["vol"] for x in stats.values()]))
+    breadth = float(np.mean([x["momentum"] > 0 for x in stats.values()]))
+    stressed = median_vol > .015 or breadth < .40
+    inv_mean = float(np.mean([1/x["vol"] for x in stats.values()]))
+    raw = {}
+    for s in UNIVERSE:
+        x = stats.get(s); iv = 1 if x is None else np.clip((1/x["vol"])/inv_mean,.75,1.15)
+        tilt = (1.55 if s in DEFENSIVE else .50 if s in RISKY else .85) if stressed else (1.15 if s in DEFENSIVE else .85 if s in RISKY else 1)
+        raw[s] = max(score[s],.04)*(.85+.15*iv)*tilt
+    target = capped(raw)
+    forecast = {s:float(np.clip((score[s]-.5)*.06,-.03,.03)) for s in UNIVERSE}
     rebalance_to_weights(target, forecast_returns=forecast, factor_ids=FACTOR_IDS)
 
-
-assert len(UNIVERSE) == 15 and len(FACTOR_IDS) == 7
-assert FACTOR_IDS == ["miner_2_20320624_relative_momentum20", "miner_3_20280601_beta_residual_momentum20", "miner_2_20280615_volmanaged_consistency30", "miner_2_20280629_breakout_distance60", "miner_2_20280907_breakout_failure_reversal", "miner_3_20270211_volstate_reversal_3d", "miner_2_20270520_dispersion_conditioned_reversal"]
-assert abs(sum(FACTOR_WEIGHTS) - 1.0) < 1e-9
-assert all(x == 1 for x in FACTOR_DIRECTIONS)
-assert len(FACTOR_IDS) <= 10
-מס = None
-if מס is not None:
-    pass
+assert len(UNIVERSE)==15 and len(FACTOR_IDS)<=10
+assert abs(sum(FACTOR_WEIGHTS)-1)<1e-9
+assert set(UNIVERSE).isdisjoint({"DXY","USDCNY","USDJPY","EURUSD","VIX"})
