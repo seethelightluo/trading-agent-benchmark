@@ -69,6 +69,8 @@ combined weight is capped at 14% regardless of factor scores or trend state;
 excess is redistributed proportionally to the remaining names. XAU is
 deliberately excluded (defensive sleeve). Factor- and trend-agnostic like v9.
 
+v17 (2033-02-11): close the v13 composite top-2 cap leak - re-apply the top-2 cap (9.0%) AFTER the v9/v11/v14 pair-cap redistribution inside the convergence loop. Block 0128-0211 executed NDX at 9.99% (> 9.0% cap) because pair-cap redistribution pushed the top-2 composite name back above the cap; it fell -5.43 (-0.54pp). Same artifact as XAU 10.50% in 0507. No ensemble change.
+
 v16 (2032-08-13): tighten composite top-2 cap 9.5%% -> 9.0%% (trader risk
 adjustment after 2nd consecutive SOX top-weight drag: block 0716-0730 SOX
 9.59%% top-composite weight -5.80%% (-0.56pp dominant drag) following -15.61%%
@@ -626,10 +628,15 @@ def strategy_hook():
     w = _composite_top2_cap(w, assets, scores)                 # v13 (9.5% top-2)
     w = _composite_ma_guard(w, frames, assets)                  # v8 (8% cap)
     w = _ma_guard(w, frames, assets, cur)                       # v7 (6% cap)
-    for _ in range(6):                                           # v9/v11/v14 cap convergence
-        w = _commod_cap(w, assets)                              # v11 (14% comm)
+    for _ in range(6):                                           # v9/v11/v14 + v13 cap convergence
+        w = _commod_cap(w, assets)                              # v11 (12% comm)
         w = _crypto_cap(w, assets)                              # v9 (12% crypto)
         w = _china_cap(w, assets)                               # v14 (12% China eq)
+        w = _composite_top2_cap(w, assets, scores)              # v17: v13 re-applied AFTER pair caps
+                                                                # (closes cap-leak where pair-cap
+                                                                # redistribution pushed top-2 composite
+                                                                # names back above 9.0%: XAU 10.50 in
+                                                                # 0507, NDX 9.99 in 0128-0211 block)
     f = _forecasts(scores, assets)
     rebalance_to_weights(
         w,

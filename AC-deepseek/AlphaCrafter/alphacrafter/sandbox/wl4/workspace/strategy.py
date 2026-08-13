@@ -1,4 +1,86 @@
-"""v44 (2032-03-08):
+"""v47 (2032-11-29):
+v46 + four risk-adjustment fires from the 11-15..11-29 block (proposal on
+11-15 EXECUTED, cost = 11-12 closes; account 1047450.87 -> 1046413.42,
+-0.10% block, Sharpe -0.55 DD 0.55%):
+  - US10Y x0.35 -> x0.30  3rd consecutive negative block (-5.23%/-4.03%/
+    -2.20%, cumulative ~-11.2%); fires the v46 watch "US10Y x0.30 on another
+    large or 3rd cons neg"; persistent bond selloff, w~0.056 moderate.
+  - SOX x0.25 -> x0.20  4th consecutive negative block (-1.96%/-4.75%/
+    -0.73%/-8.25%, cumulative ~-14.8%); fires the v46 watch "SOX x0.20 on
+    4th cons neg or <-10%"; semis remain the weakest sector (w~0.025).
+  - WTI x0.40 -> x0.30  2nd consecutive negative block (-0.58%, then
+    -2.07%); fires the v46 watch "WTI x0.30 on another large or 2nd cons
+    neg"; energy still choppy after the air-pocket recovery.
+  - 000688.SH x0.45 -> x0.35  3rd consecutive negative block (-4.35%/
+    -0.99%/-1.16%); fires the v46 watch "000688 x0.35 on 3rd cons neg or
+    <-8%"; A-share momentum continued to cool.
+  Kept: XAU x0.85 (1 pos +3.45% then 1 neg -1.72%; re-boost x1.00 watch
+  resets), N225 x0.85 (1st STRONG pos +4.84% after -3.16%; re-boost x1.00
+  watch 1 of 2), SX5E x0.50 (1st neg -4.64% after +5.68% reset; x0.40 only
+  on large <-8% or 4th cons neg), SPX x0.75 (4th cons pos +4.49%), COPPER
+  cap 0.12 (2nd cons pos +2.53%), NDX x0.75 (single neg -1.35%), CN10Y
+  x0.70 frozen, ETH x0.75 frozen, BTC x0.15 frozen.
+  Frozen stale names unchanged: 000300.SH/HSI/BTC/ETH/CN10Y (~39% book
+  neutral rank).
+  Ensemble: 0.40/0.35/0.25 (SCREENER unchanged since 05-31) - loaded live
+  from factors/factor_ensemble.json.
+
+
+v46 (2032-09-20):
+v45 + three risk-adjustment fires from the 09-06..09-20 block (proposal on
+09-06 EXECUTED, cost = 09-03 closes; account 1008393.80 -> 1017470.02,
++0.90% block, Sharpe 6.06 DD 0.36%):
+  - 000688.SH x0.60 -> x0.45  2nd consecutive negative block (-4.35%
+    08-20->09-03, then -0.99%); fires the v45 watch "000688 x0.45 on 2nd
+    cons neg or <-8%"; A-share momentum cooled after the +15.89% top run.
+  - SOX x0.30 -> x0.25  3rd consecutive negative block (-1.96%/-4.75%/
+    -0.73%, cumulative ~-7.3%); fires the v45 watch "SOX x0.25 on 3rd cons
+    neg or <-10%"; semis lag despite SPX/NDX strength (w~0.026 tiny impact).
+  - US10Y x0.45 -> x0.35  2nd consecutive negative block (-5.23%, then
+    -4.03%, cumulative ~-9.3%); fires the standing v37-lite 2nd-cons-neg
+    chain-cut pattern (mirror x0.60->x0.55 and x0.55->x0.45 precedents);
+    persistent bond selloff, w~0.026 small impact.
+  Kept: XAU x0.85 (1 pos +3.45%; re-boost x1.00 watch 1 of 2), WTI x0.40
+  (1st mild neg -0.58% after re-boost; x0.30 only on another large or 2nd
+  cons neg), N225 x0.85 (1st cons neg -3.16% after the -9.11% cut; x0.70 on
+  2nd cons neg or another large <-6%), NDX x0.75 (flat +0.02%), SX5E x0.50
+  (STRONG pos +5.68% resets 4th-cons-neg watch), SPX x0.75 (3rd cons pos
+  +3.78%/+3.02%/+4.52%), COPPER cap 0.12 (pos +3.84% top-weight winner),
+  CN10Y x0.70 frozen, ETH x0.75 frozen, BTC x0.15 frozen.
+  Frozen stale names unchanged: 000300.SH/HSI/BTC/ETH/CN10Y (~32% book
+  neutral rank).
+  Ensemble: 0.40/0.35/0.25 (SCREENER unchanged since 05-31) - loaded live
+  from factors/factor_ensemble.json.
+
+
+v45 (2032-09-06):
+v44 + two risk-adjustment fires from the 08-23..09-06 block (proposal on
+08-23 SKIPPED by deterministic gate (gross edge <= turnover*3bp) -> holdings
+unchanged at 06-14 target; account 1016771.06 -> 1008393.80, -0.82% block,
+Sharpe -3.96 DD 0.92%):
+  - WTI x0.30 -> x0.40  RE-BOOST 2 consecutive positive blocks (+3.51%
+    06-14..06-25, then +24.22% 08-20->09-03, TOP contributor +0.89%);
+    fires the v44 watch "WTI re-boost x0.40 after 2 stable pos"; energy
+    recovery after the air-pocket chain.
+  - N225 x1.00 -> x0.85  LARGE single -9.11% (08-20 close -> 09-03 close,
+    MAIN DRAG ~-0.94% at w~0.103) after a long strong-pos run
+    (+6.57%/+6.01%/+3.90%/+1.62%/+3.02% chain); fires the v44 watch
+    "N225 x0.85 on large <-6% or 2nd cons neg".
+  Kept: XAU x0.85 (1 pos +2.60% then 1 neg -4.17%; re-boost x1.00 watch
+  resets), US10Y x0.45 (1 pos +5.59% then 1 neg -5.23%; re-boost x0.70 watch
+  resets), SOX x0.30 (2nd cons neg but mild -1.96%/-4.75%; x0.25 only on 3rd
+  cons neg or <-10%), NDX x0.75 (single neg -1.39%), SX5E x0.50 (pos +3.50%
+  resets 4th-cons-neg watch), SPX x0.75 (2 cons pos +3.78%/+3.02%),
+  000688.SH x0.60 (1 pos +1.22% then 1 neg -4.35%; x0.45 on 2nd cons neg or
+  <-8%), COPPER cap 0.12 (pos +0.12%), CN10Y x0.70 frozen, ETH x0.75 frozen,
+  BTC x0.15 frozen.
+  Frozen stale names unchanged: 000300.SH/HSI/BTC/ETH/CN10Y (~37% book
+  neutral rank).
+  Ensemble: 0.40/0.35/0.25 (SCREENER unchanged since 05-31) - loaded live
+  from factors/factor_ensemble.json.
+
+
+v44 (2032-03-08):
 v43 + risk-adjustment fires from the 03-08..03-22 block (proposal on 03-08
 EXECUTED, cost = 03-05 closes, account 1039741.88 -> 1032438.18, -0.70%
 block):
@@ -189,9 +271,9 @@ STALE_N = 5         # consecutive identical closes => stale quote
 # Prior v17 (2028-06-05): XAU x1.00 -> x1.25, US10Y x1.25 -> x1.00,
 #   BTC x0.75 -> x0.65, SX5E x1.00 -> x0.85
 DEFENSIVE_MULT = {
-    "XAU": 0.85, "US10Y": 0.45, "CN10Y": 0.70,   # safe havens (v44: XAU x0.70->x0.85 re-boost 2 cons pos +4.32%/+3.55%; US10Y x0.55->x0.45 2nd cons neg -4.43%/-2.76%; CN10Y kept x0.70 frozen stale)
-    "SOX": 0.30, "NDX": 0.75, "ETH": 0.75, "WTI": 0.30, "BTC": 0.15, "N225": 1.00,  # high-beta (v44: WTI x0.40->x0.30 ANOTHER LARGE AIR-POCKET -17.83% fires v43 watch; SOX kept x0.30 1st pos +1.83% after neg, re-boost x0.45 on 2 cons pos; NDX kept x0.75 +1.16% pos; N225 x0.85->x1.00 2 cons strong pos +6.01%/+6.57%; BTC/ETH frozen stale)
-    "SX5E": 0.50, "SPX": 0.75, "000688.SH": 0.60,  # v44: SX5E kept x0.50 2nd cons neg mild -2.90%/-5.24% (x0.40 on large <-8% or 4th cons neg); SPX kept x0.75 1st cons neg mild -1.24% (x0.65 on 2nd cons neg or <-8%); 000688 x0.70->x0.60 large single neg -7.11% after +15.89% top run (x0.45 on 2nd cons neg or <-8%)
+    "XAU": 1.00, "US10Y": 0.30, "CN10Y": 0.70,   # safe havens (v48: XAU x0.85->x1.00 re-boost 2 cons pos +6.03%/+1.49%; US10Y kept x0.30 1st pos +6.78% after 3 negs; CN10Y kept x0.70 frozen stale)
+    "SOX": 0.20, "NDX": 0.75, "ETH": 0.75, "WTI": 0.30, "BTC": 0.15, "N225": 0.70,  # high-beta (v48: N225 x0.85->x0.70 2nd cons neg -4.58%/-6.41% + large <-6%; SOX kept x0.20 5th cons neg -13.86% CONTAINED w~2.8%; WTI kept x0.30 2nd cons mild neg -1.67%/-1.20%; NDX kept x0.75 pos +3.95%; BTC/ETH frozen stale)
+    "SX5E": 0.50, "SPX": 0.75, "000688.SH": 0.60,  # v48: 000688 x0.35->x0.60 re-boost 2 cons pos +14.14%/+5.43%; SX5E kept x0.50 pos +4.58%; SPX kept x0.75 pos +0.47% resets neg-count
 }
 
 

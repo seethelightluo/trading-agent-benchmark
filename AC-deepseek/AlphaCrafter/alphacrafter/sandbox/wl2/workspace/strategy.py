@@ -5,11 +5,13 @@ applied), fully-invested 15-asset long-only target, one atomic rebalance per
 10-trading-day block. Risk-off regime tilts toward defensive tradable assets
 (XAU/US10Y/CN10Y); never cash.
 
-Ensemble (2031-03-20 refresh, quality_ic_tilt, 5f): max_consec_gain_20
-.2821(+1), downbeta_spx_60 .2351(+1), mom_180d_skip5 .1920(+1), spx_corr60
-.1865(+1), range_pos_252 .1043(+1). Same 5 factor IDs as the 2030-10-17
-refresh; weights regime-updated (downbeta demoted .3263->.2351, mom_180d
-promoted .1500->.1920, range_pos .0841->.1043). The 2026-11-19 10f momentum
+Ensemble (2031-12-25 refresh, quality_ic_tilt, 5f): max_consec_gain_20
+.3408(+1), mom_180d_skip5 .2305(+1), downbeta_spx_60 .1522(+1), spx_corr60
+.1670(+1), range_pos_252 .1096(+1). Same 5 factor IDs as the 2031-03-20 /
+2031-10-02 / 2031-10-30 refreshes; weights regime-updated for the
+stabilizing-elevated tape (mom_180d x1.55 up, range_pos x1.20 kept,
+max_consec_gain x0.90 eased, downbeta x0.45 kept-heavy-demoted, spx_corr60
+x0.80 kept). Miner gate-pass set unchanged. The 2026-11-19 10f momentum
 set (mom20_volproxy60, gain_loss_20, vol_of_vol20x60,
 usdjpy_beta_cond_120x60, mom30_vol60, days_since_high_60, max_consec_loss_20)
 is DROPPED (miner_1 gate decay through 2030-10-16).
@@ -78,7 +80,11 @@ LIVE_FIDS = {
     "mom_180d_skip5", "range_pos_252",
 }
 ARTIFACT_START = "2020-01-01"
-LIVE_MIN_FINITE = 10    # of 15 assets required to trust a live factor row
+LIVE_MIN_FINITE = 8    # of 15 assets required to trust a live factor row
+                         # 2026-07-29 artifacts froze; live recompute is primary.
+                         # 2032-04-29: 000300.SH joined the flat-feed (HSI/SX5E/BTC/US10Y/CN10Y
+                         # + 000300.SH = 6 flat) -> only 9 live assets; 10 would silently
+                         # disable all live factors and fall back to 2026-era artifacts.
 INERTIA = 1.0        # inertia disabled: pure live-factor target (v5.1 blend backtested worse)
 
 
