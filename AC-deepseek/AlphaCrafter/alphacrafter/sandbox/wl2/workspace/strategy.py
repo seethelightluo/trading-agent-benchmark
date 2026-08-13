@@ -5,12 +5,14 @@ applied), fully-invested 15-asset long-only target, one atomic rebalance per
 10-trading-day block. Risk-off regime tilts toward defensive tradable assets
 (XAU/US10Y/CN10Y); never cash.
 
-Ensemble (2030-10-17, quality_ic_tilt, 5f cap): downbeta_spx_60 .3263(+1),
-max_consec_gain_20 .2657(+1), spx_corr60 .1739(+1), mom_180d_skip5 .1500(+1),
-range_pos_252 .0841(+1). First refreshed ensemble after ~37 stale cycles;
-the 2026-11-19 10f momentum set (mom20_volproxy60, gain_loss_20,
-vol_of_vol20x60, usdjpy_beta_cond_120x60, mom30_vol60, days_since_high_60,
-max_consec_loss_20) is DROPPED (miner_1 gate decay through 2030-10-16).
+Ensemble (2031-03-20 refresh, quality_ic_tilt, 5f): max_consec_gain_20
+.2821(+1), downbeta_spx_60 .2351(+1), mom_180d_skip5 .1920(+1), spx_corr60
+.1865(+1), range_pos_252 .1043(+1). Same 5 factor IDs as the 2030-10-17
+refresh; weights regime-updated (downbeta demoted .3263->.2351, mom_180d
+promoted .1500->.1920, range_pos .0841->.1043). The 2026-11-19 10f momentum
+set (mom20_volproxy60, gain_loss_20, vol_of_vol20x60,
+usdjpy_beta_cond_120x60, mom30_vol60, days_since_high_60, max_consec_loss_20)
+is DROPPED (miner_1 gate decay through 2030-10-16).
 
 v6 changes (2026-11-19):
 1. ENSEMBLE_PATH -> factors/factor_ensemble.json (screener persists there; the
@@ -191,8 +193,8 @@ def _current_weights(account, assets):
 
 def _live_factors(assets):
     """Recompute the 5 ensemble factor signals live from price data visible at
-    the decision date (2030-10-17 ensemble: downbeta_spx_60, max_consec_gain_20,
-    spx_corr60, mom_180d_skip5, range_pos_252). Formulas match the persisted
+    the decision date (2031-03-20 ensemble: max_consec_gain_20, downbeta_spx_60, mom_180d_skip5,
+    spx_corr60, range_pos_252). Formulas match the persisted
     factor JSONs (v2.0.0). Perfectly-flat trailing 15d series (feed artifact)
     -> NaN (neutral rank 0.5)."""
     import numpy as np

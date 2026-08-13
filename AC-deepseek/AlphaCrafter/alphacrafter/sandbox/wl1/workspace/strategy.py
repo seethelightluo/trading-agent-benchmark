@@ -1,14 +1,13 @@
-"""Trader strategy v14 - Screener 5-factor quality_ic_tilt ensemble.
+"""Trader strategy v16 - Screener 5-factor quality_ic_tilt ensemble.
 
-Ensemble (2031-04-25 refresh): miner2_20260715_nclv_1d (.22,+)
+Ensemble (2032-02-27 refresh): miner2_20260715_nclv_1d (.22,+)
 | miner2_20260715_rev_2d (.21,+) | vol_of_vol20x60 (.21,+)
-| mom_120d_skip5 (.18,+) | vix_beta_cond_60x20 (.18,-). Same 5-factor
-cross-category core; HIGH-vol bear/risk-off tilt: nclv_1d .22 (unchanged),
-rev_2d .20->.21 (reversal 4th win in 5 blocks), vol_of_vol .18->.21
-(strongest recent IC ic10_20 0.266), mom_120d .20->.18 (ic10_20 fading,
-whipsaw risk), vix_beta .20->.18 (VIX pinned 9.0 flat artifact; risk guard
-only). Live weights are loaded from factor_ensemble.json at import, so this
-header is documentation only.
+| vix_beta_cond_60x20 (.21,-) | mom_120d_skip5 (.15,+). Same 5-factor
+cross-category core; HIGH-vol VIX-spike risk-off tilt (VIX 27.09, +36% in 2wk):
+vix_beta .18->.21 (strongest 10d-horizon negative IC, risk guard strengthened),
+mom_120d .18->.15 (4th SOX whipsaw block in 5 via momentum-family top-picks;
+kept as 10d trend diversifier at reduced weight). Live weights are loaded from
+factor_ensemble.json at import, so this header is documentation only.
 
 Momentum anchor + two decorrelated reversal members + vol-of-vol regime +
 VIX-beta risk guard. Cross-sectional rank composite over the 15-name tradable
@@ -61,7 +60,7 @@ v10/v12 cap the top-2 momentum names (rank >= MOM_TOP2_RANK) at
 GUARD_CAP regardless of MA state; the v7 below-MA20 top-6 rule and v8/v9
 guards are unchanged.
 
-v11 (2028-10-13): combined cyclical-commodity cap. Block 0929-1013: WTI 9.4% +
+v11 (2028-10-13, cap 14%->12% 2032-05-21): combined cyclical-commodity cap. Block 0929-1013: WTI 9.4% +
 COPPER 8.0% (17.4% combined) both fell ~-7% (est. -1.29 combined contribution)
 - the block's dominant drag, the 2nd block the commodity pair carried ~17%
 into a synchronized drawdown (WTI also 2nd time as momentum top-pick whipsaw).
@@ -69,6 +68,14 @@ Commodities remain below their 20d MA with negative 20d momentum. WTI+COPPER
 combined weight is capped at 14% regardless of factor scores or trend state;
 excess is redistributed proportionally to the remaining names. XAU is
 deliberately excluded (defensive sleeve). Factor- and trend-agnostic like v9.
+
+v16 (2032-08-13): tighten composite top-2 cap 9.5%% -> 9.0%% (trader risk
+adjustment after 2nd consecutive SOX top-weight drag: block 0716-0730 SOX
+9.59%% top-composite weight -5.80%% (-0.56pp dominant drag) following -15.61%%
+on 9.29%% in 0702-0716; semis whipsaw is the recurring dominant drag family,
+v13 cap also leaks ~0.1pp above 9.5%% after v9/v11/v14 redistribution
+artifact - the 9.0%% cap leaves headroom for that leak while trimming
+concentration).
 
 v12 (2028-10-27): extend the v10 momentum cap to the top-2 momentum names.
 Block 1013-1027: SOX was the rank-2 momentum name and delivered -12.5% on
@@ -119,9 +126,9 @@ CAP_W = 0.16
 GUARD_CAP = 0.06         # v7 cap for momentum top-picks below 20d MA
 COMP_GUARD_CAP = 0.08    # v8 cap for ANY below-20d-MA asset with weight > 8%
 CRYPTO_CAP = 0.12        # v9 combined BTC+ETH weight cap
-COMMOD_CAP = 0.14        # v11 combined WTI+COPPER weight cap
+COMMOD_CAP = 0.12        # v11 combined WTI+COPPER weight cap (14->12 on 2032-05-21: WTI 3rd down block in 4, COPPER 2nd straight, pair -1.19pp dominant drag last block)
 CHINA_CAP = 0.12         # v14 combined 000300+000688 weight cap
-COMP_TOP2_CAP = 0.095     # v13 composite-rank top-2 weight cap
+COMP_TOP2_CAP = 0.090     # v13 composite-rank top-2 cap (9.5->9.0 on 2032-08-13 v16: 2nd straight SOX top-weight drag block)
 MOM_TOP_RANK = 0.60      # momentum rank threshold for the v7 guard
 MOM_TOP2_RANK = 0.86  # v12: top-2 momentum names (rank >= .86 of 15)
 TRAP_PENALTY = 0.50      # v8 value-trap score penalty as fraction of mom weight

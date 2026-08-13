@@ -1,0 +1,1 @@
+print(''.join(open('scripts/miner_1_20310417_revalidate_baseline.py').readlines()[:80]))

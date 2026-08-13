@@ -1,0 +1,1 @@
+print(open('scripts/factor_research_lib.py').read()[5000:])

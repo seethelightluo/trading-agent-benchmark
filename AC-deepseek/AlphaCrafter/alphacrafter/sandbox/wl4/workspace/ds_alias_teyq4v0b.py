@@ -1,0 +1,1 @@
+print(open('scripts/miner_3_20311006_screen_batchZ.py').read()[6000:])

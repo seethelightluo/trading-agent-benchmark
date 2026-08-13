@@ -52,6 +52,16 @@ rebalances clear the gate, near-no-op proposals still get skipped.
 
 2031-04-03 COMMODITY GUARD (trader, ensemble unchanged after Screener escalation): WTI_CAP=0.06, COMM_CAP=0.36 (XAU+COPPER+WTI) applied after risk_trim. Rationale: WTI -14% block (03-20..04-03), 3rd consecutive negative commodity-beta attribution.
 
+2031-12-11 CAP RE-TUNE (trader, per 11-27 plan trigger: commodities kept bleeding -
+WTI -16.5%/10d accelerating, COPPER -3.5%/10d; backtest Sharpe recovered to 0.38):
+COMM_CAP 0.36->0.33, NEW COPPER_CAP=0.12 (COPPER ~15% was largest block drag),
+ETH cap 6% made UNCONDITIONAL (2 consecutive crypto-loss blocks: -15.8%, -3.7%).
+Applied in commodity_guard (final-weight layer) so it holds in all regimes.
+
+2032-04-29 CAP RE-TUNE (trader, per 04-15 plan trigger: WTI kept bleeding -
+raise to 6.4% on 03-18 followed by pullback, -10.53%, -15.42% over 3 blocks;
+biggest single-asset block drag -10.9k): WTI_CAP 0.06->0.04. Ensemble untouched.
+
 2028-05-04 NEW-ENSEMBLE REFRESH (trader): implemented the three new live
 factor signals in the exact canonical forms from the factor library:
   * vix_beta_cond_60x20 = beta(asset,VIX,60) * (VIX/VIX.shift(20)-1), d=-1
@@ -80,8 +90,10 @@ EQ_ASSETS = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX
 CAP = 0.18
 EQ_CAP = 0.40            # live equity complex max combined weight under stress
 ETH_CAP = 0.06           # max ETH weight under stress
-WTI_CAP = 0.06           # trader guard 2031-04-03: single-asset tail cap (WTI -14% block)
-COMM_CAP = 0.36          # XAU+COPPER+WTI combined cap (defensive XAU kept, cyclicals limited)
+WTI_CAP = 0.04           # 2032-04-29 trader re-tune: 3 consecutive post-raise loss blocks since 03-18 raise (pullback, -10.5%, -15.4%); cap 0.06->0.04
+COMM_CAP = 0.33          # XAU+COPPER+WTI combined cap (trimmed 0.36->0.33 on 2031-12-11)
+COPPER_CAP = 0.10          # 2032-08-05 trader re-tune: COPPER whipsaw (-1.7%, +2.4%, -9.5% over 3 blocks; -9.5% = dominant drag); cap 0.12->0.10 per 07-22 plan trigger
+ETH_CAP_ALL = 0.06         # 2031-12-11: ETH cap made unconditional (2 consecutive crypto-loss blocks)
 VIX_STRESS = 30.0        # VIX level that flags equity stress
 EQ_RET21_STRESS = -0.05  # live-equity mean 21d return threshold for stress
 FROZEN_FLOOR = 0.005          # 0.5% per frozen (zero-return) asset
@@ -267,7 +279,8 @@ def risk_trim(w, assets, live, stress, eq_cap=EQ_CAP, eth_cap=ETH_CAP, cap=CAP):
     return {a: max(0.0, float(x)) for a, x in w.items()}
 
 
-def commodity_guard(w, assets, live, cap=CAP, wti_cap=WTI_CAP, comm_cap=COMM_CAP):
+def commodity_guard(w, assets, live, cap=CAP, wti_cap=WTI_CAP,
+                       comm_cap=COMM_CAP, copper_cap=COPPER_CAP, eth_cap=ETH_CAP_ALL):
     """Trader guard (2031-04-03): cap WTI and the live commodity complex.
 
     Fired after WTI -14% in the 03-20..04-03 block and a third consecutive
@@ -285,6 +298,10 @@ def commodity_guard(w, assets, live, cap=CAP, wti_cap=WTI_CAP, comm_cap=COMM_CAP
             c = cap
             if a == "WTI" and a in live:
                 c = min(c, wti_cap)
+            if a == "COPPER" and a in live:
+                c = min(c, copper_cap)
+            if a == "ETH" and a in live:
+                c = min(c, eth_cap)
             if w[a] > c:
                 excess += w[a] - c
                 w[a] = c
@@ -302,6 +319,10 @@ def commodity_guard(w, assets, live, cap=CAP, wti_cap=WTI_CAP, comm_cap=COMM_CAP
             c = cap
             if a == "WTI":
                 c = min(c, wti_cap)
+            if a == "COPPER":
+                c = min(c, copper_cap)
+            if a == "ETH":
+                c = min(c, eth_cap)
             if w[a] < c - 1e-9:
                 room.append(a)
         if not room:
@@ -522,7 +543,9 @@ def strategy_hook():
     print(f"[trader] commodity guard: XAU={weights['XAU'] * 100:.1f}% "
           f"COPPER={weights['COPPER'] * 100:.1f}% WTI={weights['WTI'] * 100:.1f}% "
           f"complex={sum(weights[a] for a in ('XAU','COPPER','WTI')) * 100:.1f}% "
-          f"(WTI cap {WTI_CAP * 100:.0f}%, complex cap {COMM_CAP * 100:.0f}%)")
+          f"ETH={weights['ETH'] * 100:.1f}% "
+          f"(WTI cap {WTI_CAP * 100:.0f}%, COPPER cap {COPPER_CAP * 100:.0f}%, "
+          f"complex cap {COMM_CAP * 100:.0f}%, ETH cap {ETH_CAP_ALL * 100:.0f}%)")
     if len(frozen):
         print(f"[trader] frozen assets floored at {FROZEN_FLOOR:.3f}: "
               f"{sorted(frozen)}; live={sorted(live)}")
