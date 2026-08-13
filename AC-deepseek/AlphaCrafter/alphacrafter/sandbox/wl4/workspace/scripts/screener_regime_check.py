@@ -1,106 +1,90 @@
-import csv, json, math
+"""Regime + factor recent-IC check using ONLY data visible through 2033-03-18 (fixed)."""
+import os
 import numpy as np
+import pandas as pd
 
-vt = json.load(open('../persistent/date.json'))['visible_through']
-assets = ['SPX','NDX','SOX','000300.SH','000688.SH','HSI','N225','SX5E','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+CUTOFF = pd.Timestamp("2033-03-18")
+DATA = "../persistent/stock_data"
+IDX = "../persistent/index_data"
+ASSETS = ["000300.SH","SPX","HSI","N225","SX5E","000688.SH","SOX","NDX","XAU",
+          "COPPER","WTI","BTC","ETH","US10Y","CN10Y"]
+OBS = ["DXY","USDCNY","USDJPY","EURUSD","VIX"]
 
-def load(fn, col='close'):
-    rows = {}
-    for r in csv.DictReader(open(fn)):
-        d = r['date']
-        if d > vt: continue
-        try: rows[d] = float(r[col])
-        except: pass
-    return rows
+def load_close(sym, d=DATA):
+    df = pd.read_csv(os.path.join(d, sym + ".csv"), parse_dates=["date"]).set_index("date")
+    return df["close"].astype(float)
 
-px = {a: load(f'../persistent/stock_data/{a}.csv') for a in assets}
-eur = load('../persistent/index_data/EURUSD.csv')
-vols = {a: load(f'../persistent/stock_data/{a}.csv', 'volume') for a in assets}
+closes = pd.DataFrame({s: load_close(s) for s in ASSETS}).loc[:CUTOFF]
+obs = pd.DataFrame({s: load_close(s, d=IDX) for s in OBS}).loc[:CUTOFF]
+rets = closes.pct_change()
+obs_rets = obs.pct_change()
 
-all_dates = sorted(set.intersection(*[set(px[a].keys()) for a in assets]) & set(eur.keys()))
-print('common dates:', len(all_dates), '| first:', all_dates[0], '| last:', all_dates[-1])
+H = 10
+fwd = closes.shift(-H) / closes - 1
+mkt = closes.mean(axis=1)
+mkt_ret = mkt.pct_change()
 
-R = np.full((len(all_dates), len(assets)), np.nan)
-for i, d in enumerate(all_dates):
-    for j, a in enumerate(assets):
-        R[i, j] = px[a][d]
-Ret = np.diff(R, axis=0) / R[:-1]
-dates = all_dates[1:]
+# factor 1: vol_adj_mom_accel_20x60
+mom20 = closes / closes.shift(20) - 1
+mom60 = closes / closes.shift(60) - 1
+vol20 = rets.rolling(20).std()
+f_mom = (mom20 - mom60) / vol20
 
-eur_arr = np.array([eur[d] for d in all_dates])
-eur_ret = np.diff(eur_arr) / eur_arr[:-1]
-mkt_ret = np.nanmean(Ret, axis=1)
+# factor 2: dn_mkt_beta_60d (beta on down-market days)
+down = mkt_ret.clip(upper=0)
+f_beta = pd.DataFrame(index=closes.index, columns=ASSETS, dtype=float)
+for s in ASSETS:
+    f_beta[s] = rets[s].rolling(60).cov(down) / down.rolling(60).var()
 
-cn10y_arr = np.array([px['CN10Y'][d] for d in all_dates])
-cn10y_ret = np.diff(cn10y_arr) / cn10y_arr[:-1]
+# factor 3: rate_beta_cn10y_60d (beta on CN10Y yield change)
+cn10y_chg = closes["CN10Y"].pct_change()
+f_rate = pd.DataFrame(index=closes.index, columns=ASSETS, dtype=float)
+for s in ASSETS:
+    f_rate[s] = rets[s].rolling(60).cov(cn10y_chg) / cn10y_chg.rolling(60).var()
 
-def rolling_beta(y, x, win=60, min_obs=40):
-    n = len(y)
-    out = np.full(n, np.nan)
-    for i in range(win - 1, n):
-        xs = x[i - win + 1:i + 1]
-        ys = y[i - win + 1:i + 1]
-        m = ~(np.isnan(xs) | np.isnan(ys))
-        if m.sum() < min_obs: continue
-        xv = xs[m]; yv = ys[m]
-        cov = np.cov(xv, yv)
-        if cov[0, 0] == 0 or np.isnan(cov[0, 0]): continue
-        out[i] = cov[0, 1] / cov[0, 0]
-    return out
+def recent_ic(fac, name, direction):
+    pairs = []
+    for t in fac.index:
+        if t not in fwd.index:
+            continue
+        srow, frow = fac.loc[t], fwd.loc[t]
+        m = srow.notna() & frow.notna() & np.isfinite(srow.astype(float)) & np.isfinite(frow.astype(float))
+        if m.sum() >= 8:
+            pairs.append((t, np.corrcoef(srow[m].astype(float), frow[m].astype(float))[0, 1]))
+    if not pairs:
+        print(f"{name}: no dates"); return pd.Series(dtype=float)
+    idx, vals = zip(*pairs)
+    ic = pd.Series(vals, index=pd.DatetimeIndex(idx))
+    out = {}
+    for w in [20, 60, 120, 250]:
+        sub = ic.tail(w)
+        if len(sub) >= 10:
+            out[w] = (sub.mean(), sub.mean()/sub.std(), (sub>0).mean(), len(sub))
+    print(f"{name} (dir {direction:+d}): " + " | ".join(
+        f"IC{w}d={v[0]:+.3f} ICIR={v[1]:+.3f} hit={v[2]:.0%} n={v[3]}" for w, v in out.items()))
+    return ic
 
-i = len(dates) - 1
-print('last return date:', dates[i])
+ic_mom = recent_ic(f_mom, "vol_adj_mom_accel_20x60", 1)
+ic_beta = recent_ic(f_beta, "dn_mkt_beta_60d", 1)
+ic_rate = recent_ic(f_rate, "rate_beta_cn10y_60d", -1)
 
-dmkt = np.minimum(mkt_ret, 0.0)
-fvals = {}
-fvals['dn_mkt_beta_60d'] = {a: rolling_beta(Ret[:, j], dmkt)[i] for j, a in enumerate(assets)}
-fvals['eurusd_beta_60d'] = {a: rolling_beta(Ret[:, j], eur_ret)[i] for j, a in enumerate(assets)}
-fvals['rate_beta_cn10y_60d'] = {a: rolling_beta(Ret[:, j], cn10y_ret)[i] for j, a in enumerate(assets)}
+print("\n=== FACTOR PAIRWISE CS-CORR (last 120d avg) ===")
+last120 = closes.index[-120:]
+for a, b in [("mom","beta"),("mom","rate"),("beta","rate")]:
+    fa, fb = {"mom": f_mom, "beta": f_beta, "rate": f_rate}[a], {"mom": f_mom, "beta": f_beta, "rate": f_rate}[b]
+    cs_corrs = []
+    for t in last120:
+        x, y = fa.loc[t].astype(float), fb.loc[t].astype(float)
+        m = x.notna() & y.notna() & np.isfinite(x) & np.isfinite(y)
+        if m.sum() >= 8:
+            cs_corrs.append(np.corrcoef(x[m], y[m])[0, 1])
+    print(f"{a}-{b}: mean cs-corr {np.nanmean(cs_corrs):+.3f} (n={len(cs_corrs)})")
 
-vpc = {}
-for a in assets:
-    ds = [d for d in all_dates if d in vols[a]]
-    rv = []
-    for k in range(len(ds) - 1, max(len(ds) - 22, 0), -1):
-        d0, d1 = ds[k - 1], ds[k]
-        rr = px[a][d1] / px[a][d0] - 1
-        vv = vols[a][d1]
-        rv.append((rr, vv))
-    rv = rv[:20]
-    if len(rv) >= 10:
-        rr = np.array([x[0] for x in rv]); vv = np.array([x[1] for x in rv])
-        if np.std(rr) > 0 and np.std(vv) > 0:
-            vpc[a] = float(np.corrcoef(rr, vv)[0, 1])
-        else:
-            vpc[a] = np.nan
-    else:
-        vpc[a] = np.nan
-fvals['vol_price_corr_20'] = vpc
-
-print('\n=== Current factor values (as of %s) ===' % dates[i])
-for f in fvals:
-    vals = fvals[f]
-    print('\n' + f)
-    for a in assets:
-        v = vals.get(a)
-        if v is not None and not (isinstance(v, float) and math.isnan(v)):
-            print('  %-10s %+.4f' % (a, v))
-
-# Pairwise Spearman corr of the 4 factors cross-sectionally (last date)
-print('\n=== Cross-sectional Spearman correlation of factors (last date) ===')
-from scipy.stats import spearmanr
-names = list(fvals.keys())
-for x in range(len(names)):
-    for y in range(x + 1, len(names)):
-        vx = [fvals[names[x]][a] for a in assets if fvals[names[x]].get(a) is not None and not (isinstance(fvals[names[x]][a], float) and math.isnan(fvals[names[x]][a]))]
-        # build aligned pairs
-        pairs = []
-        for a in assets:
-            v1 = fvals[names[x]].get(a); v2 = fvals[names[y]].get(a)
-            if v1 is None or v2 is None: continue
-            if isinstance(v1, float) and math.isnan(v1): continue
-            if isinstance(v2, float) and math.isnan(v2): continue
-            pairs.append((v1, v2))
-        if len(pairs) >= 5:
-            rho = spearmanr([p[0] for p in pairs], [p[1] for p in pairs]).statistic
-            print('  %s vs %s: rho=%.3f (n=%d)' % (names[x], names[y], rho, len(pairs)))
+print("\n=== LATEST CROSS-SECTIONAL SIGNAL RANKS (2033-03-18) ===")
+for name, fac, direction in [("vol_adj_mom_accel_20x60", f_mom, 1),
+                              ("dn_mkt_beta_60d", f_beta, 1),
+                              ("rate_beta_cn10y_60d", f_rate, -1)]:
+    row = fac.iloc[-1].astype(float)
+    eff = row * direction
+    ranked = eff.dropna().rank(ascending=False)
+    print(f"{name} (dir{direction:+d}): " + ", ".join(f"{s}={eff[s]:+.3f}(r{ranked[s]:.0f})" for s in ASSETS if np.isfinite(eff[s])))

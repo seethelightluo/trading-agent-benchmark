@@ -93,7 +93,7 @@ ETH_CAP = 0.06           # max ETH weight under stress
 WTI_CAP = 0.04           # 2032-04-29 trader re-tune: 3 consecutive post-raise loss blocks since 03-18 raise (pullback, -10.5%, -15.4%); cap 0.06->0.04
 COMM_CAP = 0.33          # XAU+COPPER+WTI combined cap (trimmed 0.36->0.33 on 2031-12-11)
 COPPER_CAP = 0.10          # 2032-08-05 trader re-tune: COPPER whipsaw (-1.7%, +2.4%, -9.5% over 3 blocks; -9.5% = dominant drag); cap 0.12->0.10 per 07-22 plan trigger
-ETH_CAP_ALL = 0.06         # 2031-12-11: ETH cap made unconditional (2 consecutive crypto-loss blocks)
+ETH_CAP_ALL = 0.04         # 2033-07-07 trader re-tune: ETH -22.1% block at ~5.6% w (near 6% cap), crash ongoing (-25% 1M thru 07-06); plan trigger met -> cap 0.06->0.04
 VIX_STRESS = 30.0        # VIX level that flags equity stress
 EQ_RET21_STRESS = -0.05  # live-equity mean 21d return threshold for stress
 FROZEN_FLOOR = 0.005          # 0.5% per frozen (zero-return) asset
