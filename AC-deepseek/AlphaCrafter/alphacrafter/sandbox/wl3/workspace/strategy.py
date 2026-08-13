@@ -1,74 +1,23 @@
-"""Screener ensemble strategy, trader refresh 2028-05-04 (new 10-factor ensemble).
+"""Screener ensemble strategy, trader refresh 2034-04-27 (current 10-factor ensemble).
 
 Cross-sectional factor ensemble (quality_ic_tilt) drives a fully-invested
 15-asset long-only target. One proposal per 10-trading-day block (first day
 only); the rebalance helper applies the 3bp gross-edge gate.
 
-Ensemble (2028-05-04, from factor_ensemble.json):
-  cn10y_beta_60(-1) vol_adj_mom_20_60(+1) hs300_beta_60(-1)
-  comm_basket_beta_60(+1) hilo_vol_ratio_20(+1) vol_of_vol20x60(+1)
-  vix_beta_cond_60x20(-1) vol_regime_switch_20x60(+1)
-  intraday_ret_skew_20(+1) dd_duration_120_resid(-1).
-Replaces the previous down_beta_60/spx_beta_60/dxy_beta_cond_60x20 mix
-(spx_beta/down_beta dropped, vix_cond/vol_regime_switch/dd_duration added).
+Ensemble (2034-04-27, from factor_ensemble.json; weights non-negative sum 1):
+  down_beta_60(+1,0.21) cn10y_beta_60(-1,0.15) spx_beta_60(+1,0.14)
+  vol_adj_mom_20_60(+1,0.12) comm_basket_beta_60(+1,0.07) hs300_beta_60(-1,0.07)
+  intraday_ret_skew_20(+1,0.07) vol_of_vol20x60(+1,0.05) dxy_beta_cond_60x20(+1,0.06)
+  hilo_vol_ratio_20(+1,0.06).
+Screener reverted the 04-13 mix: vix_beta_cond_60x20 and dd_duration_120_resid
+dropped after one weak block; comm_basket_beta_60 and hilo_vol_ratio_20 restored.
+Regime still sideways/risk-off (VIX ~22.7, elevated vol); tech_guard 0.24
+(NDX+SOX+000688.SH combined) remains active after 3 consecutive loss blocks.
 
 Weighting: rank-linear tilt * inverse-vol (sqrt dampened), defensive floor,
 water-fill cap at 0.18. Sum-to-1, cash 0, fractional quantities.
-
-2027-11-18 FROZEN-ASSET FIX: HSI, SX5E, BTC, US10Y, CN10Y have been perfectly
-flat (1 unique close) since online start 2026-07-16 and soaked up ~46% of the
-portfolio via the inverse-vol preference. Fix: detect frozen assets (<=2
-unique closes over trailing 120d), floor each at 0.5%, redistribute freed
-share across live assets. Regime detection uses the live-asset panel only.
-
-2028-03-23 EQUITY-STRESS DE-RISK (trader, after two consecutive equity-led
-loss blocks: 02-24..03-09 -0.11%, 03-09..03-23 -4.27%; live equity complex
-~47-49% was the dominant loss driver; VIX 44.8):
-  * risk-off defensive floor raised 0.16 -> 0.18 (XAU base),
-  * new risk_trim layer when equity stress detected (risk_off AND (VIX>=30 OR
-    mean 21d return of live equity assets < -5%)):
-      - live equity complex (000300.SH/SPX/N225/000688.SH/SOX/NDX, frozen
-        HSI/SX5E excluded) capped at EQ_CAP=0.40 combined,
-      - ETH capped at ETH_CAP=0.06,
-      - freed weight water-filled to remaining live assets (per-asset cap
-        preserved at CAP=0.18).
-
-2028-09-07 FORECAST/GATE FIX v2 (trader): the implied-alpha
-forecast k*(w-1/N) yields NEGATIVE gross edge for defensive rebalances that
-cut overweight-but-positive-alpha assets (XAU 25.5%->18%), freezing the
-portfolio since 2028-04-06. Forecast is now migration-implied: k*(w_t-w_c);
-meaningful rebalances clear the 3bp gate, near-no-ops still skip.
-
-2028-04-06 FORECAST/GATE FIX (trader): the previous z-scored factor forecast
-ranked high-beta equities on top (down_beta/spx_beta +1 direction) while the
-risk_trim layer simultaneously cut equities to 40% -- the two contradicted
-each other, so the helper's gross edge was strongly negative (-59 to -63 bps)
-and every stress de-risking rebalance was rejected by the 3bp gate (03-23
-block stayed ~63% equity and lost another -4.1% while VIX hit 56).  Forecast
-returns are now implied alphas from the FINAL risk-adjusted target vs equal
-weight, scaled to live-panel daily vol (k = 2*scale).  This makes the
-forecast consistent with the submitted target: meaningful defensive
-rebalances clear the gate, near-no-op proposals still get skipped.
-
-2031-04-03 COMMODITY GUARD (trader, ensemble unchanged after Screener escalation): WTI_CAP=0.06, COMM_CAP=0.36 (XAU+COPPER+WTI) applied after risk_trim. Rationale: WTI -14% block (03-20..04-03), 3rd consecutive negative commodity-beta attribution.
-
-2031-12-11 CAP RE-TUNE (trader, per 11-27 plan trigger: commodities kept bleeding -
-WTI -16.5%/10d accelerating, COPPER -3.5%/10d; backtest Sharpe recovered to 0.38):
-COMM_CAP 0.36->0.33, NEW COPPER_CAP=0.12 (COPPER ~15% was largest block drag),
-ETH cap 6% made UNCONDITIONAL (2 consecutive crypto-loss blocks: -15.8%, -3.7%).
-Applied in commodity_guard (final-weight layer) so it holds in all regimes.
-
-2032-04-29 CAP RE-TUNE (trader, per 04-15 plan trigger: WTI kept bleeding -
-raise to 6.4% on 03-18 followed by pullback, -10.53%, -15.42% over 3 blocks;
-biggest single-asset block drag -10.9k): WTI_CAP 0.06->0.04. Ensemble untouched.
-
-2028-05-04 NEW-ENSEMBLE REFRESH (trader): implemented the three new live
-factor signals in the exact canonical forms from the factor library:
-  * vix_beta_cond_60x20 = beta(asset,VIX,60) * (VIX/VIX.shift(20)-1), d=-1
-  * vol_regime_switch_20x60 = mean(|diff((rv20>med(rv20,60)))|,60), d=+1
-  * dd_duration_120_resid = log1p(days since 120d high)
-                            - spx_beta * zscore(mom120_skip5), d=-1
 """
+
 import json
 import math
 from pathlib import Path
@@ -94,6 +43,8 @@ WTI_CAP = 0.04           # 2032-04-29 trader re-tune: 3 consecutive post-raise l
 COMM_CAP = 0.33          # XAU+COPPER+WTI combined cap (trimmed 0.36->0.33 on 2031-12-11)
 COPPER_CAP = 0.10          # 2032-08-05 trader re-tune: COPPER whipsaw (-1.7%, +2.4%, -9.5% over 3 blocks; -9.5% = dominant drag); cap 0.12->0.10 per 07-22 plan trigger
 ETH_CAP_ALL = 0.04         # 2033-07-07 trader re-tune: ETH -22.1% block at ~5.6% w (near 6% cap), crash ongoing (-25% 1M thru 07-06); plan trigger met -> cap 0.06->0.04
+TECH_CAP = 0.24          # 2034-04-27 trader: 3 consecutive loss blocks (02-02 -3.04%, 04-13 -2.13%, 04-27 -1.79%) driven by NDX/SOX/000688 tech complex; combined cap NDX+SOX+000688.SH
+TECH_ASSETS = ["NDX", "SOX", "000688.SH"]   # live US/China tech complex
 VIX_STRESS = 30.0        # VIX level that flags equity stress
 EQ_RET21_STRESS = -0.05  # live-equity mean 21d return threshold for stress
 FROZEN_FLOOR = 0.005          # 0.5% per frozen (zero-return) asset
@@ -342,6 +293,50 @@ def commodity_guard(w, assets, live, cap=CAP, wti_cap=WTI_CAP,
     return {a: max(0.0, float(x)) for a, x in w.items()}
 
 
+
+def tech_guard(w, assets, live, cap=CAP, tech_cap=TECH_CAP):
+    """Trader guard (2034-04-27): cap the live tech complex NDX+SOX+000688.SH.
+
+    Fired after 3 consecutive negative blocks (02-02 -3.04%, 04-13 -2.13%,
+    04-27 -1.79%) where NDX/SOX/000688 were the dominant drags while the
+    equity-stress flag (VIX>=30 or eq21d<-5%) was NOT tripped (VIX 22.7), so
+    risk_trim left the tech complex near ~33%. Caps NDX+SOX+000688.SH
+    combined at TECH_CAP; freed weight water-fills to remaining live assets
+    (per-asset cap preserved). Applied AFTER commodity_guard.
+    """
+    w = dict(w)
+    tech = [a for a in TECH_ASSETS if a in live]
+    for _ in range(300):
+        excess = 0.0
+        for a in assets:
+            if w[a] > cap:
+                excess += w[a] - cap
+                w[a] = cap
+        s_tech = sum(w[a] for a in tech)
+        if s_tech > tech_cap:
+            excess += s_tech - tech_cap
+            for a in tech:
+                w[a] *= tech_cap / max(s_tech, 1e-12)
+        if excess < 1e-12:
+            break
+        room = [a for a in assets if a in live and w[a] < cap - 1e-9]
+        if not room:
+            break
+        p = {a: max(w[a], 1e-9) for a in room}
+        den = sum(p.values())
+        if den <= 0:
+            break
+        for a in room:
+            w[a] += excess * p[a] / den
+    tot = sum(w.values())
+    if tot <= 0:
+        w = {a: 1.0 / len(assets) for a in assets}
+    else:
+        w = {a: x / tot for a, x in w.items()}
+    w[assets[-1]] += 1.0 - sum(w.values())  # float guard
+    return {a: max(0.0, float(x)) for a, x in w.items()}
+
+
 def is_block_start():
     try:
         d = json.load(open("../persistent/date.json"))
@@ -540,12 +535,17 @@ def strategy_hook():
     weights = apply_frozen_override(weights, assets, frozen)
     weights = risk_trim(weights, assets, live, stress)
     weights = commodity_guard(weights, assets, live)
+    weights = tech_guard(weights, assets, live)
     print(f"[trader] commodity guard: XAU={weights['XAU'] * 100:.1f}% "
           f"COPPER={weights['COPPER'] * 100:.1f}% WTI={weights['WTI'] * 100:.1f}% "
           f"complex={sum(weights[a] for a in ('XAU','COPPER','WTI')) * 100:.1f}% "
           f"ETH={weights['ETH'] * 100:.1f}% "
           f"(WTI cap {WTI_CAP * 100:.0f}%, COPPER cap {COPPER_CAP * 100:.0f}%, "
           f"complex cap {COMM_CAP * 100:.0f}%, ETH cap {ETH_CAP_ALL * 100:.0f}%)")
+    techw = sum(weights[a] for a in TECH_ASSETS if a in live)
+    print(f"[trader] tech guard: NDX={weights['NDX'] * 100:.1f}% "
+          f"SOX={weights['SOX'] * 100:.1f}% 000688={weights['000688.SH'] * 100:.1f}% "
+          f"complex={techw * 100:.1f}% (cap {TECH_CAP * 100:.0f}%)")
     if len(frozen):
         print(f"[trader] frozen assets floored at {FROZEN_FLOOR:.3f}: "
               f"{sorted(frozen)}; live={sorted(live)}")

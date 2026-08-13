@@ -35,7 +35,10 @@ cap (20d return < -4% -> per-asset cap 0.09) retained; v8 China-specific gate
 momentum-add gate (SOX/N225 capped at 0.09 when 20d return < -2%) added cycle57; v10
 commodity parabolic-move gate (WTI/COPPER capped at 0.09 when live 20d return > +15%)
 added cycle78 - commodity momentum rewards then inverts (cycles 75-77: COPPER -7.7% /
-WTI -2.9% add regrets after prior-block surges).
+WTI -2.9% add regrets after prior-block surges). v11 (2033-09-15): crypto
+parabolic-move gate (ETH/BTC capped at 0.09 when live 20d return > +15%) - mirrors
+v10; cycle-118 evidence: ETH +14.7%/20d at 09-01 kept ~14.4% weight then -25.3%
+in-block (3rd momentum whipsaw after WTI cycle-117, SOX cycle-105).
 -- SOX/N225 momentum adds whipsawed 4+/2 times (cycles 52-56); evidence review
 per cycle-55 plan completed after cycle-56 block.
 """
@@ -68,10 +71,14 @@ CHINA_TREND_THRESH = -0.02   # China-specific 20d threshold (soft-China de-weigh
 CHINA_TREND_CAP = 0.09       # China cap when 20d return < CHINA_TREND_THRESH
 MOMENTUM_ADD = {"SOX", "N225"}   # whipsaw-prone momentum adds (cycles 52-56 evidence)
 MOM_TREND_THRESH = -0.02         # 20d threshold triggering the momentum-add cap
-MOM_TREND_CAP = 0.09
+MOM_TREND_CAP = 0.08                 # tightened 0.09->0.08 (cycle106: 4th consecutive momentum-add whipsaw; stale 2031-12-25 ensemble)
+MOM_VIX_THRESH = 35.0              # cycle106: high-VIX regime gate - momentum-add assets capped regardless of 20d direction
 COMMODITY_PARABOLIC = {"WTI", "COPPER"}   # commodity momentum inversion guard (cycles 75-77 evidence; v10 2030-07-11)
 COMMODITY_PARABOLIC_THRESH = 0.15          # 20d return above which a commodity surge is 'parabolic'
 COMMODITY_PARABOLIC_CAP = 0.09
+CRYPTO_PARABOLIC = {"ETH", "BTC"}   # crypto momentum-inversion guard (v11 2033-09-15: cycle-118 ETH kept near cap on +14.7%/20d then -25.3% in-block; 3rd momentum whipsaw WTI/SOX/ETH)
+CRYPTO_PARABOLIC_THRESH = 0.15     # 20d return above which a crypto surge is 'parabolic'
+CRYPTO_PARABOLIC_CAP = 0.09
 DEFENSIVE = {"XAU", "US10Y", "CN10Y"}
 AGGRESSIVE = {"SOX", "NDX", "ETH", "BTC", "000688.SH", "N225"}
 EMBEDDED = {"spx_corr60"}
@@ -408,7 +415,7 @@ def build_target(assets, date_state, ensemble, current_weights=None):
     # regime overlay
     closes = _closes(assets)
     risk, vix, m20, disp = _regime(closes, assets)
-    delta = 0.14 * risk
+    delta = 0.16 * risk  # cycle106: stronger defensive tilt in elevated-VIX tape (was 0.14)
 
     # softmax base weights
     mx = max(z_std)
@@ -439,11 +446,14 @@ def build_target(assets, date_state, ensemble, current_weights=None):
         if r20[a] < CHINA_TREND_THRESH:
             cap_map[a] = min(cap_map.get(a, CAP), CHINA_TREND_CAP)
     for a in MOMENTUM_ADD:
-        if r20[a] < MOM_TREND_THRESH:
+        if r20[a] < MOM_TREND_THRESH or vix >= MOM_VIX_THRESH:
             cap_map[a] = min(cap_map.get(a, CAP), MOM_TREND_CAP)
     for a in COMMODITY_PARABOLIC:
         if r20[a] > COMMODITY_PARABOLIC_THRESH:
             cap_map[a] = min(cap_map.get(a, CAP), COMMODITY_PARABOLIC_CAP)
+    for a in CRYPTO_PARABOLIC:
+        if r20[a] > CRYPTO_PARABOLIC_THRESH:
+            cap_map[a] = min(cap_map.get(a, CAP), CRYPTO_PARABOLIC_CAP)
     weights = _fit_weights(pref, cap=CAP, floor=FLOOR, cap_map=cap_map or None)
 
     # v7 rotation dampener: cap one-way turnover so a single block's wrong bet

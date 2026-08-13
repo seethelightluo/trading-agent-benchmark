@@ -1,111 +1,38 @@
-"""Trader strategy v16 - Screener 5-factor quality_ic_tilt ensemble.
+"""Trader strategy v19 - Screener 6-factor quality_ic_tilt ensemble.
 
-Ensemble (2032-02-27 refresh): miner2_20260715_nclv_1d (.22,+)
-| miner2_20260715_rev_2d (.21,+) | vol_of_vol20x60 (.21,+)
-| vix_beta_cond_60x20 (.21,-) | mom_120d_skip5 (.15,+). Same 5-factor
-cross-category core; HIGH-vol VIX-spike risk-off tilt (VIX 27.09, +36% in 2wk):
-vix_beta .18->.21 (strongest 10d-horizon negative IC, risk guard strengthened),
-mom_120d .18->.15 (4th SOX whipsaw block in 5 via momentum-family top-picks;
-kept as 10d trend diversifier at reduced weight). Live weights are loaded from
-factor_ensemble.json at import, so this header is documentation only.
+Ensemble (2034-06-16 refresh): miner2_20260715_nclv_1d (.20,+)
+| miner2_20260715_rev_5d (.18,+) | miner2_20260715_rev_2d (.17,+)
+| vix_beta_cond_60x20 (.23,-) | vol_of_vol20x60 (.13,+)
+| mom_120d_skip5 (.09,+). MODEST refresh: ADD rev_5d (best fresh 5d-horizon
+reversal quality; complements 1d/2d and fits the 10-td block cadence), TRIM
+mom_120d .13->.09 (2nd straight momentum-top whipsaw block), RAISE vix_beta
+.21->.23 (crisis guard; VIX 66.3), trim nclv_1d .24->.20, rev_2d .21->.17,
+vol_of_vol .21->.13. Reversal family combined 0.55, defensive/quality 0.36,
+momentum 0.09. Regime: SIDEWAYS-to-mild-bull on 20d with HIGH vol (mean ann
+27.1%) + HIGH dispersion (1.97% daily) - strong short-horizon reversal regime.
 
-Momentum anchor + two decorrelated reversal members + vol-of-vol regime +
-VIX-beta risk guard. Cross-sectional rank composite over the 15-name tradable
-panel; fully invested, non-negative weights sum to 1, no cash sleeve. One
-atomic rebalance proposal per 10-trading-day block via rebalance_to_weights
-with aligned forecast returns so the execution gate (gross edge > one-way
-turnover * 3bp) decides. Bear regime adds a modest defensive tilt
-(XAU/US10Y/CN10Y). Factors are loaded from factor_ensemble.json at import.
+Live weights are loaded from factor_ensemble.json at import, so this header
+is documentation only.
 
-v4 cadence fix (2027-01-22): the harness invokes cycles at idx%10==4 while the
-fixed grid (idx%10==8 from ONLINE_START) is never hit, which froze proposals
-since 2026-09-24. Proposals now fire on grid days OR on any hook call >=10
-trading days after the last proposal (one proposal per 10-day block either
-way), tracked via trader_state.json (fallback to account last_rebalance_date).
+Cross-sectional rank composite over the 15-name tradable panel; fully
+invested, non-negative weights sum to 1, no cash sleeve. One atomic rebalance
+proposal per 10-trading-day block via rebalance_to_weights with aligned
+forecast returns so the execution gate (gross edge > one-way turnover * 3bp)
+decides. Bear regime adds a modest defensive tilt (XAU/US10Y/CN10Y).
 
-v7 (2027-07-23): Screener refreshed weights - momentum trimmed .42->.30
-(COPPER 7-block whipsaw), vol_of_vol raised .16->.20 (strongest recent IC),
-reversal pair raised (.15/.14 -> .19/.17), vix_beta .13->.14. Added Screener
-recommended portfolio-level guard: momentum top-picks trading below their 20d
-MA are weight-capped (extended names that broke short-term MA, e.g. COPPER),
-excess redistributed to remaining names.
+Portfolio guards (all factor- and trend-agnostic where noted):
+v7/v10/v12 momentum top-pick caps (GUARD_CAP 6%), v8 composite MA guard (8%)
++ value-trap de-rank, v9 crypto pair cap (12%), v11 cyclical-commodity pair
+cap (12%), v13 composite top-2 cap (9%) + v17 re-apply after pair caps,
+v14 China-equity pair cap (12%), CAP_W 16% single-name hard cap.
+v18 (2034-10-06): GLOBAL_CAP 10% single-name hard cap applied LAST after the
+pair-cap/v13 convergence loop - ends pair-cap redistribution concentration
+(XAU 10.28 in 0922, 10.55 in 0908, 10.50 in 0507, NDX 10.90 in 0729, NDX 9.99
+in 0128-0211; excess redistributed proportionally to the remaining names).
 
-v8 (2028-01-07): two portfolio-construction fixes after 2 consecutive blocks
-of top-3 crypto drag (BTC/ETH below 20d MA with 9-10% weights):
-  1. Composite-score MA guard: ANY asset whose weight exceeds 8% while its
-     price is below its 20d MA is capped at 8% regardless of which factor
-     lifted it (reversal/nclv can no longer bypass the momentum-only v7 cap).
-  2. Value-trap de-rank: assets below 20d MA with negative 120d momentum are
-     penalized in the composite score before ranking (reversal-family lifts of
-     broken-trend names, e.g. ETH rank 14/15 momentum with 9.4% weight).
-Both keep the v7 momentum-top-pick 6% cap as the stricter inner guard.
-
-v9 (2028-03-31): combined crypto cap after 3 consecutive blocks of crypto
-top-weight drag (block 0317-0331: ETH -25.9% on ~8% weight accounted for the
-entire block loss; ETH was above its 20d MA with positive 120d momentum at the
-decision so the v8 guards could not catch it). BTC+ETH combined weight is
-capped at 12% regardless of factor scores or trend state; excess is
-redistributed proportionally to the 13 non-crypto names. This is a
-portfolio-level risk guard (like v7/v8), not a factor change, and keeps
-crypto slightly below its 2/15 fair share while preserving upside in strong
-rallies.
-
-v10 (2028-04-14): extend the v7 momentum guard to close the above-MA20 hole.
-Block 0331-0414: WTI was the top 120d-momentum name, above its 20d MA (so v7
-did not cap it) and carried 8.9% weight into a -21% crash - the dominant block
-drag (7th distinct momentum top-pick whipsaw block). Empirical replay over 45
-decision dates shows the top momentum name is a coin flip with fat tails
-(avg fwd 10d +0.7% vs universe median -0.2%, underperformed in 22/45 blocks).
-v10/v12 cap the top-2 momentum names (rank >= MOM_TOP2_RANK) at
-GUARD_CAP regardless of MA state; the v7 below-MA20 top-6 rule and v8/v9
-guards are unchanged.
-
-v11 (2028-10-13, cap 14%->12% 2032-05-21): combined cyclical-commodity cap. Block 0929-1013: WTI 9.4% +
-COPPER 8.0% (17.4% combined) both fell ~-7% (est. -1.29 combined contribution)
-- the block's dominant drag, the 2nd block the commodity pair carried ~17%
-into a synchronized drawdown (WTI also 2nd time as momentum top-pick whipsaw).
-Commodities remain below their 20d MA with negative 20d momentum. WTI+COPPER
-combined weight is capped at 14% regardless of factor scores or trend state;
-excess is redistributed proportionally to the remaining names. XAU is
-deliberately excluded (defensive sleeve). Factor- and trend-agnostic like v9.
-
-v17 (2033-02-11): close the v13 composite top-2 cap leak - re-apply the top-2 cap (9.0%) AFTER the v9/v11/v14 pair-cap redistribution inside the convergence loop. Block 0128-0211 executed NDX at 9.99% (> 9.0% cap) because pair-cap redistribution pushed the top-2 composite name back above the cap; it fell -5.43 (-0.54pp). Same artifact as XAU 10.50% in 0507. No ensemble change.
-
-v16 (2032-08-13): tighten composite top-2 cap 9.5%% -> 9.0%% (trader risk
-adjustment after 2nd consecutive SOX top-weight drag: block 0716-0730 SOX
-9.59%% top-composite weight -5.80%% (-0.56pp dominant drag) following -15.61%%
-on 9.29%% in 0702-0716; semis whipsaw is the recurring dominant drag family,
-v13 cap also leaks ~0.1pp above 9.5%% after v9/v11/v14 redistribution
-artifact - the 9.0%% cap leaves headroom for that leak while trimming
-concentration).
-
-v12 (2028-10-27): extend the v10 momentum cap to the top-2 momentum names.
-Block 1013-1027: SOX was the rank-2 momentum name and delivered -12.5% on
-7.4% weight - the 9th distinct momentum top-pick whipsaw block in 10
-(Screener also flags XAU/BTC as top-4 trap names in 20d downtrends). Any of
-the top-2 momentum names (rank >= .86 of 15) is now capped at GUARD_CAP
-regardless of MA state, matching the empirical 9/10 top-pick reversal rate.
-
-v13 (2029-06-08): composite-rank top-2 weight cap (Screener-recommended).
-Block 0330-0413: NDX 11.5% / N225 10.8% were top-2 COMPOSITE weights but not
-top-2 momentum names, so the v12 momentum cap missed them; 2029-04-13
-feedback + 2029-06-08 screener both recommend a composite-rank cap beyond the
-momentum-rank guard. With 10 of the last 11 blocks showing a top-pick
-whipsaw (SOX -12.5%, WTI -18.4% twice, ETH -25.9%...), composite-score
-leaders carry fat-tailed reversal risk regardless of factor origin. The
-top-2 composite-score names are capped at COMP_TOP2_CAP (9.5%); excess is
-redistributed proportionally to remaining names. Factor-agnostic like
-v8/v9/v11; applied before the MA guards.
-
-v14 (2031-04-25): combined China-equity cap (Screener-recommended after 2
-China drag blocks: 000300 -3.57 on 8.4% in 1025-1108, 000688 -12.4 on 8.19%
-in 0411-0425 - dominant block drag). 000688 sat just ABOVE its 20d MA at the
-0410 decision (8.19% weight > the 8% v8 MA cap threshold) and collapsed
--12.4% during the block; 000300 also below MA20 with the pair correlated in
-China risk-off. 000300+000688 combined weight is capped at 12% regardless of
-factor scores or trend state (same pattern as v9 crypto cap; HSI/CN10Y
-excluded - HSI is HK with flat-data artifact, CN10Y is a flat defensive
-rate). Excess is redistributed proportionally to the remaining names.
+Cadence: proposals fire on grid days (idx % 10 == 0 from ONLINE_START) or on
+any hook call >= 10 trading days after the last proposal (drift fallback),
+tracked via trader_state.json.
 """
 import json
 import math
@@ -131,6 +58,7 @@ CRYPTO_CAP = 0.12        # v9 combined BTC+ETH weight cap
 COMMOD_CAP = 0.12        # v11 combined WTI+COPPER weight cap (14->12 on 2032-05-21: WTI 3rd down block in 4, COPPER 2nd straight, pair -1.19pp dominant drag last block)
 CHINA_CAP = 0.12         # v14 combined 000300+000688 weight cap
 COMP_TOP2_CAP = 0.090     # v13 composite-rank top-2 cap (9.5->9.0 on 2032-08-13 v16: 2nd straight SOX top-weight drag block)
+GLOBAL_CAP = 0.10        # v18 single-name hard cap applied AFTER all pair caps
 MOM_TOP_RANK = 0.60      # momentum rank threshold for the v7 guard
 MOM_TOP2_RANK = 0.86  # v12: top-2 momentum names (rank >= .86 of 15)
 TRAP_PENALTY = 0.50      # v8 value-trap score penalty as fraction of mom weight
@@ -253,6 +181,8 @@ def _asset_factor(df, fid, cur):
         return -np.log(c / c.shift(1))
     if fid.endswith("rev_2d"):
         return -np.log(c / c.shift(2))
+    if fid.endswith("rev_5d"):
+        return -np.log(c / c.shift(5))
     if fid.endswith("nbody_1d"):
         return -(c - o) / (h - l)
     if "mom_120d_skip5" in fid:
@@ -592,6 +522,34 @@ def _china_cap(w, assets):
     return w
 
 
+def _global_cap(w, assets):
+    """v18: single-name hard cap at GLOBAL_CAP (10%) applied LAST.
+
+    Closes the residual concentration hole after pair-cap/v13 redistribution:
+    multiple pair caps binding simultaneously push excess into uncapped names
+    (XAU 10.28 in 0922 block, XAU 10.55 in 0908, NDX 10.90 in 0729, XAU 10.50
+    in 0507, NDX 9.99 in 0128-0211). Factor-agnostic; excess is redistributed
+    proportionally to the remaining names.
+    """
+    for _ in range(80):                    # iterate until cap invariant holds
+        penalized = {a for a in assets if w[a] > GLOBAL_CAP + 1e-9}
+        if not penalized:
+            break
+        excess = sum(w[a] - GLOBAL_CAP for a in penalized)
+        for a in penalized:
+            w[a] = GLOBAL_CAP
+        room = [a for a in assets if a not in penalized]
+        if not room:
+            break
+        den = sum(w[a] for a in room) + 1e-12
+        for a in room:
+            w[a] += excess * w[a] / den
+    tot = sum(w.values())
+    w = {a: x / tot for a, x in w.items()}
+    w[assets[-1]] += 1.0 - sum(w.values())
+    return w
+
+
 def _forecasts(scores, assets):
     vals = [scores[a] for a in assets]
     mean = float(np.mean(vals))
@@ -637,6 +595,7 @@ def strategy_hook():
                                                                 # redistribution pushed top-2 composite
                                                                 # names back above 9.0%: XAU 10.50 in
                                                                 # 0507, NDX 9.99 in 0128-0211 block)
+    w = _global_cap(w, assets)                                   # v18: 10% single-name hard cap LAST
     f = _forecasts(scores, assets)
     rebalance_to_weights(
         w,

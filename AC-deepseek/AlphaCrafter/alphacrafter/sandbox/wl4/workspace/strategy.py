@@ -1,3 +1,44 @@
+"""v54 (2034-06-12):
+v53 + SCREENER RE-TILT ensemble (weights only, no logic change): 0.55/0.45 =
+vol_adj_mom_accel_20x60 dir=+1 PRIMARY w=0.55, dn_mkt_beta_60d dir=+1 w=0.45;
+rate_beta_cn10y_60d DROPPED (CN10Y frozen/stale, degenerate signal; lowest
+quality). Loaded live from factors/factor_ensemble.json (root + factors synced
+byte-identical). High-vol regime (VIX 36.9): dn_mkt_beta floor at 0.45 per
+screener; momentum weight capped below strict q-tilt to avoid single-factor
+concentration. DEFENSIVE_MULT/weights/caps unchanged from v53.
+"""
+
+"""v53 (2034-03-20):
+v52 + three risk-adjustment fires from the 2034-03-06..03-20 block (first
+live cycle after the 2033-06..2034-03 safety-advance freeze; proposal on
+03-06 EXECUTED, cost = 03-03 closes; account 1164607.61 -> 1167314.41,
++0.23% block, Sharpe 1.12 DD 0.90%; SCREENER ensemble 0.50/0.30/0.20
+unchanged since 2033-10-31, loaded live from factors/factor_ensemble.json):
+  - N225 x0.60 -> x0.50  large single negative -6.50% (03-06..03-20 close,
+    MAIN DRAG ~-0.20% at w~0.030 after the -1.05% mild neg in the last
+    recorded block); fires the standing chain-cut pattern "another large
+    <-6%" (mirror x1.00->x0.85->x0.70->x0.60->x0.50).
+  - SOX x0.20 -> x0.30  RE-BOOST 2 consecutive positive blocks (+9.83%
+    05-30..06-13, +9.95% 03-06..03-20); fires the v51 watch "SOX re-boost
+    x0.30 on 2 cons pos".
+  - WTI x0.15 -> x0.20  RE-BOOST 2 stable positive blocks (+17.37%
+    05-30..06-13, +2.04% 03-06..03-20); fires the v51 watch "WTI re-boost
+    x0.20 after 2 stable".
+  Kept: XAU x1.00 (pos +3.89% at cap; x0.85 on 2nd cons neg or <-5%),
+  COPPER cap 0.12 (pos +3.18% w~0.124; x0.85 on 2nd cons neg or <-8%),
+  US10Y x0.30 (pos +1.81% 1st after -0.83%; re-boost x0.35 on 2 cons pos),
+  NDX x0.60 (mild neg -0.31% after cut; re-boost x1.00 on 2 cons pos),
+  SPX x0.75 (mild neg -1.46% after 3-pos run; x0.65 on 2nd cons neg or
+  <-8%), SX5E x0.70 (neg -4.96% 1st after +7.96% TOP; x0.60 on 2nd cons
+  neg or large <-8%), 000688.SH x0.70 (neg -3.00% 1st after 3-pos run;
+  x0.45 on 2nd cons neg or <-8%).
+  Frozen stale names unchanged: 000300.SH/HSI/BTC/ETH/CN10Y (~36% book
+  neutral rank, pnl 0).
+  Ensemble: 0.50/0.30/0.20 (SCREENER 2033-10-31 re-tilt) - loaded live
+  from factors/factor_ensemble.json.
+"""
+
+
 """v52 (2033-10-31):
 v51 + SCREENER ensemble re-tilt (weights only): 0.50/0.30/0.20 =
 vol_adj_mom_accel_20x60 dir=+1 PRIMARY w=0.50, dn_mkt_beta_60d dir=+1 w=0.30,
@@ -365,7 +406,7 @@ STALE_N = 5         # consecutive identical closes => stale quote
 #   BTC x0.75 -> x0.65, SX5E x1.00 -> x0.85
 DEFENSIVE_MULT = {
     "XAU": 1.00, "US10Y": 0.30, "CN10Y": 0.70,   # safe havens (v51: XAU kept x1.00 3rd cons pos +3.26% at cap, x0.85 on 2nd cons neg or <-5%; US10Y kept x0.30 1st neg -0.83% after 2-pos run, re-boost x0.35 on 2 cons pos; CN10Y kept x0.70 frozen stale)
-    "SOX": 0.20, "NDX": 0.60, "ETH": 0.75, "WTI": 0.15, "BTC": 0.15, "N225": 0.60,  # high-beta (v51: NDX x0.75->x0.60 3rd cons neg cum ~-8.7% incl -4.75% MAIN DRAG; WTI kept x0.15 STRONG pos +17.37% 1st after 4-cons-neg air-pocket chain, re-boost x0.20 on 2 stable; SOX kept x0.20 pos +9.83% 1st after negs, re-boost x0.30 on 2 cons pos; N225 kept x0.60 1st mild neg -1.05% after 2-pos run, re-boost x0.70 on 2 cons pos; BTC/ETH frozen stale)
+    "SOX": 0.30, "NDX": 0.60, "ETH": 0.75, "WTI": 0.20, "BTC": 0.15, "N225": 0.50,  # high-beta (v53: SOX x0.20->x0.30 re-boost 2 cons pos +9.83%/+9.95%; WTI x0.15->x0.20 re-boost 2 stable pos +17.37%/+2.04%; N225 x0.60->x0.50 large -6.50% chain-cut; NDX kept x0.60 mild neg -0.31%; BTC/ETH frozen stale)
     "SX5E": 0.70, "SPX": 0.75, "000688.SH": 0.70,  # v51: SX5E x0.60->x0.70 3rd cons pos +7.96% TOP winner; SPX kept x0.75 3rd cons pos +0.95%, x0.65 on 2nd cons neg or <-8%, re-boost x0.85 on 2 more cons pos; 000688 x0.60->x0.70 3rd cons pos (+1.25%/+21.41%/+0.12%), x0.45 on 2nd cons neg or <-8%
 }
 
