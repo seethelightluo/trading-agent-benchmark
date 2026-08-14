@@ -1,99 +1,96 @@
+"""SCREENER factor IC & correlation check as of 2035-04-27 (visible through)."""
 import pandas as pd, numpy as np
 
-ASOF = "2034-03-20"
-assets = ["000300.SH","000688.SH","SPX","NDX","SOX","HSI","N225","SX5E",
-          "XAU","COPPER","WTI","BTC","ETH","US10Y","CN10Y"]
+ASSETS = ['000300.SH','000688.SH','SPX','NDX','SOX','HSI','N225','SX5E','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+LIVE = ['000688.SH','SPX','NDX','SOX','N225','SX5E','XAU','COPPER','WTI','US10Y']
+END = '2035-04-27'
 
-def load(p):
-    df = pd.read_csv(p)
-    df.columns = [c.strip().lower() for c in df.columns]
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").set_index("date")
-    return df
+closes = {}
+for a in ASSETS:
+    df = pd.read_csv(f'../persistent/stock_data/{a}.csv')
+    df['date'] = pd.to_datetime(df['date'])
+    df = df[df['date'] <= END].reset_index(drop=True)
+    closes[a] = pd.Series(df['close'].values, index=df['date'])
+px = pd.DataFrame(closes).sort_index()
+rets = px.pct_change()
 
-px = {}
-for a in assets:
-    df = load(f"../persistent/stock_data/{a}.csv")
-    df = df[df.index <= ASOF]
-    px[a] = df["close"].astype(float)
-PX = pd.DataFrame(px)
-RET = PX.pct_change()
-
-frozen = [a for a in assets if PX[a].tail(60).nunique() <= 2]
-liquid = [a for a in assets if a not in frozen]
-print("frozen:", frozen, "| liquid:", liquid)
-
-# ---- factor computations (on full 15 then mask) ----
-# 1) vol_adj_mom_accel_20x60 = (mom20 - mom60)/vol20
-mom20 = PX / PX.shift(20) - 1
-mom60 = PX / PX.shift(60) - 1
-vol20 = RET.rolling(20).std()
-f_mom = (mom20 - mom60) / vol20
-
-# 2) dn_mkt_beta_60d: beta on down-market days
-mkt = RET.mean(axis=1)
-down = mkt.where(mkt < 0)
-f_beta = pd.DataFrame(index=RET.index, columns=PX.columns, dtype=float)
-for a in assets:
-    x = down; y = RET[a]
-    df = pd.concat([x, y], axis=1).dropna()
-    if len(df) < 40: continue
-    # rolling 60d beta of y on x (down days only)
-    betas = []
-    idx = df.index
-    for i in range(len(df)):
-        w = df.iloc[max(0,i-59):i+1]
-        if len(w) >= 40 and w.iloc[:,0].std() > 0:
-            b = np.cov(w.iloc[:,0], w.iloc[:,1])[0,1] / w.iloc[:,0].var()
-            betas.append((idx[i], b))
-        else:
-            betas.append((idx[i], np.nan))
-    f_beta[a] = pd.Series(dict(betas)).reindex(RET.index)
-
-# 3) rate_beta_cn10y_60d: beta on CN10Y pct change
-cn = PX["CN10Y"].pct_change()
-f_rate = pd.DataFrame(index=RET.index, columns=PX.columns, dtype=float)
-for a in assets:
-    x = cn; y = RET[a]
-    df = pd.concat([x, y], axis=1).dropna()
-    if len(df) < 40: continue
-    betas = []
-    idx = df.index
-    for i in range(len(df)):
-        w = df.iloc[max(0,i-59):i+1]
-        if len(w) >= 40 and w.iloc[:,0].std() > 0:
-            b = np.cov(w.iloc[:,0], w.iloc[:,1])[0,1] / w.iloc[:,0].var()
-            betas.append((idx[i], b))
-        else:
-            betas.append((idx[i], np.nan))
-    f_rate[a] = pd.Series(dict(betas)).reindex(RET.index)
-
-# ---- rolling 10d-forward rank IC over last 120 trading days ----
-fwd = RET.shift(-10)  # 10d forward return (t -> t+10)
-fwd10 = (PX.shift(-10)/PX - 1)
-
-def ic_series(factor, fwd10, n_min=8):
+# correct beta: covariance of asset ret with market factor / variance of factor
+def rolling_beta(y, x, win=60):
+    # y: DataFrame, x: Series -> DataFrame of betas
+    xy = pd.concat([y, x.rename('_f')], axis=1)
+    cov = xy.rolling(win).cov()
     out = {}
-    for d in factor.index:
-        x = factor.loc[d]; y = fwd10.loc[d]
-        m = x.notna() & y.notna()
-        if m.sum() >= n_min:
-            out[d] = np.corrcoef(x[m].rank(), y[m].rank())[0,1]
-    return pd.Series(out)
+    for a in y.columns:
+        c = cov.loc[(slice(None), a), '_f'] if hasattr(cov.index,'levels') else None
+        # simpler: loop
+        out[a] = y[a].rolling(win).cov(x) / x.rolling(win).var()
+    return pd.DataFrame(out)
 
-print("\n=== Rolling 10d-forward rank IC, last 120 trading days ===")
-for name, f in [("vol_adj_mom_accel_20x60", f_mom), ("dn_mkt_beta_60d", f_beta), ("rate_beta_cn10y_60d", f_rate)]:
-    s = ic_series(f, fwd10)
-    s = s[s.index >= s.index[-1] - pd.Timedelta(days=200)]
-    print(f"{name:>24}: n={len(s):3d}  mean_ic={s.mean():+.4f}  icir={s.mean()/s.std():+.3f}  hit={ (s>0).mean():.2f}  last10d_ic={s.tail(10).mean():+.4f}")
+fwd = 10
+fwd_ret = px.pct_change(fwd).shift(-fwd)  # forward h-day return
 
-# also current factor values
-print("\n=== Current factor values (2034-03-20) ===")
-for name, f, sign in [("mom_accel", f_mom, 1), ("dn_beta", f_beta, 1), ("rate_beta", f_rate, -1)]:
-    print(f"-- {name} (dir {sign}) --")
-    row = f.loc[ASOF].dropna().sort_values()
-    print(row.round(3).to_string())
+def rank_ic_series(factor):
+    ics = []
+    dates = []
+    for i in range(len(factor)-fwd):
+        f = factor.iloc[i]
+        r = fwd_ret.iloc[i]
+        valid = f.notna() & r.notna()
+        if valid.sum() >= 8:
+            ics.append(f[valid].rank().corr(r[valid].rank()))
+            dates.append(factor.index[i])
+    return pd.Series(ics, index=dates)
 
-# recent 10d returns for comparison
-print("\n-- 10d returns (2034-03-20) --")
-print((fwd10.loc[ASOF]*100).sort_values().round(2).to_string())
+# factor 1
+mom20 = px/px.shift(20)-1
+mom60 = px/px.shift(60)-1
+vol20 = rets.rolling(20).std()
+f1 = (mom20 - mom60)/vol20
+
+# factor 2: dn beta on down-market days (EW market, min(ret,0))
+mkt = rets[LIVE].mean(axis=1)
+mkt_neg = mkt.clip(upper=0)
+f2 = pd.DataFrame({a: rets[a].rolling(60).cov(mkt_neg)/mkt_neg.rolling(60).var() for a in ASSETS})
+
+# factor 3: rate beta vs CN10Y change
+dcn = px['CN10Y'].pct_change()
+f3 = pd.DataFrame({a: rets[a].rolling(60).cov(dcn)/dcn.rolling(60).var() for a in ASSETS})
+
+print("=== factor rank-IC by trailing window (h=10) ===")
+for name, f in [('vol_adj_mom_accel_20x60', f1), ('dn_mkt_beta_60d', f2), ('rate_beta_cn10y_60d', f3)]:
+    s = rank_ic_series(f)
+    print(name, "n=", len(s))
+    for look in [30, 60, 120, 250]:
+        sub = s.iloc[-look:]
+        if len(sub) >= 5:
+            ic = sub.mean(); sd = sub.std(); icir = ic/sd if sd > 0 else np.nan
+            print(f"  {look}d: IC={ic:+.4f} ICIR={icir:+.3f} pos%={100*(sub>0).mean():.0f}")
+        else:
+            print(f"  {look}d: n<5")
+
+print("\n=== factor correlation (last 120d daily factor values) ===")
+fac = pd.concat([f1.rename(columns=lambda c: c+'_f1'),
+                 f2.rename(columns=lambda c: c+'_f2'),
+                 f3.rename(columns=lambda c: c+'_f3')], axis=1)
+corr = fac.iloc[-120:].corr()
+# average cross-factor corr on live names
+f1l, f2l, f3l = f1[LIVE].iloc[-120:], f2[LIVE].iloc[-120:], f3[LIVE].iloc[-120:]
+c12 = np.nanmean([f1l[a].corr(f2l[a]) for a in LIVE])
+c13 = np.nanmean([f1l[a].corr(f3l[a]) for a in LIVE])
+c23 = np.nanmean([f2l[a].corr(f3l[a]) for a in LIVE])
+print(f"avg pairwise corr (live names): f1-f2={c12:+.2f} f1-f3={c13:+.2f} f2-f3={c23:+.2f}")
+
+print("\n=== pairwise return correlation 60d (live names) ===")
+r60 = rets[LIVE].iloc[-60:]
+c = r60.corr()
+mask = np.triu(np.ones(c.shape, dtype=bool), k=1)
+print("avg:", round(c.values[mask].mean(),3), "median:", round(np.median(c.values[mask]),3))
+
+print("\n=== live-name 20d momentum cross-section (for context) ===")
+m20 = (px[LIVE].iloc[-1]/px[LIVE].iloc[-21]-1)*100
+print(m20.sort_values(ascending=False).round(2).to_string())
+
+print("\n=== last 3 months IC by month (vol_adj_mom_accel) ===")
+s1 = rank_ic_series(f1)
+s1.index = pd.to_datetime(s1.index)
+print(s1.resample('ME').agg(['mean','count']).round(3).tail(6).to_string())

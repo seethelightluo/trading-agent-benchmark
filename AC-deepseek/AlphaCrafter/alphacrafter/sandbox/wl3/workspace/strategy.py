@@ -1,27 +1,30 @@
-"""Screener ensemble strategy, trader refresh 2034-12-21 (current 10-factor ensemble).
+"""Screener ensemble strategy, trader refresh 2035-08-02 (current 10-factor ensemble).
 
 Cross-sectional factor ensemble (quality_ic_tilt) drives a fully-invested
 15-asset long-only target. One proposal per 10-trading-day block (first day
 only); the rebalance helper applies the 3bp gross-edge gate.
 
-Ensemble (2034-12-21, from factor_ensemble.json; weights non-negative sum 1):
-  down_beta_60(+1,0.21) cn10y_beta_60(-1,0.15) spx_beta_60(+1,0.14)
-  vol_adj_mom_20_60(+1,0.12) comm_basket_beta_60(+1,0.07)
+Ensemble (2035-08-02, from factor_ensemble.json; weights non-negative sum 1):
+  down_beta_60(+1,0.22) cn10y_beta_60(-1,0.16) spx_beta_60(+1,0.13)
+  vol_adj_mom_20_60(+1,0.11) dxy_beta_cond_60x20(+1,0.07)
   hs300_beta_60(-1,0.07) intraday_ret_skew_20(+1,0.07)
-  vol_of_vol20x60(+1,0.05) dxy_beta_cond_60x20(+1,0.06)
-  hilo_vol_ratio_20(+1,0.06).
-Screener re-tilted the 12-07 balanced mix back toward defensive on persisting
-COPPER/ETH/000688 weakness (down_beta 0.17->0.21, cn10y 0.13->0.15,
-comm_basket 0.10->0.07, vol_adj_mom 0.16->0.12); defensive cluster
-(down_beta+cn10y+hs300) 0.43 vs risk-on cluster (vol_adj_mom+spx+comm) 0.33.
-Same 10 factors, no swaps; strategy reads factor_ensemble.json dynamically
-(in sync, docstring refresh only, no logic rewrite).
+  vol_of_vol20x60(+1,0.06) comm_basket_beta_60(+1,0.06)
+  hilo_vol_ratio_20(+1,0.05).
+Screener re-tilted the 12-21 mix slightly more defensive (down_beta 0.21->0.22,
+cn10y 0.15->0.16, dxy 0.06->0.07, vov 0.05->0.06; spx 0.14->0.13,
+vol_adj_mom 0.12->0.11, comm_basket 0.07->0.06, hilo 0.06->0.05) after
+prolonged drawdowns (net -4.8% over 06-21..08-02 unlogged blocks,
+mdd20 ~-10%). Defensive cluster (down_beta+cn10y+hs300) 0.45 vs risk-on
+cluster (vol_adj_mom+spx+comm) 0.30. Same 10 factors, no swaps; strategy
+reads factor_ensemble.json dynamically (in sync, docstring refresh only, no
+logic rewrite).
 
 Weighting: rank-linear tilt * inverse-vol (sqrt dampened), defensive floor,
 water-fill cap at 0.18. Sum-to-1, cash 0, fractional quantities.
 Trader guards: frozen-5 pin (0.5% floor), equity-stress trim (eq<=0.40,
 ETH<=0.06), commodity guard (WTI<=0.04, COPPER<=0.10, XAU+COPPER+WTI<=0.33,
-ETH<=0.04), tech guard (NDX+SOX+000688.SH<=0.24, since 2034-04-27).
+ETH<=0.04), tech guard (NDX+SOX+000688.SH<=0.24, since 2034-04-27),
+SPX cap 0.12 (2035-03-29), XAU cap 0.16 (2035-06-07).
 """
 
 import json
@@ -52,6 +55,7 @@ ETH_CAP_ALL = 0.04         # 2033-07-07 trader re-tune: ETH -22.1% block at ~5.6
 TECH_CAP = 0.24          # 2034-04-27 trader: 3 consecutive loss blocks (02-02 -3.04%, 04-13 -2.13%, 04-27 -1.79%) driven by NDX/SOX/000688 tech complex; combined cap NDX+SOX+000688.SH
 TECH_ASSETS = ["NDX", "SOX", "000688.SH"]   # live US/China tech complex
 SPX_CAP = 0.12           # 2035-03-29 trader re-tune: SPX 3rd consecutive negative block (-4.44%, -9.71%, -2.46%); r21 -11.9%, r60 -23.8%; spx_beta_60 kept pushing SPX to ~16% largest weight -> hard cap 0.12 applied after guard stack
+XAU_CAP = 0.16           # 2035-06-07 trader re-tune: XAU 3rd consecutive negative block at max weight (-0.37%, -1.76%, -3.54%, -6.88%); recurring biggest drag -> hard cap 0.18->0.16 applied after guard stack
 VIX_STRESS = 30.0        # VIX level that flags equity stress
 EQ_RET21_STRESS = -0.05  # live-equity mean 21d return threshold for stress
 FROZEN_FLOOR = 0.005          # 0.5% per frozen (zero-return) asset
@@ -344,30 +348,78 @@ def tech_guard(w, assets, live, cap=CAP, tech_cap=TECH_CAP):
     return {a: max(0.0, float(x)) for a, x in w.items()}
 
 
-def spx_guard(w, assets, live, cap=CAP, spx_cap=SPX_CAP):
-    """Trader guard (2035-03-29): cap SPX weight at SPX_CAP.
+def apply_all_caps(w, assets, live, stress=False, cap=CAP, spx_cap=SPX_CAP,
+                     xau_cap=XAU_CAP, wti_cap=WTI_CAP, copper_cap=COPPER_CAP,
+                     eth_cap=ETH_CAP_ALL, tech_cap=TECH_CAP, comm_cap=COMM_CAP,
+                     eq_cap=EQ_CAP):
+    """Comprehensive final cap guard (2035-04-12).
 
-    Trigger met: SPX logged 3 consecutive negative blocks (-4.44% 02-15..03-01,
-    -9.71% 03-01..03-15, -2.46% 03-15..03-29) while spx_beta_60(+0.14) kept
-    pushing SPX to the portfolio's largest weight (~16%) right before each
-    decline. Applied AFTER commodity_guard and tech_guard so the cap acts on
-    the true final weights; freed weight water-fills to remaining live assets
-    (per-asset cap preserved). Reassess (relax to 0.14) if the Screener
-    re-tilts spx_beta_60 down or SPX trend turns positive.
+    Replaces the sequential commodity_guard -> tech_guard -> spx_guard tail.
+    The sequential stack let each guard's water-fill redistribute freed weight
+    to assets already at their sub-caps (the last guard only knew per-asset
+    0.18 + SPX 0.12), so the 03-29 proposal breached COPPER/ETH/WTI/tech/comm
+    caps (COPPER 12.9%, ETH 5.2%, WTI 5.2%, tech 26.4%, comm 35%). This guard
+    enforces every cap in ONE water-fill loop and does NOT destructively
+    renormalize (which had also drifted the frozen floor 0.5% -> ~1%): the
+    frozen floor stays at FROZEN_FLOOR and sum-to-1 is restored by filling
+    remaining room, not by scaling capped assets above their limits.
     """
     w = dict(w)
-    for _ in range(300):
+    tech = [a for a in TECH_ASSETS if a in live]
+    comm = [a for a in ("XAU", "COPPER", "WTI") if a in live]
+    eq = [a for a in EQ_ASSETS if a in live]
+
+    def cfor(a):
+        c = cap
+        if a == "SPX":
+            c = min(c, spx_cap)
+        if a == "XAU":
+            c = min(c, xau_cap)
+        if a == "WTI":
+            c = min(c, wti_cap)
+        if a == "COPPER":
+            c = min(c, copper_cap)
+        if a == "ETH":
+            c = min(c, eth_cap)
+        return c
+
+    def room_ok(a, w):
+        if w[a] >= cfor(a) - 1e-9:
+            return False
+        if a in tech and sum(w[x] for x in tech) >= tech_cap - 1e-9:
+            return False
+        if a in comm and sum(w[x] for x in comm) >= comm_cap - 1e-9:
+            return False
+        if stress and a in eq and sum(w[x] for x in eq) >= eq_cap - 1e-9:
+            return False
+        return True
+
+    for _ in range(500):
         excess = 0.0
         for a in assets:
-            c = cap
-            if a == "SPX" and a in live:
-                c = min(c, spx_cap)
+            c = cfor(a)
             if w[a] > c:
                 excess += w[a] - c
                 w[a] = c
+        if stress:
+            s_eq = sum(w[a] for a in eq)
+            if s_eq > eq_cap:
+                excess += s_eq - eq_cap
+                for a in eq:
+                    w[a] *= eq_cap / max(s_eq, 1e-12)
+        s_tech = sum(w[a] for a in tech)
+        if s_tech > tech_cap:
+            excess += s_tech - tech_cap
+            for a in tech:
+                w[a] *= tech_cap / max(s_tech, 1e-12)
+        s_comm = sum(w[a] for a in comm)
+        if s_comm > comm_cap:
+            excess += s_comm - comm_cap
+            for a in comm:
+                w[a] *= comm_cap / max(s_comm, 1e-12)
         if excess < 1e-12:
             break
-        room = [a for a in assets if a in live and w[a] < cap - 1e-9]
+        room = [a for a in assets if a in live and room_ok(a, w)]
         if not room:
             break
         p = {a: max(w[a], 1e-9) for a in room}
@@ -376,12 +428,20 @@ def spx_guard(w, assets, live, cap=CAP, spx_cap=SPX_CAP):
             break
         for a in room:
             w[a] += excess * p[a] / den
+
+    # restore exact sum-to-1 by filling remaining room (no destructive scaling)
     tot = sum(w.values())
-    if tot <= 0:
-        w = {a: 1.0 / len(assets) for a in assets}
-    else:
-        w = {a: x / tot for a, x in w.items()}
-    w[assets[-1]] += 1.0 - sum(w.values())  # float guard
+    diff = 1.0 - tot
+    if abs(diff) > 1e-9:
+        room = [a for a in assets if a in live and room_ok(a, w)]
+        if room and diff > 0:
+            p = {a: max(w[a], 1e-9) for a in room}
+            den = sum(p.values())
+            if den > 0:
+                for a in room:
+                    w[a] += diff * p[a] / den
+        tot = sum(w.values())
+        w[assets[-1]] += 1.0 - tot  # float guard (<=1e-12)
     return {a: max(0.0, float(x)) for a, x in w.items()}
 
 
@@ -582,9 +642,7 @@ def strategy_hook():
     weights = build_weights(score, assets, panel, def_floor, spread)
     weights = apply_frozen_override(weights, assets, frozen)
     weights = risk_trim(weights, assets, live, stress)
-    weights = commodity_guard(weights, assets, live)
-    weights = tech_guard(weights, assets, live)
-    weights = spx_guard(weights, assets, live)
+    weights = apply_all_caps(weights, assets, live, stress=stress)
     print(f"[trader] commodity guard: XAU={weights['XAU'] * 100:.1f}% "
           f"COPPER={weights['COPPER'] * 100:.1f}% WTI={weights['WTI'] * 100:.1f}% "
           f"complex={sum(weights[a] for a in ('XAU','COPPER','WTI')) * 100:.1f}% "

@@ -15,7 +15,7 @@ from pathlib import Path
 TRADABLES = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX",
              "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
 MACRO = ["DXY", "USDCNY", "USDJPY", "EURUSD", "VIX"]
-VISIBLE_THROUGH = "2026-07-29"
+VISIBLE_THROUGH = "2034-12-06"
 
 DATA_DIR = Path("../persistent/stock_data")
 INDEX_DIR = Path("../persistent/index_data")
