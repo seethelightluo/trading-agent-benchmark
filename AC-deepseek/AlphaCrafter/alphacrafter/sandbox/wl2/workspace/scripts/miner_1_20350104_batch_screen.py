@@ -31,12 +31,11 @@ cands['volmom20_60'] = mom20 / vol60
 cands['sharpe_60'] = close_df.pct_change(60) / vol60
 
 # 4. Hurst exponent via R/S, 60d window
-def hurst(series, window=60, min_period=40):
-    out = pd.Series(np.nan, index=series.index)
-    vals = series.values
-    for i in range(window, len(series)):
+def hurst_col(vals, window=60):
+    out = np.full(len(vals), np.nan)
+    for i in range(window, len(vals)):
         seg = vals[i-window:i]
-        if np.any(~np.isfinite(seg)):
+        if not np.all(np.isfinite(seg)):
             continue
         mean_r = seg.mean()
         dev = seg - mean_r
@@ -45,9 +44,9 @@ def hurst(series, window=60, min_period=40):
         S = seg.std(ddof=1)
         if S <= 0 or R <= 0:
             continue
-        out.iloc[i] = np.log(R / S) / np.log(window)
+        out[i] = np.log(R / S) / np.log(window)
     return out
-cands['hurst_60'] = hurst(ret_df)
+cands['hurst_60'] = ret_df.apply(lambda col: pd.Series(hurst_col(col.values), index=col.index))
 
 # 5. skew 60d, kurtosis 60d
 cands['skew_60'] = ret_df.rolling(60, min_periods=40).skew()

@@ -4,27 +4,26 @@ Cross-sectional factor ensemble (quality_ic_tilt) drives a fully-invested
 15-asset long-only target. One proposal per 10-trading-day block (first day
 only); the rebalance helper applies the 3bp gross-edge gate.
 
-Ensemble (2035-08-02, from factor_ensemble.json; weights non-negative sum 1):
-  down_beta_60(+1,0.22) cn10y_beta_60(-1,0.16) spx_beta_60(+1,0.13)
-  vol_adj_mom_20_60(+1,0.11) dxy_beta_cond_60x20(+1,0.07)
-  hs300_beta_60(-1,0.07) intraday_ret_skew_20(+1,0.07)
-  vol_of_vol20x60(+1,0.06) comm_basket_beta_60(+1,0.06)
-  hilo_vol_ratio_20(+1,0.05).
-Screener re-tilted the 12-21 mix slightly more defensive (down_beta 0.21->0.22,
-cn10y 0.15->0.16, dxy 0.06->0.07, vov 0.05->0.06; spx 0.14->0.13,
-vol_adj_mom 0.12->0.11, comm_basket 0.07->0.06, hilo 0.06->0.05) after
-prolonged drawdowns (net -4.8% over 06-21..08-02 unlogged blocks,
-mdd20 ~-10%). Defensive cluster (down_beta+cn10y+hs300) 0.45 vs risk-on
-cluster (vol_adj_mom+spx+comm) 0.30. Same 10 factors, no swaps; strategy
-reads factor_ensemble.json dynamically (in sync, docstring refresh only, no
-logic rewrite).
+Ensemble (2035-10-11, from factor_ensemble.json; weights non-negative sum 1):
+  down_beta_60(+1,0.29) cn10y_beta_60(-1,0.15) spx_beta_60(+1,0.11)
+  vol_adj_mom_20_60(+1,0.09) dxy_beta_cond_60x20(+1,0.07)
+  hs300_beta_60(-1,0.07) vol_of_vol20x60(+1,0.06)
+  comm_basket_beta_60(+1,0.06) hilo_vol_ratio_20(+1,0.05)
+  intraday_ret_skew_20(+1,0.05).
+Screener re-tilted the 08-02 mix more defensive (down_beta 0.22->0.29 the
+dominant factor; cn10y 0.16->0.15, spx 0.13->0.11, vol_adj_mom 0.11->0.09,
+intraday_ret_skew 0.07->0.05; dxy/hs300/vov/comm/hilo unchanged). Defensive
+cluster (down_beta+cn10y+hs300) 0.51 vs risk-on cluster (vol_adj_mom+spx+comm)
+0.26. Same 10 factors, no swaps; strategy reads factor_ensemble.json
+dynamically (in sync, docstring refresh only, no logic rewrite).
 
 Weighting: rank-linear tilt * inverse-vol (sqrt dampened), defensive floor,
 water-fill cap at 0.18. Sum-to-1, cash 0, fractional quantities.
 Trader guards: frozen-5 pin (0.5% floor), equity-stress trim (eq<=0.40,
 ETH<=0.06), commodity guard (WTI<=0.04, COPPER<=0.10, XAU+COPPER+WTI<=0.33,
 ETH<=0.04), tech guard (NDX+SOX+000688.SH<=0.24, since 2034-04-27),
-SPX cap 0.12 (2035-03-29), XAU cap 0.16 (2035-06-07).
+SPX cap 0.12 (2035-03-29), XAU cap 0.16 (2035-06-07),
+000300.SH cap 0.14 (2035-12-06).
 """
 
 import json
@@ -56,6 +55,7 @@ TECH_CAP = 0.24          # 2034-04-27 trader: 3 consecutive loss blocks (02-02 -
 TECH_ASSETS = ["NDX", "SOX", "000688.SH"]   # live US/China tech complex
 SPX_CAP = 0.12           # 2035-03-29 trader re-tune: SPX 3rd consecutive negative block (-4.44%, -9.71%, -2.46%); r21 -11.9%, r60 -23.8%; spx_beta_60 kept pushing SPX to ~16% largest weight -> hard cap 0.12 applied after guard stack
 XAU_CAP = 0.16           # 2035-06-07 trader re-tune: XAU 3rd consecutive negative block at max weight (-0.37%, -1.76%, -3.54%, -6.88%); recurring biggest drag -> hard cap 0.18->0.16 applied after guard stack
+CN300_CAP = 0.14          # 2035-12-06 trader re-tune: 000300.SH 3rd consecutive negative block at max weight (10-25 -5.71% at 16.5%, 11-08 -0.54%, 11-22 -2.88% at ~17% largest position); plan trigger fired -> hard cap 0.18->0.14 applied after guard stack
 VIX_STRESS = 30.0        # VIX level that flags equity stress
 EQ_RET21_STRESS = -0.05  # live-equity mean 21d return threshold for stress
 FROZEN_FLOOR = 0.005          # 0.5% per frozen (zero-return) asset
@@ -349,7 +349,7 @@ def tech_guard(w, assets, live, cap=CAP, tech_cap=TECH_CAP):
 
 
 def apply_all_caps(w, assets, live, stress=False, cap=CAP, spx_cap=SPX_CAP,
-                     xau_cap=XAU_CAP, wti_cap=WTI_CAP, copper_cap=COPPER_CAP,
+                     xau_cap=XAU_CAP, cn300_cap=CN300_CAP, wti_cap=WTI_CAP, copper_cap=COPPER_CAP,
                      eth_cap=ETH_CAP_ALL, tech_cap=TECH_CAP, comm_cap=COMM_CAP,
                      eq_cap=EQ_CAP):
     """Comprehensive final cap guard (2035-04-12).
@@ -375,6 +375,8 @@ def apply_all_caps(w, assets, live, stress=False, cap=CAP, spx_cap=SPX_CAP,
             c = min(c, spx_cap)
         if a == "XAU":
             c = min(c, xau_cap)
+        if a == "000300.SH":
+            c = min(c, cn300_cap)
         if a == "WTI":
             c = min(c, wti_cap)
         if a == "COPPER":
@@ -651,6 +653,7 @@ def strategy_hook():
           f"complex cap {COMM_CAP * 100:.0f}%, ETH cap {ETH_CAP_ALL * 100:.0f}%)")
     techw = sum(weights[a] for a in TECH_ASSETS if a in live)
     print(f"[trader] SPX cap: SPX={weights['SPX'] * 100:.1f}% (cap {SPX_CAP * 100:.0f}%)")
+    print(f"[trader] 000300 cap: 000300.SH={weights['000300.SH'] * 100:.1f}% (cap {CN300_CAP * 100:.0f}%)")
     print(f"[trader] tech guard: NDX={weights['NDX'] * 100:.1f}% "
           f"SOX={weights['SOX'] * 100:.1f}% 000688={weights['000688.SH'] * 100:.1f}% "
           f"complex={techw * 100:.1f}% (cap {TECH_CAP * 100:.0f}%)")
