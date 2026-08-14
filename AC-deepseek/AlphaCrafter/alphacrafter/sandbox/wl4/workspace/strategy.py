@@ -1,3 +1,40 @@
+"""v64 (2035-10-15):
+v63 + four risk-adjustment fires from the post-v63 blocks (last live step was
+05-28..06-11; safety advances 07-09..10-15 moved the window; block returns
+measured on 10-trading-day price windows ending 2035-10-12; SCREENER ensemble
+unchanged 0.60/0.40 = vol_adj_mom_accel_20x60 dir=+1 PRIMARY w=0.60,
+dn_mkt_beta_60d dir=+1 w=0.40, loaded live from factors/factor_ensemble.json;
+account 1216697.17 -> 1277634.57 (+5.01% cum over the frozen window, cash 0,
+gross 100%, 15 positions, no orders)):
+  - WTI x0.15 -> x0.20  RE-BOOST 3 consecutive positive blocks (+9.12% v63,
+    +20.14%, +2.72%); fires the v60 watch "WTI re-boost x0.20 on 2 cons pos"
+    (pending v64 confirmed).
+  - SOX x0.25 -> x0.20  3rd consecutive negative (-7.42%/-0.79%/-15.55%),
+    last block -15.55% < -10%; fires the v60 watch "SOX x0.20 on 3rd cons neg
+    or <-10%".
+  - 000688.SH x0.75 -> x0.25  3rd consecutive negative (-1.10%/-3.01%/
+    -8.10%), last block -8.10% < -8%; fires the v60 watch "000688 x0.25 on
+    4th cons neg or <-8%".
+  - N225 x0.50 -> x0.60  2 consecutive positive (+4.67%/+2.08%); fires the
+    v63 watch "N225 x0.60 on 1 more pos".
+  Kept: SPX x1.00 (1st mild neg -1.05% after +0.36%; x0.85 on 2nd cons neg or
+  <-8%), XAU x1.00 (1st pos +2.28% after -3.27%; x0.85 on 2nd cons neg or
+  <-5%), SX5E x0.70 (1st pos +2.87% after 3 negs; x0.50 on 2nd cons neg or
+  <-8%), NDX x1.00 (1st pos +0.45% after -1.79%; x0.45 on 2nd cons neg or
+  <-6%), COPPER x0.55 (1st pos +3.84% after -0.02%; x0.40 on 4th cons neg or
+  <-8%, re-boost x0.85 on 2 cons pos), US10Y x0.30 (1st pos +0.52% after
+  -8.01%; x0.20 on 3rd cons neg, x0.35 on 2 cons pos).
+  Frozen stale names unchanged: 000300.SH/HSI/BTC/ETH/CN10Y (~39% book
+  neutral rank, pnl 0; multipliers held x0.106/x0.106/x0.016/x0.080/x0.074
+  via caps).
+  Regime: VIX 13.33 (+48% over 10d, breaking up from ~9.0 floor, still below
+  the >14 defensive-re-tilt watch); risk rotation - SOX/000688 (semis/China
+  tech) crashed while WTI/COPPER/N225/SX5E/XAU led; USD weakened (EURUSD
+  +1.62%, DXY -1.50%). Momentum factor ranked SOX high (rebound risk) but the
+  defensive-multiplier cut dominates. FEEDBACK TO SCREENER: 0.60 momentum /
+  0.40 dn_mkt_beta held up (defensive floor + WTI/N225 re-boosts); momentum
+  leaders rotated from tech to commodities - cross-sectional breadth intact.
+"""
 """v63 (2035-06-11):
 v62 + three risk-adjustment fires from the 2035-05-28..06-11 block (proposal
 on 05-28 EXECUTED, cost = 05-25 closes; account 1223573.54 -> 1216697.17,
@@ -214,8 +251,8 @@ STALE_N = 5         # consecutive identical closes => stale quote
 #   BTC x0.75 -> x0.65, SX5E x1.00 -> x0.85
 DEFENSIVE_MULT = {
     "XAU": 1.00, "US10Y": 0.30, "CN10Y": 0.70,   # safe havens (v60: XAU kept x1.00 4th cons pos +0.53%, x0.85 on 2nd cons neg or <-5%; US10Y kept x0.30 1st neg -0.46% after 2 pos, x0.35 on 2 cons pos, x0.20 on 3rd cons neg; CN10Y kept x0.70 frozen stale)
-    "SOX": 0.25, "NDX": 1.00, "ETH": 0.75, "WTI": 0.15, "BTC": 0.15, "N225": 0.50,  # high-beta (v60: SOX kept x0.25 2nd cons neg -8.07%/-2.08%, x0.20 on 3rd cons neg or <-10%, re-boost x0.35 on 2 cons pos; NDX x0.60->x1.00 RE-BOOST 2 cons pos +5.36%/+2.01%, x0.45 on 2nd cons neg or <-6%; WTI x0.35->x0.15 LARGE single neg -11.38% after 4-pos run, x0.10 on another large or 2nd cons neg, re-boost x0.20 on 2 cons pos; N225 x0.40->x0.50 3rd cons pos +0.64%/+9.84%/+1.35%, x0.60 on 1 more pos, x0.25 on 4th cons neg or <-6%; BTC/ETH frozen stale)
-    "SX5E": 0.70, "SPX": 1.00, "000688.SH": 0.75, "COPPER": 0.55,  # v60: SX5E x0.60->x0.70 2nd cons pos +1.06%/+1.03%, x0.80 on 1 more pos, x0.50 on 2nd cons neg; SPX kept x1.00 1st pos +5.89% after -3.27%, x0.85 on 2nd cons neg or <-8%; 000688 x0.60->x0.75 4th cons pos +6.22%/+5.52%/+0.99%/+0.43%, x0.25 on 4th cons neg or <-8%; COPPER x0.70->x0.55 3rd cons neg -3.53%/-4.68%/-3.56%, x0.40 on 4th cons neg or <-8%, re-boost x0.85 on 2 cons pos
+    "SOX": 0.20, "NDX": 1.00, "ETH": 0.75, "WTI": 0.20, "BTC": 0.15, "N225": 0.60,  # high-beta (v64: SOX x0.25->x0.20 3rd cons neg -7.42%/-0.79%/-15.55% <-10%, x0.15 on 4th cons neg or <-15%, re-boost x0.30 on 2 cons pos; NDX kept x1.00 1 pos +0.45% after -1.79% neg, x0.45 on 2nd cons neg or <-6%; WTI x0.15->x0.20 RE-BOOST 3 cons pos +9.12%/+20.14%/+2.72%, x0.10 on 2nd cons neg or <-8%, x0.25 on 2 more pos; N225 x0.50->x0.60 2 cons pos +4.67%/+2.08%, x0.70 on 1 more pos, x0.25 on 4th cons neg or <-6%; BTC/ETH frozen stale)
+    "SX5E": 0.70, "SPX": 1.00, "000688.SH": 0.25, "COPPER": 0.55,  # v60: SX5E x0.60->x0.70 2nd cons pos +1.06%/+1.03%, x0.80 on 1 more pos, x0.50 on 2nd cons neg; SPX kept x1.00 1st pos +5.89% after -3.27%, x0.85 on 2nd cons neg or <-8%; 000688 x0.75->x0.25 3rd cons neg -1.10%/-3.01%/-8.10% <-8% (fires v60 watch), x0.15 on 4th cons neg or <-12%, re-boost x0.45 on 2 cons pos; COPPER kept x0.55 1st pos +3.84% after -0.02% flat, x0.40 on 4th cons neg or <-8%, re-boost x0.85 on 2 cons pos
 }
 
 
