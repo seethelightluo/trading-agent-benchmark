@@ -1,21 +1,27 @@
-"""Screener ensemble strategy, trader refresh 2034-04-27 (current 10-factor ensemble).
+"""Screener ensemble strategy, trader refresh 2034-12-21 (current 10-factor ensemble).
 
 Cross-sectional factor ensemble (quality_ic_tilt) drives a fully-invested
 15-asset long-only target. One proposal per 10-trading-day block (first day
 only); the rebalance helper applies the 3bp gross-edge gate.
 
-Ensemble (2034-04-27, from factor_ensemble.json; weights non-negative sum 1):
+Ensemble (2034-12-21, from factor_ensemble.json; weights non-negative sum 1):
   down_beta_60(+1,0.21) cn10y_beta_60(-1,0.15) spx_beta_60(+1,0.14)
-  vol_adj_mom_20_60(+1,0.12) comm_basket_beta_60(+1,0.07) hs300_beta_60(-1,0.07)
-  intraday_ret_skew_20(+1,0.07) vol_of_vol20x60(+1,0.05) dxy_beta_cond_60x20(+1,0.06)
+  vol_adj_mom_20_60(+1,0.12) comm_basket_beta_60(+1,0.07)
+  hs300_beta_60(-1,0.07) intraday_ret_skew_20(+1,0.07)
+  vol_of_vol20x60(+1,0.05) dxy_beta_cond_60x20(+1,0.06)
   hilo_vol_ratio_20(+1,0.06).
-Screener reverted the 04-13 mix: vix_beta_cond_60x20 and dd_duration_120_resid
-dropped after one weak block; comm_basket_beta_60 and hilo_vol_ratio_20 restored.
-Regime still sideways/risk-off (VIX ~22.7, elevated vol); tech_guard 0.24
-(NDX+SOX+000688.SH combined) remains active after 3 consecutive loss blocks.
+Screener re-tilted the 12-07 balanced mix back toward defensive on persisting
+COPPER/ETH/000688 weakness (down_beta 0.17->0.21, cn10y 0.13->0.15,
+comm_basket 0.10->0.07, vol_adj_mom 0.16->0.12); defensive cluster
+(down_beta+cn10y+hs300) 0.43 vs risk-on cluster (vol_adj_mom+spx+comm) 0.33.
+Same 10 factors, no swaps; strategy reads factor_ensemble.json dynamically
+(in sync, docstring refresh only, no logic rewrite).
 
 Weighting: rank-linear tilt * inverse-vol (sqrt dampened), defensive floor,
 water-fill cap at 0.18. Sum-to-1, cash 0, fractional quantities.
+Trader guards: frozen-5 pin (0.5% floor), equity-stress trim (eq<=0.40,
+ETH<=0.06), commodity guard (WTI<=0.04, COPPER<=0.10, XAU+COPPER+WTI<=0.33,
+ETH<=0.04), tech guard (NDX+SOX+000688.SH<=0.24, since 2034-04-27).
 """
 
 import json
@@ -45,6 +51,7 @@ COPPER_CAP = 0.10          # 2032-08-05 trader re-tune: COPPER whipsaw (-1.7%, +
 ETH_CAP_ALL = 0.04         # 2033-07-07 trader re-tune: ETH -22.1% block at ~5.6% w (near 6% cap), crash ongoing (-25% 1M thru 07-06); plan trigger met -> cap 0.06->0.04
 TECH_CAP = 0.24          # 2034-04-27 trader: 3 consecutive loss blocks (02-02 -3.04%, 04-13 -2.13%, 04-27 -1.79%) driven by NDX/SOX/000688 tech complex; combined cap NDX+SOX+000688.SH
 TECH_ASSETS = ["NDX", "SOX", "000688.SH"]   # live US/China tech complex
+SPX_CAP = 0.12           # 2035-03-29 trader re-tune: SPX 3rd consecutive negative block (-4.44%, -9.71%, -2.46%); r21 -11.9%, r60 -23.8%; spx_beta_60 kept pushing SPX to ~16% largest weight -> hard cap 0.12 applied after guard stack
 VIX_STRESS = 30.0        # VIX level that flags equity stress
 EQ_RET21_STRESS = -0.05  # live-equity mean 21d return threshold for stress
 FROZEN_FLOOR = 0.005          # 0.5% per frozen (zero-return) asset
@@ -337,6 +344,47 @@ def tech_guard(w, assets, live, cap=CAP, tech_cap=TECH_CAP):
     return {a: max(0.0, float(x)) for a, x in w.items()}
 
 
+def spx_guard(w, assets, live, cap=CAP, spx_cap=SPX_CAP):
+    """Trader guard (2035-03-29): cap SPX weight at SPX_CAP.
+
+    Trigger met: SPX logged 3 consecutive negative blocks (-4.44% 02-15..03-01,
+    -9.71% 03-01..03-15, -2.46% 03-15..03-29) while spx_beta_60(+0.14) kept
+    pushing SPX to the portfolio's largest weight (~16%) right before each
+    decline. Applied AFTER commodity_guard and tech_guard so the cap acts on
+    the true final weights; freed weight water-fills to remaining live assets
+    (per-asset cap preserved). Reassess (relax to 0.14) if the Screener
+    re-tilts spx_beta_60 down or SPX trend turns positive.
+    """
+    w = dict(w)
+    for _ in range(300):
+        excess = 0.0
+        for a in assets:
+            c = cap
+            if a == "SPX" and a in live:
+                c = min(c, spx_cap)
+            if w[a] > c:
+                excess += w[a] - c
+                w[a] = c
+        if excess < 1e-12:
+            break
+        room = [a for a in assets if a in live and w[a] < cap - 1e-9]
+        if not room:
+            break
+        p = {a: max(w[a], 1e-9) for a in room}
+        den = sum(p.values())
+        if den <= 0:
+            break
+        for a in room:
+            w[a] += excess * p[a] / den
+    tot = sum(w.values())
+    if tot <= 0:
+        w = {a: 1.0 / len(assets) for a in assets}
+    else:
+        w = {a: x / tot for a, x in w.items()}
+    w[assets[-1]] += 1.0 - sum(w.values())  # float guard
+    return {a: max(0.0, float(x)) for a, x in w.items()}
+
+
 def is_block_start():
     try:
         d = json.load(open("../persistent/date.json"))
@@ -536,6 +584,7 @@ def strategy_hook():
     weights = risk_trim(weights, assets, live, stress)
     weights = commodity_guard(weights, assets, live)
     weights = tech_guard(weights, assets, live)
+    weights = spx_guard(weights, assets, live)
     print(f"[trader] commodity guard: XAU={weights['XAU'] * 100:.1f}% "
           f"COPPER={weights['COPPER'] * 100:.1f}% WTI={weights['WTI'] * 100:.1f}% "
           f"complex={sum(weights[a] for a in ('XAU','COPPER','WTI')) * 100:.1f}% "
@@ -543,6 +592,7 @@ def strategy_hook():
           f"(WTI cap {WTI_CAP * 100:.0f}%, COPPER cap {COPPER_CAP * 100:.0f}%, "
           f"complex cap {COMM_CAP * 100:.0f}%, ETH cap {ETH_CAP_ALL * 100:.0f}%)")
     techw = sum(weights[a] for a in TECH_ASSETS if a in live)
+    print(f"[trader] SPX cap: SPX={weights['SPX'] * 100:.1f}% (cap {SPX_CAP * 100:.0f}%)")
     print(f"[trader] tech guard: NDX={weights['NDX'] * 100:.1f}% "
           f"SOX={weights['SOX'] * 100:.1f}% 000688={weights['000688.SH'] * 100:.1f}% "
           f"complex={techw * 100:.1f}% (cap {TECH_CAP * 100:.0f}%)")

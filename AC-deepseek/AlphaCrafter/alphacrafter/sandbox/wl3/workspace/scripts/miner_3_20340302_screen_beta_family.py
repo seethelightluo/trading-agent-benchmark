@@ -1,7 +1,7 @@
 """miner_3 2034-03-02 screening: novel cross-asset beta factor family.
 
 Admission on warm-up window (2020-01-01..2026-07-15) with |IC|>=0.007 |ICIR|>=0.084
-at h=10; reports recent (2026-07-16..2034-03-01) IC/ICIR for drift.
+at h=10; reports recent (2026-07-16..) IC/ICIR for drift.
 Library correlation audited against ALL effective factor artifacts (same-shape only).
 """
 import sys, json
@@ -156,5 +156,5 @@ print("=" * 90)
 print("SUMMARY")
 for fid, r in results.items():
     w = r['warm']
-    print(f"{fid:28s} warm IC={w['ic']:+.4f} ICIR={w['icir']:+.4f} | recent "
-          f"IC={None if r['recent'] is None else f'{r[\"recent\"][\"ic\"]:+.4f}'} | rho={r['rho']:.3f} | {'PASS' if r['ok'] else 'FAIL'}")
+    ric = 'n/a' if r['recent'] is None else f"{r['recent']['ic']:+.4f}"
+    print(f"{fid:28s} warm IC={w['ic']:+.4f} ICIR={w['icir']:+.4f} | recent IC={ric} | rho={r['rho']:.3f} | {'PASS' if r['ok'] else 'FAIL'}")

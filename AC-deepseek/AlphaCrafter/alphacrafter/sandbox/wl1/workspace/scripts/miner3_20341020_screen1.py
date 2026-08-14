@@ -1,4 +1,4 @@
-"""miner_3 2034-10-20: library re-validation + candidate factor screen on fresh panel (data through 2034-10-19)."""
+"""miner_3 2034-10-20: library re-validation + candidate screen (vectorized beta)."""
 import pandas as pd
 import numpy as np
 from scipy.stats import spearmanr
@@ -8,6 +8,14 @@ PANEL = 'scripts/panel_cache_20341020.pkl'
 def load_panel():
     with open(PANEL, 'rb') as f:
         return pd.read_pickle(f)
+
+def roll_beta(a, b, w):
+    """Vectorized rolling beta of a on b, window w."""
+    ma = a.rolling(w).mean(); mb = b.rolling(w).mean()
+    cov = (a * b).rolling(w).mean() - ma * mb
+    var = (b * b).rolling(w).mean() - mb * mb
+    beta = cov / var.replace(0, np.nan)
+    return beta
 
 def make_library_factors_full(panel):
     px = panel['close']; ret = panel['ret']
@@ -24,18 +32,7 @@ def make_library_factors_full(panel):
     lib['vol_of_vol20x60'] = ret.rolling(20).std().rolling(60).std()
     vix = panel['macro']['VIX'].reindex(px.index).ffill()
     vix_ret = vix.pct_change()
-    betas = pd.DataFrame(index=px.index, columns=px.columns, dtype=float)
-    a_ret = ret
-    for i in range(60, len(a_ret)):
-        a = a_ret.iloc[i-60:i]; b = vix_ret.iloc[i-60:i]
-        m = a.notna() & b.notna()
-        if int(m.sum().sum()) < 10:
-            continue
-        aa = a[m]; bb = b[m]
-        cov = (aa * bb).mean() - aa.mean() * bb.mean()
-        var = bb.var()
-        if var > 0:
-            betas.iloc[i] = cov / var
+    betas = roll_beta(ret, vix_ret, 60)
     vix_trend = vix_ret.rolling(20).mean()
     lib['vix_beta_cond_60x20'] = betas * np.sign(vix_trend).values[:, None]
     return lib
@@ -110,72 +107,36 @@ lib = make_library_factors_full(panel)
 print("=" * 70)
 print("LIBRARY RE-VALIDATION (full sample through 2034-10-19)")
 print("=" * 70)
-lib_status = {}
 for k, v in lib.items():
     res = eval_factor(v, px, lib=None)
-    ok = print_eval(k, res)
-    lib_status[k] = (res.get(1, {}).get('ic', 0), res.get(1, {}).get('icir', 0), res.get(1, {}).get('ic_recent', 0))
+    print_eval(k, res)
 print()
 print("=" * 70)
 print("CANDIDATE FACTORS")
 print("=" * 70)
 
 cands = {}
-
-# C1 20d momentum skipping last 5d (intermediate trend, complements mom_120d)
 cands['mom_20d_skip5'] = px.shift(5) / px.shift(25) - 1.0
-
-# C2 trend efficiency ratio 20d: |20d ret| / sum(|daily ret|)  (trend strength)
 cands['efficiency_20d'] = (px / px.shift(20) - 1.0).abs() / ret.abs().rolling(20).sum()
-
-# C3 max drawdown 60d (negative drawdown => high values for deep drawdown)
 cands['maxdd_60d'] = -((px / px.rolling(60).max()) - 1.0)
-
-# C4 downside semi-deviation ratio 20d: downside vol / total vol
 def downside_ratio(s, w=20):
     d = s.clip(upper=0.0)
-    down = d.rolling(w).std()
-    tot = s.rolling(w).std()
-    return down / tot
+    return d.rolling(w).std() / s.rolling(w).std()
 cands['downside_ratio_20d'] = downside_ratio(ret)
-
-# C5 intraday range 5d avg ratio (high-low)/close (realized range vol)
 rng = (hi - lo) / px
 cands['range_5d'] = rng.rolling(5).mean()
-
-# C6 5d reversal vol-scaled (like rev_1d_vs but 5d horizon)
 cands['rev_5d_vs'] = -(np.log(px) - np.log(px.shift(5))) / ret.rolling(20).std()
-
-# C7 USD beta 60d vs DXY (inverse-dollar sensitivity)
 dxy = panel['macro']['DXY'].reindex(px.index).ffill()
 dxy_ret = dxy.pct_change()
-dxyb = pd.DataFrame(index=px.index, columns=px.columns, dtype=float)
-for i in range(60, len(ret)):
-    b = dxy_ret.iloc[i-60:i]
-    a = ret.iloc[i-60:i]
-    m = a.notna() & b.notna()
-    if int(m.sum().sum()) < 10:
-        continue
-    aa = a[m]; bb = b[m]
-    var = bb.var()
-    if var > 0:
-        cov = (aa * bb).mean() - aa.mean() * bb.mean()
-        dxyb.iloc[i] = cov / var
-cands['dxy_beta_60d'] = dxyb
-
-# C8 reversal conditioned on high-VIX regime (VIX level > 40 => short-term reversal amplified)
+cands['dxy_beta_60d'] = roll_beta(ret, dxy_ret, 60)
 vix = panel['macro']['VIX'].reindex(px.index).ffill()
 vix_hi = (vix > 40).astype(float)
 rev5 = -(np.log(px) - np.log(px.shift(5)))
 cands['rev5_x_vixhi'] = rev5 * (1.0 + 1.0 * vix_hi.values[:, None])
-
-# C9 60d momentum skip5 (intermediate momentum)
 cands['mom_60d_skip5'] = px.shift(5) / px.shift(65) - 1.0
-
-# C10 cross-sectional relative strength vs SPX: 20d excess return over SPX
 spx_ret = ret['SPX']
 cands['rel_20d_vs_spx'] = (px / px.shift(20) - 1.0).subtract(spx_ret.rolling(20).sum(), axis=0)
 
 for k, v in cands.items():
     res = eval_factor(v, px, lib=lib)
-    ok = print_eval(k, res)
+    print_eval(k, res)
