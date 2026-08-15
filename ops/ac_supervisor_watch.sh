@@ -57,7 +57,7 @@ restart_terra() {
   fi
   echo "$(ts) restarting Terra supervisor" >> "$LOG"
   cd "$ROOT/agent-framework"
-  setsid nohup .venv/bin/python -u -m scheduler.run_ac_luna_3 >> "$TERRA_RESULTS/supervisor.log" 2>&1 &
+  AC_LUNA_WORLDLINES=9 AC_LUNA_CONCURRENCY=3 setsid nohup .venv/bin/python -u -m scheduler.run_ac_luna_3 >> "$TERRA_RESULTS/supervisor.log" 2>&1 &
 }
 
 DS_ALIVE=$(pgrep -f 'run_deepseek_ac9\.py' 2>/dev/null | head -1)

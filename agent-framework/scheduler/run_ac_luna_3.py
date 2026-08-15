@@ -46,10 +46,13 @@ LOGS = RESULTS / "logs"
 STATE_PATH = RESULTS / "run_state.json"
 MILESTONE_PUSH = ROOT / "ops" / "git_milestone_push.sh"
 CADENCE = 10
-ONLINE_MAX_CYCLES = 300
+ONLINE_MAX_CYCLES = int(os.environ.get("AC_LUNA_ONLINE_MAX_CYCLES", "360"))
 ONLINE_WORLDLINES = int(os.environ.get("AC_LUNA_WORLDLINES", "3"))
 if not 1 <= ONLINE_WORLDLINES <= 9:
     raise SystemExit("AC_LUNA_WORLDLINES must be between 1 and 9")
+MAX_CONCURRENT_WL = int(os.environ.get("AC_LUNA_CONCURRENCY", "3"))
+if not 1 <= MAX_CONCURRENT_WL <= ONLINE_WORLDLINES:
+    raise SystemExit("AC_LUNA_CONCURRENCY must be between 1 and AC_LUNA_WORLDLINES")
 RETRY_DELAYS = (60, 120, 300, 600, 900)
 RETRY_JITTER = 0.20
 MAX_RETRY_ATTEMPTS = int(os.environ.get("AC_LUNA_MAX_RETRIES", "6"))
@@ -278,7 +281,11 @@ def main() -> int:
             retry_at[wl] = 0.0
     save_state(state)
 
-    print(f"[luna-ac] launching {ONLINE_WORLDLINES} WL processes in parallel", flush=True)
+    print(
+        f"[luna-ac] launching WL1..WL{ONLINE_WORLDLINES} "
+        f"with max {MAX_CONCURRENT_WL} concurrent",
+        flush=True,
+    )
     while retry_at or active:
         now = time.monotonic()
         for wl in list(retry_at):
@@ -289,6 +296,8 @@ def main() -> int:
                 continue
             if wl in active or now < retry_at[wl]:
                 continue
+            if len(active) >= MAX_CONCURRENT_WL:
+                break
             active[wl] = start_worldline(wl, config, state)
             del retry_at[wl]
 

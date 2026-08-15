@@ -29,7 +29,7 @@ GROUPS = {
         "run_state": WORKDIR / "agent-framework/results/ac_luna_3wl_v5/run_state.json",
         "log_dir": WORKDIR / "agent-framework/results/ac_luna_3wl_v5/logs",
         "sandbox": WORKDIR / "agent-framework/AlphaCrafter/alphacrafter/sandbox",
-        "wls": [f"wl{i}" for i in range(1, 4)],
+        "wls": [f"wl{i}" for i in range(1, 10)],
         "proc": "run_ac_luna_3",
     },
 }
