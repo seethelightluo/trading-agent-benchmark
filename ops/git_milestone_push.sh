@@ -26,10 +26,38 @@ if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
   exit 1
 fi
 
+compress_large_ac_logs() {
+  local log_dir="$repo_dir/AC-deepseek/results/ac9wl_deepseek/logs"
+  if [ ! -d "$log_dir" ]; then
+    return 0
+  fi
+
+  while IFS= read -r -d '' source_log; do
+    local compressed="${source_log}.gz"
+    if [ ! -s "$compressed" ] || [ "$source_log" -nt "$compressed" ]; then
+      echo "git-milestone: compressing oversized result log: $source_log" >&2
+      gzip -c "$source_log" > "${compressed}.tmp"
+      gzip -t "${compressed}.tmp"
+      mv "${compressed}.tmp" "$compressed"
+    fi
+    if [ "$(stat -c '%s' "$compressed")" -gt 95000000 ]; then
+      echo "git-milestone: compressed result log still exceeds GitHub limit: $compressed" >&2
+      return 1
+    fi
+  done < <(find "$log_dir" -maxdepth 1 -type f -name 'wl*.log' -size +90M -print0)
+
+  # .gitignore does not untrack files already present in an older index.
+  while IFS= read -r -d '' tracked_log; do
+    echo "git-milestone: untracking raw result log (gzip checkpoint retained): $tracked_log" >&2
+    git rm --cached -- "$tracked_log" >/dev/null
+  done < <(git ls-files -z -- "$log_dir/wl*.log")
+}
+
 # Commit locally before any network operation.  Thus a transient remote outage
 # never removes the local recovery point.  .gitignore is the boundary for
 # environments and credentials; every other result, log, script, and document
 # is intentionally included.
+compress_large_ac_logs
 git add -A
 if ! git diff --cached --quiet; then
   git commit -m "chore: milestone ${label}"
