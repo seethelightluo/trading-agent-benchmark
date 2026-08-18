@@ -1,0 +1,1 @@
+exec(open('scripts/miner_1_20340915_shock_reversal.py').read().replace("print('assets',len(D),'rows',len(p),'sigvalid',sig.notna().sum(axis=1).describe())","print('assets',len(D),'rows',len(p),'nonnull',p.notna().sum().to_dict(),'r',r.notna().sum().to_dict(),'vm',vm.notna().sum())"))

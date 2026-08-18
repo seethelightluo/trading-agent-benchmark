@@ -1,0 +1,1 @@
+with open('scripts/miner2_20291213_lib.py') as f: print(f.read()[:8000])

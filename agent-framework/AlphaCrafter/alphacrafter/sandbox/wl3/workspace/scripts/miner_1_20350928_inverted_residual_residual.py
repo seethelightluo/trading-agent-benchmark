@@ -1,0 +1,25 @@
+import numpy as np,pandas as pd
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+cl={}
+for s in U:
+ d=pd.read_csv('../persistent/stock_data/'+s+'.csv'); d.date=pd.to_datetime(d.date); cl[s]=d.set_index('date').close.astype(float)
+p=pd.DataFrame(cl).sort_index(); p=p[p.index<=pd.Timestamp('2035-09-27')]; r=p.pct_change(); vol=r.rolling(60,min_periods=40).std()*np.sqrt(252)
+# Inverted residual medium-term momentum: cross-sectional median removed, then fade relative trends, risk normalized.
+raw=p.pct_change(60); residual=raw.sub(raw.median(axis=1),axis=0); f=(-residual.div(vol.replace(0,np.nan))).replace([np.inf,-np.inf],np.nan)
+y=p.shift(-10).div(p.shift(-1))-1
+rows=[]
+for dt in f.index:
+ ok=f.loc[dt].notna()&y.loc[dt].notna()
+ if ok.sum()>=8: rows.append((dt,f.loc[dt,ok].rank().corr(y.loc[dt,ok].rank()),ok.sum()))
+a=pd.DataFrame(rows,columns=['date','ic','n']).set_index('date'); q=a.ic.dropna()
+print('factor=inverted_residual_momentum60_vol'); print('dates',len(a),'instruments',15,'avg_n',a.n.mean(),'coverage',a.n.mean()/15)
+print('10d_ic %.8f icir %.8f hit %.4f'%(q.mean(),q.mean()/q.std(ddof=1)*np.sqrt(len(q)),(q>0).mean()))
+for h in [1,5,10,20]:
+ yy=p.shift(-h).div(p.shift(-1))-1; z=[]
+ for dt in f.index:
+  ok=f.loc[dt].notna()&yy.loc[dt].notna()
+  if ok.sum()>=8:z.append(f.loc[dt,ok].rank().corr(yy.loc[dt,ok].rank()))
+ z=pd.Series(z).dropna(); print('horizon',h,'ic',z.mean(),'n',len(z))
+for name,x in [('early',q.iloc[:len(q)//3]),('middle',q.iloc[len(q)//3:2*len(q)//3]),('recent',q.iloc[2*len(q)//3:]),('recent120',q.tail(120))]: print(name,len(x),'ic',x.mean(),'icir',x.mean()/x.std(ddof=1)*np.sqrt(len(x)),'hit',(x>0).mean())
+print('turnover',f.rank(axis=1,pct=True).diff().abs().mean(axis=1).dropna().mean(),'period',a.index.min().date(),a.index.max().date())
+f.reset_index().melt(id_vars='date',var_name='symbol',value_name='signal').dropna().to_csv('scripts/miner_1_20350928_inverted_residual_signal.csv',index=False)

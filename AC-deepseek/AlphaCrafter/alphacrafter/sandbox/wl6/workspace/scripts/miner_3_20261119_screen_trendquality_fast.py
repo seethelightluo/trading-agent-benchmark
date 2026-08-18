@@ -75,7 +75,8 @@ def rsum(x, w):
 
 def beta_of(a, m, w):
     m = m.reindex(a.index)
-    return a.rolling(w, min_periods=mp(w, 2)).cov(m) / m.rolling(w, min_periods=mp(w, 2)).var().replace(0, np.nan)
+    mdf = pd.DataFrame({c: m for c in a.columns}, index=a.index)
+    return a.rolling(w, min_periods=mp(w, 2)).cov(mdf) / mdf.rolling(w, min_periods=mp(w, 2)).var().replace(0, np.nan)
 
 
 C = {}
@@ -163,13 +164,14 @@ lib = {
     "mom_10d_skip5": px.shift(5) / px.shift(15) - 1.0,
     "mom_120d_skip5": px.shift(5) / px.shift(125) - 1.0,
     "vol_of_vol20x60": ret_l.rolling(20).std().rolling(60).std(),
-    "vix_beta_cond_60x20": -beta_of(ret_l, vixr, 60).mul(vix / vix.shift(20) - 1.0, axis=0),
+    "vix_beta_cond_60x20": -beta_of(ret_l, vixr, 60).mul((vix / vix.shift(20) - 1.0).reindex(px.index), axis=0),
 }
 
 
 def max_lib_corr(fv, lib_sigs):
     best = 0.0
     for fid, lsig in lib_sigs.items():
+        lsig = lsig.reindex(index=fv.index, columns=fv.columns)
         ic = fast_ic_series(fv, lsig, min_valid=MIN_INSTR).dropna()
         if len(ic):
             best = max(best, abs(float(ic.mean())))

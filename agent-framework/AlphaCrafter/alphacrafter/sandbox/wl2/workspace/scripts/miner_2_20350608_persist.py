@@ -1,0 +1,17 @@
+import json
+f='factors/miner_2_20350608_dispersion_conditioned_reversal_5d_h20.json'
+data={
+ 'factor_id':'miner_2_20350608_dispersion_conditioned_reversal_5d_h20',
+ 'factor_name':'High-Dispersion Volatility-Scaled Short Reversal',
+ 'version':'1.0',
+ 'calculation':{'expression':'where(zscore_120(cross_sectional_std(rolling_std(pct_change(close),20))) > 0.5, -rolling_sum(pct_change(close),5)/rolling_std(pct_change(close),20), null)', 'description':'During elevated cross-asset volatility dispersion, rank assets by five-day reversal scaled by their own 20-day volatility. Signal uses information through t and predicts t+1 through t+20 returns.'},
+ 'dependencies':['close'],
+ 'parameters':{'reversal_window':5,'volatility_window':20,'dispersion_z_window':120,'dispersion_gate':0.5,'horizon_days':20},
+ 'validation':{'status':'EFFECTIVE','period':'2020-01-01 through 2035-05-24','validated_at':'2035-06-08T00:00:00Z','metrics':{'ic':0.028618,'icir':0.088994,'dates':748,'average_instruments':12.89,'coverage':0.8591,'turnover':None,'hit_ratio':0.5575,'max_abs_library_correlation':None},'regime_notes':'Passed benchmark gates on 20-day horizon across 748 dates and 15 tradable cross-asset instruments; conservative uncertainty warranted. ICIR was positive in 2025-2029 but near zero in 2030-2035, indicating meaningful recent drift.', 'signal_artifact':'../persistent/miner_2_20350608_dispersion_reversal_signal.csv'},
+ 'tags':['reversal','volatility','dispersion','cross_asset','risk_scaled']
+}
+with open(f,'w') as g: json.dump(data,g,indent=2)
+with open(f) as g:
+ q=json.load(g)
+assert q['factor_id']==data['factor_id'] and q['validation']['status']=='EFFECTIVE' and q['validation']['metrics']['ic']>=.007 and q['validation']['metrics']['icir']>=.084 and q['validation']['signal_artifact']
+print(q['factor_id'],q['validation']['status'],q['validation']['metrics'])

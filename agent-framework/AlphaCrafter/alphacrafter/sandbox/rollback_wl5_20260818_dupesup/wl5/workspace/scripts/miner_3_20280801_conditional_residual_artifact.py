@@ -1,0 +1,3 @@
+import pandas as pd,numpy as np
+from pathlib import Path
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y'];b=Path('../persistent/stock_data');P=pd.DataFrame({s:pd.read_csv(b/f'{s}.csv',parse_dates=['date']).set_index('date')['close'].sort_index() for s in U}).sort_index().loc[:'2028-07-31'].ffill();R=P.pct_change();bm=R.mean(1); beta=R.rolling(60,min_periods=30).cov(bm).div(bm.rolling(60,min_periods=30).var(),axis=0); f=-(P.pct_change(3)-beta.mul(bm.rolling(3).sum(),axis=0)); f[bm.rolling(5).sum()<=0]=np.nan; f.to_csv('scripts/miner_3_20280801_conditional_residual3_reversal_signal.csv');print('artifact',f.shape,'coverage',f.notna().mean().mean())

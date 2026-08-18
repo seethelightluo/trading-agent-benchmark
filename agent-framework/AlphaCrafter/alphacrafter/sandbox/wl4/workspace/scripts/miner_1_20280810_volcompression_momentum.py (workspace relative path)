@@ -1,0 +1,24 @@
+import pandas as pd,numpy as np,os
+A=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y'];b='../persistent/stock_data'
+px={a:pd.read_csv(f'{b}/{a}.csv',parse_dates=['date']).set_index('date').sort_index()['close'] for a in A}
+P=pd.DataFrame(px).sort_index().loc[:'2028-08-09'];r=P.pct_change();v20=r.rolling(20,min_periods=15).std();v60=r.rolling(60,min_periods=40).std();sig=(P.pct_change(20)*(v60/v20).clip(.5,2)).replace([np.inf,-np.inf],np.nan).shift(1)
+def ic(x,y):
+ ok=np.isfinite(x)&np.isfinite(y)
+ if ok.sum()<8:return np.nan
+ return np.corrcoef(pd.Series(x[ok]).rank(),pd.Series(y[ok]).rank())[0,1]
+print('rows',len(P),'assets',len(px),'end',P.index.max().date())
+for h in [1,5,10,20]:
+ z=[]
+ for i in range(len(P)-h):
+  q=ic(sig.iloc[i],P.iloc[i+h]/P.iloc[i]-1)
+  if np.isfinite(q):z.append(q)
+ z=pd.Series(z);recent=z.tail(250)
+ print('h',h,'dates',len(z),'avg_n',round(P.notna().sum(axis=1).mean(),2),'IC',round(z.mean(),6),'ICIR',round(z.mean()/z.std(ddof=1),6),'hit',round((z>0).mean(),4),'recent250',round(recent.mean(),6),round(recent.mean()/recent.std(ddof=1),6))
+print('coverage',round(sig.notna().sum().sum()/(len(sig)*len(px)),4),'turnover',round(sig.rank(pct=True).diff().abs().mean(axis=1).dropna().mean(),6))
+for lab,st,en in [('early','2020','2023-12-31'),('mid','2024','2026-12-31'),('late','2027','2028-08-09')]:
+ z=[]
+ for i,d in enumerate(P.index[:-1]):
+  if pd.Timestamp(st)<=d<=pd.Timestamp(en):
+   q=ic(sig.iloc[i],P.iloc[i+1]/P.iloc[i]-1)
+   if np.isfinite(q):z.append(q)
+ print('regime',lab,'dates',len(z),'IC',round(np.mean(z),6),'ICIR',round(np.mean(z)/np.std(z,ddof=1),6))

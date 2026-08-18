@@ -1,20 +1,22 @@
 # -*- coding: utf-8 -*-
-"""miner_3 2028-03-23: explore novel factor batch (data through 2028-03-22).
+"""miner_3 2028-03-23: explore novel factor batch (data through 2028-03-22) - OPTIMIZED.
 Gates: |IC| >= 0.007 and |ICIR| >= 0.084 at 10d horizon on the 15-asset universe.
 Robustness sanity: n_ic_dates >= 120 and coverage_dates_ge8 >= 0.6.
 Novel angles this cycle (not in library / not previously evicted):
   - Kaufman efficiency ratio (trend quality, different math than trend_r2)
   - extremes asymmetry (max gain / max loss), up/down mean ratio
   - vol term structure (5d/60d, 10d/60d)
-  - cross-asset systematic-ness (mean pairwise corr), downside beta
+  - cross-asset systematic-ness (corr to equal-weight index, fast proxy), downside beta
   - China-market beta (000300.SH), rate beta (US10Y), JPY beta (USDJPY), DXY-up-day beta
   - risk-adjusted relative momentum, 20d new-high proximity
   - 60d skew, drawdown-speed 60x10, EWMA momentum
-  - NEW: 5d serial correlation (mean-reversion proxy), volume-trend-weighted momentum,
-    conditional momentum (trend filter), US10Y-CN10Y yield spread change,
-    crypto beta (BTC), 120d max drawdown, cross-sectional return dispersion tilt
+  - 20d serial correlation (vectorized ACF1, mean-reversion proxy)
+  - volume-trend-weighted momentum, conditional momentum (trend filter)
+  - rate-carry: rate_beta * (US10Y-CN10Y spread 20d change)
+  - crypto beta (BTC), 120d max drawdown, cross-sectional dispersion tilt
+NOTE: all slow loops replaced with vectorized / rolling implementations.
 """
-import sys, json, os
+import sys, json, os, time
 import numpy as np
 import pandas as pd
 sys.path.insert(0, 'scripts')
@@ -65,9 +67,30 @@ def rolling_beta_cond(x, f, win, cond):
     out = pd.DataFrame(index=x.index, columns=x.columns, dtype=float)
     for s in x.columns:
         xv = xc[s]
-        m = xv.notna() & fc.notna()
         out[s] = xv.rolling(win, min_periods=15).cov(fc) / fc.rolling(win, min_periods=15).var()
     return out.replace([np.inf, -np.inf], np.nan)
+
+
+def rolling_corr_with(x, f, win):
+    """Fast rolling Pearson correlation of each column with series f."""
+    out = pd.DataFrame(index=x.index, columns=x.columns, dtype=float)
+    for s in x.columns:
+        out[s] = x[s].rolling(win).corr(f)
+    return out.replace([np.inf, -np.inf], np.nan)
+
+
+def ser_corr_vec(win=20):
+    """Vectorized 1-lag autocorrelation of daily returns over rolling window.
+    rho = (w*sum(x*xl) - sum(x)*sum(xl)) / (w*sum(x^2) - sum(x)^2)"""
+    x = R
+    xl = R.shift(1)
+    s = x.rolling(win).sum()
+    sl = xl.rolling(win).sum()
+    s2 = (x ** 2).rolling(win).sum()
+    cross = (x * xl).rolling(win).sum()
+    num = win * cross - s * sl
+    den = win * s2 - s ** 2
+    return (num / den).replace([np.inf, -np.inf], np.nan)
 
 
 def build(name):
@@ -89,26 +112,14 @@ def build(name):
         return (pos / neg.abs()).replace([np.inf, -np.inf], np.nan)
     # ---- 4. vol term structure: 5d vol / 60d vol ----
     if name == 'vol_ts_5_60':
-        v5 = R.rolling(5).std()
-        v60 = R.rolling(60).std()
-        return (v5 / v60).replace([np.inf, -np.inf], np.nan)
+        return (R.rolling(5).std() / R.rolling(60).std()).replace([np.inf, -np.inf], np.nan)
     # ---- 5. vol term structure: 10d vol / 60d vol ----
     if name == 'vol_ts_10_60':
-        v10 = R.rolling(10).std()
-        v60 = R.rolling(60).std()
-        return (v10 / v60).replace([np.inf, -np.inf], np.nan)
-    # ---- 6. systematic-ness: mean pairwise correlation with other assets (60d) ----
+        return (R.rolling(10).std() / R.rolling(60).std()).replace([np.inf, -np.inf], np.nan)
+    # ---- 6. systematic-ness: correlation with equal-weight universe (60d) ----
     if name == 'uni_corr_60':
-        out = pd.DataFrame(index=R.index, columns=R.columns, dtype=float)
-        for d in R.index:
-            w = R.loc[:d].tail(60)
-            if len(w) < 30:
-                continue
-            c = w.corr()
-            for s in R.columns:
-                others = [o for o in R.columns if o != s]
-                out.loc[d, s] = c.loc[s, others].mean()
-        return out
+        f = R.mean(axis=1)
+        return rolling_corr_with(R, f, 60)
     # ---- 7. downside beta: beta to equal-weight universe on down days (60d) ----
     if name == 'downside_beta_60':
         f = R.mean(axis=1)
@@ -146,7 +157,7 @@ def build(name):
         hi = C.rolling(60).max()
         dd = C / hi - 1.0
         return (dd - dd.shift(10)).replace([np.inf, -np.inf], np.nan)
-    # ---- 16. EWMA momentum (20d half-life ~5d) ----
+    # ---- 16. EWMA momentum (20d window, half-life ~5d) ----
     if name == 'ewma_mom_20':
         w = np.exp(-np.log(2) * np.arange(1, 21) / 5.0)
         w = w / w.sum()
@@ -154,37 +165,36 @@ def build(name):
         for s in R.columns:
             out[s] = R[s].rolling(20).apply(lambda x: np.dot(x, w), raw=True)
         return out
-    # ---- 17. 5d serial correlation of returns (mean-reversion proxy, negated) ----
-    if name == 'ser_corr_5':
-        out = pd.DataFrame(index=R.index, columns=R.columns, dtype=float)
-        for s in R.columns:
-            out[s] = R[s].rolling(20).apply(
-                lambda x: pd.Series(x).autocorr(lag=1) if len(x) >= 8 else np.nan, raw=False)
-        return out.replace([np.inf, -np.inf], np.nan)
-    # ---- 18. volume-trend-weighted momentum: 20d mom * (20d vol trend) ----
+    # ---- 17. 20d serial correlation of returns (vectorized ACF1) ----
+    if name == 'ser_corr_20':
+        return ser_corr_vec(20)
+    # ---- 18. volume-trend-weighted momentum: 20d mom * (20d/60d vol trend) ----
     if name == 'volwt_mom_20':
-        vt = V.rolling(20).mean() / V.rolling(60).mean()
+        v60 = V.rolling(60).mean().replace(0, np.nan)
+        vt = V.rolling(20).mean() / v60
         return (C.pct_change(20) * vt).replace([np.inf, -np.inf], np.nan)
-    # ---- 19. conditional momentum: 20d mom only when close > MA60, else 0 ----
+    # ---- 19. conditional momentum: 20d mom, halved when close < MA60 ----
     if name == 'cond_mom_20_60':
         m = C.pct_change(20)
         ma60 = C.rolling(60).mean()
-        return m.where(C > ma60, 0.0)
-    # ---- 20. yield spread change: (US10Y - CN10Y) 20d change ----
-    if name == 'yld_spread_chg_20':
+        return m.where(C > ma60, m * 0.5)
+    # ---- 20. rate-carry: rate_beta_60 * (US10Y-CN10Y spread 20d change) ----
+    if name == 'rate_carry_20':
         sp = C['US10Y'] - C['CN10Y']
         chg = sp.diff(20)
-        return pd.DataFrame({s: chg.values for s in C.columns}, index=C.index)
+        f = R['US10Y']
+        rb = pd.DataFrame({s: rolling_beta(R[s], f, 60) for s in R.columns}, index=R.index)
+        return (rb * chg).replace([np.inf, -np.inf], np.nan)
     # ---- 21. crypto beta: beta to BTC returns (60d) ----
     if name == 'crypto_beta_60':
         f = R['BTC']
         return pd.DataFrame({s: rolling_beta(R[s], f, 60) for s in R.columns}, index=R.index)
-    # ---- 22. 120d max drawdown (depth, negated so deeper = lower) ----
+    # ---- 22. 120d max drawdown (depth, deeper = lower) ----
     if name == 'max_dd_120':
         hi = C.rolling(120).max()
         dd = C / hi - 1.0
         return dd.rolling(120).min()
-    # ---- 23. cross-sectional dispersion tilt: asset's |mom20 - median| ----
+    # ---- 23. cross-sectional dispersion tilt: |mom20 - median| ----
     if name == 'disp_tilt_20':
         m = C.pct_change(20)
         med = m.median(axis=1)
@@ -196,11 +206,12 @@ CANDIDATES = ['eff_ratio_20_signed', 'max_gain_loss_20', 'updown_ratio_60',
               'vol_ts_5_60', 'vol_ts_10_60', 'uni_corr_60', 'downside_beta_60',
               'chn_beta_60', 'rate_beta_60', 'jpy_beta_60', 'dxy_up_beta_60',
               'rel_mom_vol_20', 'hi_prox_20', 'skew_60_signed', 'dd_speed_60x10',
-              'ewma_mom_20', 'ser_corr_5', 'volwt_mom_20', 'cond_mom_20_60',
-              'yld_spread_chg_20', 'crypto_beta_60', 'max_dd_120', 'disp_tilt_20']
+              'ewma_mom_20', 'ser_corr_20', 'volwt_mom_20', 'cond_mom_20_60',
+              'rate_carry_20', 'crypto_beta_60', 'max_dd_120', 'disp_tilt_20']
 
 results = {}
 for name in CANDIDATES:
+    t0 = time.time()
     fp = build(name)
     if fp is None:
         print('\n[%s] build failed' % name)
@@ -216,7 +227,7 @@ for name in CANDIDATES:
     gate_icir = abs(summ['icir']) >= 0.084
     robust = n_ok and cov_ok
     results[name] = summ
-    print('\n=== %s ===' % name)
+    print('\n=== %s (%.1fs) ===' % (name, time.time() - t0))
     print('  IC=%.4f ICIR=%.4f hit=%.3f n=%d cov_asset=%.3f cov_dates_ge8=%.3f turn=%.3f'
           % (summ['ic'], summ['icir'], summ['ic_hit_ratio'], summ['n_ic_dates'],
              summ['coverage_asset_days'], summ['coverage_dates_ge8'], summ['turnover_10d_rank']))

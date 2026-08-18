@@ -1,7 +1,23 @@
 # RUN — 跑通 trade-agent-benchmark 的操作手册
 
 > 本机环境：Ubuntu 26.04 + Clash TUN 代理；Python 3.14 via uv venv (`.venv/`)。
-> 最后更新：2026-07-25
+> 最后更新：2026-08-17
+
+---
+
+## ⚡ LLM 上游切换（terra/luna 实验通道）
+
+terra（agent-framework）经本机 relay `127.0.0.1:8787` 上游 luna（gpt-5.6-luna），两种上游一键切换（自动改配置+重启+流式探活，异常会打印错误体）：
+
+```bash
+cd /home/lxx/ac-llm-relay
+./switch_upstream.sh sub2api    # 主用：sub2api 网关 → ChatGPT Plus OAuth（account 1）
+./switch_upstream.sh opencode   # 备用：opencode zen/go + key2（付费）+ Clash JP 固定出口 JP1-HY2
+```
+
+- opencode 备用依赖 Clash 规则 `opencode.ai → OpenCode-Luna` 固定节点组（DIRECT/CN 出口会被 403 region）；
+  mihomo 管理：`curl --unix-socket /tmp/verge/verge-mihomo.sock http://localhost/rules`（节点切换 `PUT /proxies/OpenCode-Luna`）。
+- 密钥在 `upstream-*.env`；key 见 `/home/lxx/opencode-api/keys.txt`。
 
 ---
 

@@ -2,6 +2,13 @@
 
 Restricted to data visible through the sim's last completed trading day
 (2026-07-29) to avoid lookahead. Validation window: 2020-01-01..2026-07-29.
+
+UPDATE 2026-07-30 cycle: the mixed-calendar cross-asset universe (BTC/ETH trade
+7d/wk; equity/commodity/yield series trade on their own calendars) makes
+union-calendar rolling computations NaN-contaminated. All forward-return and
+decay computations are therefore performed per asset on each asset's own
+calendar, then reindexed to the union date axis only for cross-sectional
+alignment.
 """
 import json
 import zlib
@@ -39,6 +46,19 @@ def load_panel(symbols, root="../persistent"):
     panel = pd.DataFrame(closes).dropna(how="all").sort_index()
     panel = panel[panel.index >= MIN_DATE]
     return panel
+
+
+def forward_returns(ret_panel, horizon):
+    """Per-asset h-day forward cumulative return aligned to ret_panel index.
+
+    Each asset's own calendar is used (s.shift(-h)/s - 1), then reindexed to
+    the union index. This avoids NaN contamination from mixed calendars.
+    """
+    out = {}
+    for a in ret_panel.columns:
+        s = ret_panel[a].dropna()
+        out[a] = (s.shift(-horizon) / s - 1.0).reindex(ret_panel.index)
+    return pd.DataFrame(out)
 
 
 def factor_ic_report(panel, forward_ret, min_valid=8, horizon=10):
@@ -92,16 +112,10 @@ def coverage(panel, n_assets=15):
 def decay_report(factor_panel, ret_panel, horizons=(1, 2, 3, 5, 10, 20)):
     out = {}
     for h in horizons:
-        fwd = ret_panel.shift(-h).rolling(h).apply(lambda x: (1 + x).prod() - 1, raw=True)
+        fwd = forward_returns(ret_panel, h)
         r = factor_ic_report(factor_panel, fwd, horizon=h)
         out[str(h)] = round(r["ic"], 4) if r else None
     return out
-
-
-def forward_returns(ret_panel, horizon):
-    """Cumulative forward return over `horizon` days, aligned at date t."""
-    fwd = (1 + ret_panel).rolling(horizon).apply(np.prod, raw=True).shift(-horizon) - 1
-    return fwd
 
 
 def panel_correlation(a, b):

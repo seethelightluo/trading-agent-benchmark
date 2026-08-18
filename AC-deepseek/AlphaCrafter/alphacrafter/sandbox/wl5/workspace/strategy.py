@@ -1,16 +1,17 @@
-"""Cross-asset ensemble strategy, Trader (v8 ensemble, 2027-02-25).
+"""Cross-asset ensemble strategy, Trader (v18 ensemble, 2030-11-14).
 
 Ensemble is loaded dynamically from factors/factor_ensemble.json (quality_ic_tilt,
-9 active factors <= 10 cap) with fallback to DEFAULT_ENSEMBLE:
-  trend_r2_30_signed    w=0.1945 dir=+1  signed 30d log-price trend R2
-  semi_down_ratio_20    w=0.1494 dir=-1  downside/upside semi-vol ratio - 1
-  mom_120d_skip5        w=0.1489 dir=+1  120d momentum skipping last 5d
-  dxy_beta_60           w=0.1297 dir=+1  60d beta of asset returns to DXY
-  time_under_water_120  w=0.0882 dir=-1  days since last 120d rolling high
-  mom_10d_skip5         w=0.0851 dir=+1  10d momentum skipping last 5d
-  tail_ratio_20         w=0.0748 dir=+1  20d q95/|q05| return-tail asymmetry
-  vix_beta_cond_60x20   w=0.0659 dir=-1  -beta(asset,VIX,60) * 20d VIX move
-  vol_of_vol20x60       w=0.0635 dir=+1  60d std of 20d realized vol
+10 active factors <= 10 cap) with fallback to DEFAULT_ENSEMBLE:
+  trend_r2_30_signed    w=0.2208 dir=+1  signed 30d log-price trend R2
+  semi_down_ratio_20    w=0.1762 dir=-1  downside/upside semi-vol ratio - 1
+  cny_beta_60           w=0.1271 dir=+1  60d beta of asset returns to USDCNY
+  dxy_beta_60           w=0.1182 dir=+1  60d beta of asset returns to DXY
+  mom_120d_skip5        w=0.0910 dir=+1  120d momentum skipping last 5d
+  vol_of_vol20x60       w=0.0739 dir=+1  60d std of 20d realized vol
+  time_under_water_120  w=0.0661 dir=-1  days since last 120d rolling high
+  vix_beta_cond_60x20   w=0.0576 dir=-1  -beta(asset,VIX,60) * 20d VIX move
+  mom_10d_skip5         w=0.0350 dir=+1  10d momentum skipping last 5d
+  tail_ratio_20         w=0.0341 dir=+1  20d q95/|q05| return-tail asymmetry
 
 Full-investment long-only 15-asset target (cash = 0), one rebalance proposal
 per decision via rebalance_to_weights; helper gates on turnover vs 3bp cost.
@@ -190,14 +191,15 @@ def _tail_ratio(r):
     return q95 / abs(q05)
 
 
-def _dxy_beta(r, dxy_r):
-    z = pd.concat([r.rename("a"), dxy_r.rename("d")], axis=1).dropna().tail(60)
+def _beta_60(r, m_r):
+    """Rolling 60d beta of asset returns to a macro return series (min 30 obs)."""
+    z = pd.concat([r.rename("a"), m_r.rename("m")], axis=1).dropna().tail(60)
     if len(z) < 30:
         return None
-    vd = float(z["d"].var())
-    if vd < 1e-14:
+    vm = float(z["m"].var())
+    if vm < 1e-14:
         return None
-    return float(z["a"].cov(z["d"]) / vd)
+    return float(z["a"].cov(z["m"]) / vm)
 
 
 def _vix_beta_cond(r, vix_r, vix_c):
@@ -268,6 +270,8 @@ def strategy_hook():
     dxy_r = dxy_c.pct_change() if dxy_c is not None else None
     vix_c = _macro_close("VIX")
     vix_r = vix_c.pct_change() if vix_c is not None else None
+    cny_c = _macro_close("USDCNY")
+    cny_r = cny_c.pct_change() if cny_c is not None else None
 
     fvals = {fid: {} for fid, _, _ in ensemble}
     for a in assets:
@@ -294,7 +298,9 @@ def strategy_hook():
                 elif fid == "kurt_20":
                     v = _kurt_20(r)
                 elif fid == "dxy_beta_60":
-                    v = _dxy_beta(r, dxy_r) if dxy_r is not None else None
+                    v = _beta_60(r, dxy_r) if dxy_r is not None else None
+                elif fid == "cny_beta_60":
+                    v = _beta_60(r, cny_r) if cny_r is not None else None
                 elif fid == "vix_beta_cond_60x20":
                     v = _vix_beta_cond(r, vix_r, vix_c) if vix_r is not None else None
                 else:

@@ -273,7 +273,7 @@ def persist_one(fid, fn, direction, name, expr, desc, deps, params, tags, lib):
     assert back["validation"]["status"] == "EFFECTIVE"
     assert back["validation"]["metrics"]["max_abs_library_correlation"] == max_corr
     assert arr.shape == tuple(back["artifact_provenance"]["shape"])
-    assert len(rows) - 1 == a["shape"][0] and len(rows[0]) == a["shape"][1]
+    assert len(rows) - 1 == a["shape"][0] and len(rows[0]) == a["shape"][1] + 1
     assert hashlib.sha256(base64.b64decode(a["data"])).hexdigest()[:16] == a["sha256"]
     print(f"  PERSISTED -> {path} ({path.stat().st_size} bytes)")
     print(f"  VERIFIED: id ok, status EFFECTIVE, npy shape={arr.shape}, "
@@ -291,5 +291,5 @@ if __name__ == "__main__":
         for b in list(cand_frames)[i + 1:]:
             print(f"pairwise {a} vs {b}: {datewise_corr(cand_frames[a].loc[:FACTOR_LAST], cand_frames[b].loc[:FACTOR_LAST]):.3f}")
     print()
-    for fid, (fn, direction, name, expr, desc, deps, params, tags) in CANDIDATES.items():
+    for fid, (fn, direction, _dup, name, expr, desc, deps, params, tags) in CANDIDATES.items():
         persist_one(fid, fn, direction, name, expr, desc, deps, params, tags, lib)

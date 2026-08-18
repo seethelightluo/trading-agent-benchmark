@@ -1,127 +1,213 @@
-"""Screener: recompute factor values from live price data (truncated to 2027-01-13)
-and evaluate cross-sectional rank IC vs forward 10d returns over recent windows."""
+"""Screener live-IC check through visible_through date (2030-10-02).
+Computes factor values (mirroring strategy.py) on the 15-asset universe and
+cross-sectional rank IC vs 10d forward returns over trailing windows.
+Read-only: no account/date writes.
+"""
+import json
+from pathlib import Path
 import numpy as np
 import pandas as pd
-import glob, os, json
 
-END = '2027-01-13'          # last completed trading day visible to decisions
-ASSETS = ['000300.SH','000688.SH','SPX','HSI','N225','SX5E','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
-OBS = {'DXY': '../persistent/index_data/DXY.csv', 'VIX': '../persistent/index_data/VIX.csv'}
+VT = pd.Timestamp(json.load(open("../persistent/date.json"))["visible_through"])
+FROZEN = {"000300.SH", "000688.SH", "HSI", "US10Y", "CN10Y"}
+ACTIVE = [c for c in [
+    "000300.SH", "000688.SH", "SPX", "HSI", "N225", "SX5E", "SOX", "NDX",
+    "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"] if c not in FROZEN]
 
-# load closes
-closes = {}
-for a in ASSETS:
-    df = pd.read_csv(f'../persistent/stock_data/{a}.csv')
-    df['date'] = pd.to_datetime(df['date'])
-    df = df[df['date'] <= END].set_index('date')['close']
-    closes[a] = df
-px = pd.DataFrame(closes).sort_index()
-print('price panel', px.shape, px.index.min().date(), '->', px.index.max().date())
 
-wti = px['WTI']
-dxy = pd.read_csv(OBS['DXY']); dxy['date'] = pd.to_datetime(dxy['date']); dxy = dxy[dxy['date']<=END].set_index('date')['close'].sort_index()
-vix = pd.read_csv(OBS['VIX']); vix['date'] = pd.to_datetime(vix['date']); vix = vix[vix['date']<=END].set_index('date')['close'].sort_index()
+def load_close(sym):
+    df = pd.read_csv(f"../persistent/stock_data/{sym}.csv")
+    df["date"] = pd.to_datetime(df["date"])
+    df = df[df["date"] <= VT].set_index("date").sort_index()
+    return df["close"].astype(float)
 
-ret = px.pct_change()
-wti_ret = wti.pct_change()
-dxy_ret = dxy.pct_change()
-vix_ret = vix.pct_change()
 
-def roll_beta(x, y, w):
-    cov = x.rolling(w).cov(y)
-    var = y.rolling(w).var()
-    return cov / var
+def load_index(sym):
+    df = pd.read_csv(f"../persistent/index_data/{sym}.csv")
+    df["date"] = pd.to_datetime(df["date"])
+    df = df[df["date"] <= VT].set_index("date").sort_index()
+    return df["close"].astype(float)
 
-def roll_kurt(s, w=20, minp=8):
-    mu = s.rolling(w, min_periods=minp).mean()
-    m2 = ((s - mu)**2).rolling(w, min_periods=minp).mean()
-    m4 = ((s - mu)**4).rolling(w, min_periods=minp).mean()
-    return m4 / m2**2 - 3.0
 
-factors = {}
-factors['mom_10d_skip5']  = px.shift(5) / px.shift(15) - 1.0
-factors['mom_120d_skip5'] = px.shift(5) / px.shift(125) - 1.0
+def trend_r2(c):
+    s = c.dropna().tail(30)
+    if len(s) < 18:
+        return np.nan
+    y = np.log(s.values.astype(float)); x = np.arange(len(y))
+    cov = float(np.cov(y, x)[0, 1]); vy, vx = float(np.var(y)), float(np.var(x))
+    if vy <= 0 or vx <= 0:
+        return np.nan
+    return np.copysign(cov * cov / (vy * vx), cov)
 
-# trend_r2_30_signed: signed R2 of OLS log-price on t over 30d
-logpx = np.log(px)
-t_idx = np.arange(len(px))
-tr2 = pd.DataFrame(index=px.index, columns=px.columns, dtype=float)
-for i in range(29, len(px)):
-    win = logpx.iloc[i-29:i+1]
-    tt = t_idx[i-29:i+1]
-    for c in px.columns:
-        y = win[c].values
-        if np.isfinite(y).sum() < 18: continue
-        cov = np.cov(y, tt)[0,1]
-        vart = np.var(tt)
-        vary = np.var(y)
-        if vart <= 0 or vary <= 0:
-            tr2.iloc[i, tr2.columns.get_loc(c)] = 0.0
-        else:
-            r2 = cov**2 / (vart * vary)
-            tr2.iloc[i, tr2.columns.get_loc(c)] = np.sign(cov) * r2
-factors['trend_r2_30_signed'] = tr2
 
-# semi_down_ratio_20: sqrt(mean(min(r,0)^2,20))/sqrt(mean(max(r,0)^2,20)) - 1
-down = (ret.clip(upper=0)**2).rolling(20).mean().apply(np.sqrt)
-up   = (ret.clip(lower=0)**2).rolling(20).mean().apply(np.sqrt)
-factors['semi_down_ratio_20'] = down / up - 1.0
+def semi_down_ratio(r):
+    s = r.dropna().tail(20)
+    if len(s) < 10:
+        return np.nan
+    down = float((s.clip(upper=0) ** 2).mean() ** 0.5)
+    up = float((s.clip(lower=0) ** 2).mean() ** 0.5)
+    if up < 1e-12:
+        return np.nan
+    return down / up - 1.0
 
-# time_under_water_120: days since last rolling-120d max
-rmax = px.rolling(120).max()
-tuw = pd.DataFrame(index=px.index, columns=px.columns, dtype=float)
-for c in px.columns:
-    s = px[c]; m = rmax[c]
-    days = 0
-    vals = []
-    for i in range(len(s)):
-        if i < 119:
-            vals.append(np.nan); continue
-        if m.iloc[i] > 0 and s.iloc[i] >= m.iloc[i] - 1e-12:
-            days = 0
-        else:
-            days += 1
-        vals.append(days)
-    tuw[c] = vals
-factors['time_under_water_120'] = tuw
 
-factors['kurt_20'] = roll_kurt(ret, 20, 8)
-factors['vol_of_vol20x60'] = ret.rolling(20).std().rolling(60).std()
-factors['dxy_beta_60'] = roll_beta(ret, dxy_ret, 60)
-factors['WTI_BETA_60'] = roll_beta(ret, wti_ret, 60)
-vix_cond = -roll_beta(ret, vix_ret, 60) * (vix / vix.shift(20) - 1.0)
-factors['vix_beta_cond_60x20'] = vix_cond
+def mom_120(c):
+    if len(c) < 126:
+        return np.nan
+    p0 = float(c.iloc[-126])
+    if p0 <= 0:
+        return np.nan
+    return float(c.iloc[-6]) / p0 - 1.0
 
-# forward 10d return
-fwd = px.shift(-10) / px - 1.0
 
-def rank_ic(fv, fwd_ret):
-    """cross-sectional spearman IC per date"""
-    out = {}
-    for dt in fv.index:
-        x = fv.loc[dt]; y = fwd_ret.loc[dt]
-        m = x.notna() & y.notna()
-        if m.sum() < 8: continue
-        out[dt] = x[m].rank().corr(y[m].rank())
-    return pd.Series(out)
+def mom_10(c):
+    if len(c) < 17:
+        return np.nan
+    p0 = float(c.iloc[-16])
+    if p0 <= 0:
+        return np.nan
+    return float(c.iloc[-6]) / p0 - 1.0
 
-print('\n=== Rank IC summary (vs forward 10d return) ===')
-print(f"{'factor':22s} {'exp_dir':>7s} {'ic120':>7s} {'icir120':>7s} {'ic60':>7s} {'icir60':>7s} {'ic30':>7s} {'n120':>5s}")
-results = {}
-for name, fv in factors.items():
-    ic = rank_ic(fv, fwd)
-    ic = ic.sort_index()
-    rows = {}
-    for lab, n in [('120', 120), ('60', 60), ('30', 30)]:
-        s = ic.tail(n)
-        m = s.mean(); sd = s.std(ddof=1)
-        rows[lab] = (m, m/sd if sd > 0 else np.nan, len(s))
-    results[name] = rows
-    print(f"{name:22s} {str(factors[name].columns.tolist() and 0):>7s}", end='')
-    print(f" {rows['120'][0]:7.4f} {rows['120'][1]:7.2f} {rows['60'][0]:7.4f} {rows['60'][1]:7.2f} {rows['30'][0]:7.4f} {int(rows['120'][2]):5d}")
 
-# also save IC series for inspection
-import pickle
-with open('scripts/_ic_series.pkl','wb') as fh:
-    pickle.dump({k: rank_ic(v, fwd) for k, v in factors.items()}, fh)
-print('\nsaved IC series')
+def underwater(c):
+    s = c.dropna().tail(125)
+    if len(s) < 60:
+        return np.nan
+    w = s.tail(120).values.astype(float)
+    roll = np.maximum.accumulate(w)
+    mask = w == roll
+    idx = np.flatnonzero(mask)
+    return float(len(w) - 1 - idx[-1]) if len(idx) else float(len(w))
+
+
+def vol_of_vol(r):
+    s = r.dropna().tail(120)
+    if len(s) < 90:
+        return np.nan
+    v = s.rolling(20).std()
+    out = v.rolling(60).std().iloc[-1]
+    return float(out) if np.isfinite(out) else np.nan
+
+
+def tail_ratio(r):
+    s = r.dropna().tail(20)
+    if len(s) < 10:
+        return np.nan
+    q95 = float(np.percentile(s.values, 95)); q05 = float(np.percentile(s.values, 5))
+    if abs(q05) < 1e-12:
+        return np.nan
+    return q95 / abs(q05)
+
+
+def dxy_beta(r, dxy_r):
+    z = pd.concat([r.rename("a"), dxy_r.rename("d")], axis=1).dropna().tail(60)
+    if len(z) < 30:
+        return np.nan
+    vd = float(z["d"].var())
+    if vd < 1e-14:
+        return np.nan
+    return float(z["a"].cov(z["d"]) / vd)
+
+
+def vix_beta_cond(r, vix_r, vix_c):
+    z = pd.concat([r.rename("a"), vix_r.rename("v")], axis=1).dropna().tail(60)
+    if len(z) < 30:
+        return np.nan
+    vv = float(z["v"].var())
+    if vv < 1e-14:
+        return np.nan
+    beta = float(z["a"].cov(z["v"]) / vv)
+    if vix_c is None or len(vix_c) < 22:
+        return np.nan
+    v0 = float(vix_c.iloc[-21])
+    if v0 <= 0:
+        return np.nan
+    vmove = float(vix_c.iloc[-1]) / v0 - 1.0
+    return -beta * vmove
+
+
+def kurt_20(r):
+    s = r.dropna().tail(40)
+    if len(s) < 20:
+        return np.nan
+    k = s.rolling(20, min_periods=8).kurt().iloc[-1]
+    return float(k) if np.isfinite(k) else np.nan
+
+
+def wti_beta(r, wti_r):
+    z = pd.concat([r.rename("a"), wti_r.rename("w")], axis=1).dropna().tail(60)
+    if len(z) < 30:
+        return np.nan
+    vw = float(z["w"].var())
+    if vw < 1e-14:
+        return np.nan
+    return float(z["a"].cov(z["w"]) / vw)
+
+
+def main():
+    closes = {s: load_close(s) for s in ACTIVE}
+    panel = pd.DataFrame(closes).sort_index()
+    rets = panel.pct_change()
+    dxy_c = load_index("DXY"); dxy_r = dxy_c.pct_change()
+    vix_c = load_index("VIX"); vix_r = vix_c.pct_change()
+    wti_c = panel["WTI"]; wti_r = wti_c.pct_change()
+
+    funcs = {
+        "trend_r2_30_signed": (lambda c, r: trend_r2(c), 1),
+        "semi_down_ratio_20": (lambda c, r: semi_down_ratio(r), -1),
+        "mom_120d_skip5": (lambda c, r: mom_120(c), 1),
+        "mom_10d_skip5": (lambda c, r: mom_10(c), 1),
+        "vol_of_vol20x60": (lambda c, r: vol_of_vol(r), 1),
+        "time_under_water_120": (lambda c, r: underwater(c), -1),
+        "tail_ratio_20": (lambda c, r: tail_ratio(r), 1),
+        "dxy_beta_60": (lambda c, r: dxy_beta(r, dxy_r), 1),
+        "vix_beta_cond_60x20": (lambda c, r: vix_beta_cond(r, vix_r, vix_c), -1),
+        "kurt_20": (lambda c, r: kurt_20(r), 1),
+        "WTI_BETA_60": (lambda c, r: wti_beta(r, wti_r), 1),
+    }
+
+    # Build daily factor panel (rank IC per date)
+    fwd10 = panel.shift(-10) / panel - 1.0
+    ic_daily = {}
+    for fid, (fn, _) in funcs.items():
+        fvals = pd.DataFrame(index=panel.index, columns=panel.columns, dtype=float)
+        for a in ACTIVE:
+            c = closes[a]; r = rets[a]
+            # rolling factor value series
+            vals = {}
+            for dt in panel.index:
+                cc = c.loc[:dt]; rr = r.loc[:dt]
+                try:
+                    vals[dt] = fn(cc, rr)
+                except Exception:
+                    vals[dt] = np.nan
+            fvals[a] = pd.Series(vals)
+        ics = []
+        for dt in panel.index:
+            fv = fvals.loc[dt]
+            fr = fwd10.loc[dt]
+            m = fv.notna() & fr.notna()
+            if m.sum() >= 6:
+                ics.append((dt, fv[m].rank().corr(fr[m].rank())))
+        icdf = pd.DataFrame(ics, columns=["date", "ic"]).set_index("date")["ic"]
+        ic_daily[fid] = icdf
+
+    print("=== Live rank IC (cross-sectional, active movers, 10d fwd) ===")
+    for fid, (_, d) in funcs.items():
+        icdf = ic_daily[fid]
+        for wname, w in [("90d", 90), ("180d", 180), ("365d", 365)]:
+            sub = icdf.tail(w)
+            ic = sub.mean(); icir = sub.mean() / sub.std() if sub.std() > 0 else np.nan
+            hit = (sub > 0).mean()
+            print(f"{fid:24s} dir={d:+d}  {wname}: IC={ic:+.4f} ICIR={icir:+.3f} hit={hit:.2f} n={len(sub)}")
+
+    print()
+    print("=== Latest factor cross-section (2030-10-02, active movers) ===")
+    for fid, (fn, d) in funcs.items():
+        vals = {a: fn(closes[a], rets[a]) for a in ACTIVE}
+        s = pd.Series(vals).sort_values()
+        print(f"{fid:24s} dir={d:+d}: " + ", ".join(f"{a}:{v:+.3f}" for a, v in s.items()))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,31 @@
+import numpy as np,pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data,get_index_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+D={}
+for s in U:
+ x=get_stock_daily_data(s,4000)
+ if x is None:x=get_index_daily_data(s,4000)
+ if x is not None:D[s]=x.set_index(pd.to_datetime(x.date)).close.astype(float)
+p=pd.DataFrame(D).sort_index().ffill(); r=p.pct_change()
+# residual medium momentum: remove contemporaneous cross-asset market component, then smooth and volatility scale
+mkt=r.mean(axis=1); beta=r.rolling(60).cov(mkt).div(mkt.rolling(60).var(),axis=0)
+res=r.sub(beta.mul(mkt,axis=0),axis=0)
+sig=(res.rolling(20).sum()/res.rolling(20).std()).shift(1)
+f=p.shift(-10)/p-1
+rows=[]
+for dt in sig.index:
+ z=pd.concat([sig.loc[dt],f.loc[dt]],axis=1).dropna()
+ if len(z)>=8: rows.append((dt,z.iloc[:,0].corr(z.iloc[:,1]),len(z)))
+q=pd.DataFrame(rows,columns=['date','ic','n']).set_index('date')
+print('dates',len(q),'avgN',q.n.mean(),'coverage',q.n.mean()/15)
+print('IC10',q.ic.mean(),'ICIRdaily',q.ic.mean()/q.ic.std(),'hit',(q.ic>0).mean())
+print('turnover',sig.rank(axis=1,pct=True).diff().abs().mean(axis=1).mean())
+for h in [5,10,20,40]:
+ fw=p.shift(-h)/p-1;a=[]
+ for dt in sig.index:
+  z=pd.concat([sig.loc[dt],fw.loc[dt]],axis=1).dropna()
+  if len(z)>=8:a.append(z.iloc[:,0].corr(z.iloc[:,1]))
+ print('decay',h,np.nanmean(a))
+for a,b in [('2020','2023'),('2024','2026'),('2027','2029'),('2030','2032'),('2033','2034')]:
+ z=q.loc[a:b,'ic'];print(a,b,'n',len(z),'ic',z.mean(),'icir',z.mean()/z.std())
+q.to_csv('scripts/miner_1_20340818_residual_momentum_signal.csv')

@@ -1,0 +1,28 @@
+import numpy as np, pandas as pd
+from alphacrafter.sim.utils import get_index_daily_data, get_stock_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+D={}
+for s in U:
+    try: x=get_index_daily_data(s,days=3200)
+    except FileNotFoundError: x=get_stock_daily_data(s,days=3200)
+    if x is not None and len(x)>=150: D[s]=x.sort_values('date').set_index('date')['close'].astype(float)
+p=pd.DataFrame(D).sort_index().ffill(); r=p.pct_change()
+# Trend curvature: recent 20-session momentum relative to the slower 60-session pace,
+# risk-scaled. Positive values identify strengthening trends; all inputs lagged at score time.
+vol=r.rolling(20,min_periods=15).std()*np.sqrt(20)
+r20=p.pct_change(20); r60=p.pct_change(60)
+fac=(r20-r60/3.0)/vol
+for h in [1,5,10,20]:
+  ics=[]; cov=[]; turns=[]; recent=[]
+  for i in range(61,len(p)-h):
+    z=pd.concat([fac.iloc[i-1].rename('f'),(p.iloc[i+h]/p.iloc[i]-1).rename('r')],axis=1).dropna()
+    if len(z)>=8:
+      q=z.f.corr(z.r)
+      if np.isfinite(q):
+        ics.append(q); cov.append(len(z)/15)
+        if i>=len(p)-250: recent.append(q)
+      if i>61:
+        a=fac.iloc[i-1].rank(pct=True); b=fac.iloc[i-2].rank(pct=True)
+        turns.append((a-b).abs().mean())
+  a=np.array(ics); rr=np.array(recent)
+  print({'h':h,'dates':len(a),'avg_n':round(np.mean(cov)*15,2),'IC':round(a.mean(),5),'ICIR':round(a.mean()/a.std(ddof=1),5),'hit':round(np.mean(a>0),3),'coverage':round(np.mean(cov),3),'turnover':round(np.mean(turns),5),'recent250_IC':round(rr.mean(),5),'recent250_ICIR':round(rr.mean()/rr.std(ddof=1),5)})

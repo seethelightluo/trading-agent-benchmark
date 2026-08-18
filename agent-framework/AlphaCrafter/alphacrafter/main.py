@@ -6,6 +6,7 @@ import argparse
 import yaml
 import signal
 import threading
+import random
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
@@ -114,6 +115,52 @@ class Launcher:
         }
         self.last_screener_input = None
         self.last_trader_input = None
+
+        # Luna can fail mid tool-call chain (upstream 5xx/429 bursts, provider
+        # region/credit 403s, or malformed streaming JSON).  Retry the affected
+        # Miner in-place, fail closed before the safety advance when every
+        # Miner keeps failing, and let the supervisor pause/resume the cycle.
+        self.luna_retry_enabled = os.environ.get(
+            "AC_LUNA_RETRY", "0"
+        ).lower() in {"1", "true", "yes"}
+        self.miner_retry_attempts = max(
+            1, int(os.environ.get("AC_LUNA_MINER_RETRY_ATTEMPTS", "4"))
+        )
+        self.miner_retry_429_attempts = max(
+            self.miner_retry_attempts,
+            int(os.environ.get("AC_LUNA_MINER_RETRY_429_ATTEMPTS", "10")),
+        )
+        self.miner_retry_compat_attempts = max(
+            self.miner_retry_attempts,
+            int(os.environ.get("AC_LUNA_MINER_RETRY_COMPAT_ATTEMPTS", "8")),
+        )
+        self.miner_retry_delays = self._parse_retry_delays(
+            os.environ.get("AC_LUNA_MINER_RETRY_DELAYS", "15,30,60")
+        )
+        self.miner_retry_429_delays = self._parse_retry_delays(
+            os.environ.get(
+                "AC_LUNA_MINER_RETRY_429_DELAYS",
+                "10,20,40,80,160,300,600,600,600,600",
+            )
+        )
+        self.miner_retry_compat_delays = self._parse_retry_delays(
+            os.environ.get(
+                "AC_LUNA_MINER_RETRY_COMPAT_DELAYS",
+                "5,10,20,40,80,160,300,600",
+            )
+        )
+        try:
+            self.miner_retry_jitter = min(
+                0.5,
+                max(0.0, float(os.environ.get("AC_LUNA_MINER_RETRY_JITTER", "0.20"))),
+            )
+        except (TypeError, ValueError):
+            self.miner_retry_jitter = 0.20
+        self.last_cycle_retryable_failure = False
+        self.consecutive_degraded_cycles = 0
+        self.fail_closed_cycle_threshold = max(
+            1, int(os.environ.get("AC_LUNA_FAIL_CLOSED_CYCLES", "3"))
+        )
         
         # Load additional info
         self.additional_info = self.config.get('additional_info', '')
@@ -132,6 +179,77 @@ disabled and the 1,000,000 USD-equivalent account must remain fully frozen in
 cash until 2026-07-16.
 """
         
+    @staticmethod
+    def _parse_retry_delays(raw: str) -> List[float]:
+        """Parse a bounded retry schedule without bad env crashing AC."""
+        try:
+            values = [
+                max(0.0, float(item.strip()))
+                for item in raw.split(",")
+                if item.strip()
+            ]
+        except (TypeError, ValueError):
+            values = [15.0, 30.0, 60.0]
+        return values or [15.0, 30.0, 60.0]
+
+    @staticmethod
+    def _miner_retry_kind(error: object) -> str:
+        """Classify a Miner failure for its retry budget and backoff."""
+        text = str(error).lower()
+        if any(marker in text for marker in (
+            "429",
+            "403",
+            "502",
+            "rate_limited",
+            "pool exhausted",
+            "too many requests",
+            "bad gateway",
+            "503",
+            "overloaded",
+            "no healthy node",
+            "service unavailable",
+            "not available in your region",
+            "insufficient balance",
+            "no payment method",
+            "credits",
+        )):
+            return "429"
+        if any(marker in text for marker in (
+            "reasoning_content",
+            "thinking mode must be passed back",
+            "invalid_request_error",
+            "unterminated string",
+            "jsondecodeerror",
+            "malformed json",
+            "expecting value",
+            "unexpected end of json",
+        )):
+            return "compatibility"
+        return "other"
+
+    def _miner_retry_sleep(
+        self, attempt: int, error: object, kind: str, max_attempts: int
+    ) -> None:
+        """Sleep according to the retry schedule and print an auditable reason."""
+        delays = self.miner_retry_429_delays if kind == "429" else (
+            self.miner_retry_compat_delays
+            if kind == "compatibility" else self.miner_retry_delays
+        )
+        base_delay = delays[min(attempt - 1, len(delays) - 1)]
+        # Three Miners fail together when the upstream is down.  Add bounded
+        # jitter so their retries do not form another synchronized burst.
+        delay = base_delay * random.uniform(
+            1.0 - self.miner_retry_jitter,
+            1.0 + self.miner_retry_jitter,
+        )
+        print(
+            f"   ↻ Luna Miner retry {attempt}/{max_attempts} "
+            f"in {delay:g}s ({kind}, separate budget; base={base_delay:g}s): "
+            f"{str(error)[:240]}",
+            flush=True,
+        )
+        time.sleep(delay)
+
     def _setup_signal_handler(self):
         """Setup signal handler for graceful interruption."""
         def signal_handler(sig, frame):
@@ -481,24 +599,57 @@ cash until 2026-07-16.
         """Run a single miner agent and return its output as dict."""
         agent = self.miner_agents[miner_id]
         miner_phase_name = f"miner_{miner_id}"
-        
-        if is_resume_cycle:
-            result = self._run_agent_phase_with_resume(
-                agent,
-                self.last_miner_inputs[miner_id],
-                context,
-                miner_phase_name
-            )
-        else:
-            result = self._run_agent_phase(agent, context, miner_phase_name)
-        
-        miner_output = {
+
+        last_error = None
+        attempt = 1
+        while True:
+            try:
+                if is_resume_cycle:
+                    result = self._run_agent_phase_with_resume(
+                        agent,
+                        self.last_miner_inputs[miner_id],
+                        context,
+                        miner_phase_name
+                    )
+                else:
+                    result = self._run_agent_phase(agent, context, miner_phase_name)
+
+                if not result.get("success", False):
+                    raise RuntimeError("Agent returned success=false")
+
+                return {
+                    'miner_id': miner_id,
+                    'output_text': result.get("output_text", ""),
+                    'success': True,
+                    'attempts': attempt,
+                }
+            except Exception as exc:
+                last_error = exc
+                kind = self._miner_retry_kind(exc)
+                if kind == "429":
+                    max_attempts = self.miner_retry_429_attempts
+                elif kind == "compatibility":
+                    max_attempts = self.miner_retry_compat_attempts
+                else:
+                    max_attempts = self.miner_retry_attempts
+                if (
+                    not self.luna_retry_enabled
+                    or kind == "other"
+                    or attempt >= max_attempts
+                    or self.stop_event.is_set()
+                ):
+                    raise
+                self._miner_retry_sleep(attempt, exc, kind, max_attempts)
+                attempt += 1
+
+        # The loop either returns or raises; keep a defensive failure for
+        # static analysers and unusual executor shutdowns.
+        return {
             'miner_id': miner_id,
-            'output_text': result.get("output_text", ""),
-            'success': result.get("success", False)
+            'output_text': f"Error: {last_error}",
+            'success': False,
+            'attempts': attempt,
         }
-        
-        return miner_output
     
     def _run_all_miners_concurrently(self, cycle: int, context: Optional[str],
                                      is_resume_cycle: bool = False) -> Dict[str, Dict[str, Any]]:
@@ -850,10 +1001,28 @@ def strategy_hook():
         # Check if any miner failed
         all_miners_success = all(output['success'] for output in miner_outputs.values())
         if not all_miners_success:
+            self.consecutive_degraded_cycles += 1
+            if (
+                self.consecutive_degraded_cycles >= self.fail_closed_cycle_threshold
+                and not self.stop_event.is_set()
+            ):
+                # Fail closed BEFORE the safety advance: an upstream outage must
+                # not burn empty trading windows.  The cycle stays incomplete so
+                # --resume replays it and the supervisor retry budget can pause
+                # this worldline (pause_wlN_429) instead of spinning.
+                print(
+                    f"🛑 {self.consecutive_degraded_cycles} consecutive cycles with "
+                    "every Miner failed; failing closed before the safety advance "
+                    "so the supervisor can pause/resume this same cycle."
+                )
+                return False
             print(
-                "⚠️ Some miners failed, but continuing with available results. "
-                "The safety advance still moves the window."
+                "⚠️ Miner phase degraded after retries; continuing the cycle with "
+                "failed miner outputs. The safety advance still moves the window."
             )
+            self.last_cycle_retryable_failure = True
+        else:
+            self.consecutive_degraded_cycles = 0
         
         record.miner_outputs = miner_outputs
 
@@ -945,6 +1114,12 @@ def strategy_hook():
     
     def run(self) -> Dict[str, Any]:
         """Run the full iterative workflow with concurrent miners."""
+        # Resume/runtime tests may construct Launcher with __new__ and bypass
+        # provider-specific __init__; keep the retry result flag total.
+        if not hasattr(self, "last_cycle_retryable_failure"):
+            self.last_cycle_retryable_failure = False
+        if not hasattr(self, "consecutive_degraded_cycles"):
+            self.consecutive_degraded_cycles = 0
         # Setup signal handler for graceful interruption
         self._setup_signal_handler()
         
@@ -999,7 +1174,8 @@ def strategy_hook():
                     return {
                         "success": True,
                         "total_cycles": len(self.cycle_records),
-                        "cycle_records": [asdict(r) for r in self.cycle_records]
+                        "cycle_records": [asdict(r) for r in self.cycle_records],
+                        "degraded_cycles": bool(self.last_cycle_retryable_failure)
                     }
                 
                 current_cycle = next_cycle
@@ -1041,7 +1217,8 @@ def strategy_hook():
                 "total_cycles": len(self.cycle_records),
                 "miner_count": len(self.miner_ids),
                 "cycle_records": [asdict(r) for r in self.cycle_records],
-                "stopped_by_user": self.stop_event.is_set()
+                "stopped_by_user": self.stop_event.is_set(),
+                "degraded_cycles": bool(self.last_cycle_retryable_failure)
             }
             
         except FileNotFoundError as e:

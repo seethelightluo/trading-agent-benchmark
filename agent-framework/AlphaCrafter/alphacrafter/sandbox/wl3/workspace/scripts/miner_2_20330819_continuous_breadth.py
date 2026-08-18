@@ -1,0 +1,6 @@
+import numpy as np,pandas as pd
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+P=pd.DataFrame({s:pd.read_csv('../persistent/stock_data/'+s+'.csv',parse_dates=['date']).set_index('date').close.astype(float) for s in U}).sort_index().ffill(); lp=np.log(P); r=lp.diff(); rel=lp.diff(30).sub(lp.diff(30).median(axis=1),axis=0); vol=r.rolling(30,min_periods=20).std()*np.sqrt(252); b=(P>P.rolling(50,min_periods=35).mean()).mean(axis=1)
+for name, state in [('linear',2*b-1),('extreme',np.where(b>=.6,2*b-1,np.where(b<=.4,2*b-1,0))),('centered',b-b.rolling(100,min_periods=50).mean())]:
+ f=rel.div(vol+1e-8).mul(state,axis=0).shift(1); h=10; B=(lp.shift(-h)-lp).to_numpy(); A=f.to_numpy(); v=np.isfinite(A)&np.isfinite(B); n=v.sum(1); a=np.where(v,A,np.nan);bb=np.where(v,B,np.nan);am=np.nanmean(a,1);bm=np.nanmean(bb,1);num=np.nansum((a-am[:,None])*(bb-bm[:,None]),1);den=np.sqrt(np.nansum((a-am[:,None])**2,1)*np.nansum((bb-bm[:,None])**2,1));q=pd.Series(num/den,index=f.index)[n>=8].dropna(); x=q.tail(756);print(name,len(q),round(q.mean(),6),round(q.mean()/q.std(ddof=1),6),round(x.mean(),6),round(x.mean()/x.std(ddof=1),6),round(f.rank(pct=True).diff().abs().mean(axis=1).mean(),4));
+ if name=='linear': f.to_csv('scripts/miner_2_20330819_continuous_breadth_signal.csv')

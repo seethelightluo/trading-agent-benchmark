@@ -1,0 +1,34 @@
+import numpy as np, pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data, get_index_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+D={}
+for s in U:
+ x=get_stock_daily_data(s,4000)
+ if x is None: x=get_index_daily_data(s,4000)
+ if x is not None:
+  x=x.copy(); x.date=pd.to_datetime(x.date); D[s]=x.set_index('date').close.astype(float)
+p=pd.DataFrame(D).sort_index().ffill(); r=p.pct_change()
+# Breadth-confirmed medium trend: 20d relative momentum is trusted in broad
+# participation regimes and faded when breadth is exceptionally weak/strong.
+mom=p.pct_change(20); breadth=(mom>0).sum(axis=1)/mom.notna().sum(axis=1)
+# smooth regime using trailing 60d breadth; lag all inputs one day
+reg=breadth.rolling(60,min_periods=30).mean()
+raw=mom.where(reg>0.5, -mom)
+sig=raw.sub(raw.median(axis=1),axis=0).shift(1)
+rows=[]
+for d in sig.index:
+ z=pd.concat([sig.loc[d],(p.shift(-10)/p-1).loc[d]],axis=1).dropna()
+ if len(z)>=8: rows.append((d,z.iloc[:,0].corr(z.iloc[:,1]),len(z)))
+q=pd.DataFrame(rows,columns=['date','ic','n']).set_index('date')
+print('dates',len(q),'avgN',q.n.mean(),'coverage',q.n.mean()/15)
+print('IC10',q.ic.mean(),'ICIRdaily',q.ic.mean()/q.ic.std(),'hit',(q.ic>0).mean())
+print('turnover',sig.rank(axis=1,pct=True).diff().abs().mean(axis=1).mean())
+for h in [5,10,20,40]:
+ fw=p.shift(-h)/p-1; rr=[]
+ for d in sig.index:
+  z=pd.concat([sig.loc[d],fw.loc[d]],axis=1).dropna()
+  if len(z)>=8: rr.append(z.iloc[:,0].corr(z.iloc[:,1]))
+ print('decay',h,np.nanmean(rr))
+for a,b in [('2020','2023'),('2024','2026'),('2027','2029'),('2030','2032'),('2033','2034')]:
+ z=q.loc[a:b,'ic']; print('regime',a,b,'n',len(z),'ic',z.mean(),'icir',z.mean()/z.std())
+q.to_csv('scripts/miner_1_20340929_breadth_confirmed_trend_signal.csv')

@@ -53,6 +53,18 @@ if not 1 <= ONLINE_WORLDLINES <= 9:
 MAX_CONCURRENT_WL = int(os.environ.get("AC_LUNA_CONCURRENCY", "3"))
 if not 1 <= MAX_CONCURRENT_WL <= ONLINE_WORLDLINES:
     raise SystemExit("AC_LUNA_CONCURRENCY must be between 1 and AC_LUNA_WORLDLINES")
+# Optional explicit WL subset (comma list), e.g. AC_LUNA_ONLY=4,6,8 to run a
+# per-upstream supervisor.  Entries outside 1..AC_LUNA_WORLDLINES are rejected.
+_ONLY_RAW = os.environ.get("AC_LUNA_ONLY", "").strip()
+if _ONLY_RAW:
+    WLS = sorted({int(x) for x in _ONLY_RAW.split(",") if x.strip()})
+    bad = [w for w in WLS if not 1 <= w <= ONLINE_WORLDLINES]
+    if bad:
+        raise SystemExit(f"AC_LUNA_ONLY entries out of range: {bad}")
+    if not WLS:
+        raise SystemExit("AC_LUNA_ONLY parsed to an empty set")
+else:
+    WLS = list(range(1, ONLINE_WORLDLINES + 1))
 RETRY_DELAYS = (60, 120, 300, 600, 900)
 RETRY_JITTER = 0.20
 MAX_RETRY_ATTEMPTS = int(os.environ.get("AC_LUNA_MAX_RETRIES", "6"))
@@ -210,6 +222,23 @@ def start_worldline(wl: int, config: Path, state: dict):
 
 def main() -> int:
     load_llm_environment()
+    # Keep retries local to this Luna copy.  A failed Miner is retried
+    # in-place with a per-kind budget; three consecutive fully-degraded
+    # cycles fail closed (no safety advance) so this supervisor's retry
+    # budget can auto-pause the worldline instead of burning empty windows.
+    os.environ.setdefault("AC_LUNA_RETRY", "1")
+    # Leave only a small SDK retry budget underneath the local classifier to
+    # avoid multiplying long waits at both layers.
+    os.environ.setdefault("AC_OPENAI_MAX_RETRIES", "2")
+    os.environ.setdefault("AC_LUNA_MINER_RETRY_ATTEMPTS", "4")
+    os.environ.setdefault("AC_LUNA_MINER_RETRY_DELAYS", "15,30,60")
+    os.environ.setdefault("AC_LUNA_MINER_RETRY_429_ATTEMPTS", "10")
+    os.environ.setdefault("AC_LUNA_MINER_RETRY_429_DELAYS", "10,20,40,80,160,300,600,600,600,600")
+    os.environ.setdefault("AC_LUNA_MINER_RETRY_COMPAT_ATTEMPTS", "8")
+    os.environ.setdefault("AC_LUNA_MINER_RETRY_COMPAT_DELAYS", "5,10,20,40,80,160,300,600")
+    os.environ.setdefault("AC_LUNA_MINER_RETRY_JITTER", "0.20")
+    os.environ.setdefault("AC_LUNA_FAIL_CLOSED_CYCLES", "3")
+
     if not os.environ.get("OPENAI_API_URL") or not os.environ.get("OPENAI_API_KEY"):
         raise SystemExit("Luna AC: OPENAI_API_URL and OPENAI_API_KEY are required")
 
@@ -228,6 +257,19 @@ def main() -> int:
             "cadence": CADENCE,
             "online_max_cycles": ONLINE_MAX_CYCLES,
             "parallel_worldlines": ONLINE_WORLDLINES,
+            "worldline_subset": WLS,
+            "max_concurrent_wl": MAX_CONCURRENT_WL,
+            "miner_retry": {
+                "enabled": True,
+                "generic_attempts": int(os.environ["AC_LUNA_MINER_RETRY_ATTEMPTS"]),
+                "429_attempts": int(os.environ["AC_LUNA_MINER_RETRY_429_ATTEMPTS"]),
+                "compatibility_attempts": int(os.environ["AC_LUNA_MINER_RETRY_COMPAT_ATTEMPTS"]),
+                "429_delays_seconds": os.environ["AC_LUNA_MINER_RETRY_429_DELAYS"],
+                "compatibility_delays_seconds": os.environ["AC_LUNA_MINER_RETRY_COMPAT_DELAYS"],
+                "jitter_fraction": float(os.environ["AC_LUNA_MINER_RETRY_JITTER"]),
+                "fail_closed_cycle": True,
+                "fail_closed_cycle_threshold": int(os.environ["AC_LUNA_FAIL_CLOSED_CYCLES"]),
+            },
             "run_started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
     )
@@ -253,8 +295,8 @@ def main() -> int:
     save_state(state)
     push_milestone("luna-warmup-verified")
 
-    print(f"[luna-ac] seeding WL1..WL{ONLINE_WORLDLINES}", flush=True)
-    for wl in range(1, ONLINE_WORLDLINES + 1):
+    print(f"[luna-ac] seeding WLs {WLS}", flush=True)
+    for wl in WLS:
         entry = state_for_wl(state, wl)
         if entry.get("seeded"):
             continue
@@ -272,7 +314,7 @@ def main() -> int:
     active: dict[int, tuple[subprocess.Popen, object]] = {}
     retry_at: dict[int, float] = {}
     retry_attempt: dict[int, int] = {}
-    for wl in range(1, ONLINE_WORLDLINES + 1):
+    for wl in WLS:
         if is_paused(wl):
             state_for_wl(state, wl).update({"status": "paused_429", "paused_marker": str(pause_marker(wl))})
         elif ac_session_complete(session_name(wl)):
@@ -282,7 +324,7 @@ def main() -> int:
     save_state(state)
 
     print(
-        f"[luna-ac] launching WL1..WL{ONLINE_WORLDLINES} "
+        f"[luna-ac] launching WLs {WLS} "
         f"with max {MAX_CONCURRENT_WL} concurrent",
         flush=True,
     )

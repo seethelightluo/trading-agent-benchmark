@@ -157,6 +157,10 @@ class Launcher:
         except (TypeError, ValueError):
             self.miner_retry_jitter = 0.20
         self.last_cycle_retryable_failure = False
+        self.consecutive_degraded_cycles = 0
+        self.fail_closed_cycle_threshold = max(
+            1, int(os.environ.get("AC_DEEPSEEK_FAIL_CLOSED_CYCLES", "3"))
+        )
         
         # Load additional info
         self.additional_info = self.config.get('additional_info', '')
@@ -998,11 +1002,28 @@ def strategy_hook():
         # Check if any miner failed
         all_miners_success = all(output['success'] for output in miner_outputs.values())
         if not all_miners_success:
+            self.consecutive_degraded_cycles += 1
+            if (
+                self.consecutive_degraded_cycles >= self.fail_closed_cycle_threshold
+                and not self.stop_event.is_set()
+            ):
+                # Fail closed BEFORE the safety advance: an upstream outage must
+                # not burn empty trading windows.  The cycle stays incomplete so
+                # --resume replays it and the supervisor retry budget can pause
+                # this worldline (pause_wlN_429) instead of spinning.
+                print(
+                    f"🛑 {self.consecutive_degraded_cycles} consecutive cycles with "
+                    "every Miner failed; failing closed before the safety advance "
+                    "so the supervisor can pause/resume this same cycle."
+                )
+                return False
             print(
                 "⚠️ Miner phase degraded after retries; continuing the cycle with "
                 "failed miner outputs. The safety advance still moves the window."
             )
             self.last_cycle_retryable_failure = True
+        else:
+            self.consecutive_degraded_cycles = 0
         
         record.miner_outputs = miner_outputs
 
@@ -1098,6 +1119,8 @@ def strategy_hook():
         # provider-specific __init__; keep the retry result flag total.
         if not hasattr(self, "last_cycle_retryable_failure"):
             self.last_cycle_retryable_failure = False
+        if not hasattr(self, "consecutive_degraded_cycles"):
+            self.consecutive_degraded_cycles = 0
         # Setup signal handler for graceful interruption
         self._setup_signal_handler()
         

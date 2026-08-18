@@ -1,0 +1,18 @@
+import pandas as pd,numpy as np
+from pathlib import Path
+from scipy.stats import spearmanr
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; CUT=pd.Timestamp('2035-09-13')
+px=pd.DataFrame({s:pd.read_csv(Path('../persistent/stock_data')/(s+'.csv'),parse_dates=['date']).set_index('date').close.loc[:CUT] for s in U}).sort_index(); r=px.pct_change()
+# Volatility-conditioned trend: medium-term return, confirmed by 60d trend, with a penalty for unusually high idiosyncratic volatility.
+v20=r.rolling(20,min_periods=15).std(); base=px.pct_change(20); long=px.pct_change(60); relvol=v20/v20.rolling(120,min_periods=60).median()
+f=(base/v20 * (1+0.5*(long>0).astype(float))).where((base*long>0) & (relvol<1.8)).shift(1)
+fr=px.shift(-10)/px-1; rows=[]
+for dt in f.index:
+ z=pd.concat([f.loc[dt],fr.loc[dt]],axis=1).dropna()
+ if len(z)>=8 and z.iloc[:,0].nunique()>1 and z.iloc[:,1].nunique()>1: rows.append((dt,spearmanr(z.iloc[:,0],z.iloc[:,1]).statistic,len(z)))
+d=pd.DataFrame(rows,columns=['date','ic','n']).set_index('date'); a=d.ic
+print('assets',len(U),'dates',len(a),'avgN',round(d.n.mean(),2),'IC',round(a.mean(),6),'ICIR',round(a.mean()/a.std(ddof=1),6),'hit',round((a>0).mean(),4))
+for label,x in [('2020_2025',a.loc['2020':'2025']),('2026_2028',a.loc['2026':'2028']),('2029_2032',a.loc['2029':'2032']),('2033_2035',a.loc['2033':]),('recent180',a.tail(180))]:
+ if len(x): print(label,'N',len(x),'IC',round(x.mean(),6),'ICIR',round(x.mean()/x.std(ddof=1),6),'hit',round((x>0).mean(),4))
+print('coverage',round(f.notna().mean().mean(),4),'turnover',round((f.rank(axis=1,pct=True).diff().abs().mean(axis=1)>0.15).mean(),4))
+f.to_csv('../persistent/miner_1_20350914_vol_conditioned_confirmed_trend_signal.csv'); d.to_csv('../persistent/miner_1_20350914_vol_conditioned_confirmed_trend_ic.csv')

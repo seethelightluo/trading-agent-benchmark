@@ -461,7 +461,8 @@ def start_supervisor(kind: str, dry_run: bool) -> bool:
         env.update({
             "AC_LUNA_RUN_DIR": str(TERRA_RESULTS),
             "AC_LUNA_WORLDLINES": "9",
-            "AC_LUNA_CONCURRENCY": "3",
+            "AC_LUNA_CONCURRENCY": "2",
+            "AC_LUNA_ONLINE_MAX_CYCLES": "360",
             "AC_LUNA_SESSION_PREFIX": TERRA_PREFIX,
             "AC_DATA_ROOT": str(DATA_ROOT),
         })
@@ -472,6 +473,8 @@ def start_supervisor(kind: str, dry_run: bool) -> bool:
         env = os.environ.copy()
         env["AC_DEEPSEEK_REUSE_WARMUP"] = "1"
         env["AC_DATA_ROOT"] = str(DATA_ROOT)
+        env["AC_DEEPSEEK_CONCURRENCY"] = "3"
+        env["AC_DEEPSEEK_ONLINE_MAX_CYCLES"] = "360"
         log_path = DS_RESULTS / "supervisor.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     handle = log_path.open("a", encoding="utf-8", buffering=1)

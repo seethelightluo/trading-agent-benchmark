@@ -18,7 +18,16 @@ from pathlib import Path
 
 ROOT = Path("/home/lxx/trade-agent-benchmark")
 DS_LOG = ROOT / "AC-deepseek" / "results" / "ac9wl_deepseek" / "logs"
-TERRA_LOG = ROOT / "agent-framework" / "results" / "ac_luna_3wl_v5" / "logs"
+# Terra 自 2026-08-17 按 LLM 上游 fork 成多个 run 目录；每个 WL 的日志和
+# pause 标记都在它所属目录里（supervisor 只看自己 RUN_DIR 的标记）。
+TERRA_RES_BASE = ROOT / "agent-framework" / "results"
+_TERRA_FORK = {"ac_luna_3wl_v5_oc": (4, 6, 8), "ac_luna_3wl_v5_plus": (5, 7, 9)}
+TERRA_WL_DIR: dict[str, Path] = {
+    f"wl{i}": TERRA_RES_BASE / "ac_luna_3wl_v5" for i in range(1, 10)
+}
+for _sub, _owns in _TERRA_FORK.items():
+    for _wl in _owns:
+        TERRA_WL_DIR[f"wl{_wl}"] = TERRA_RES_BASE / _sub
 OUT = ROOT / "ops" / "logs" / "ac_wl_watch.log"
 SLEEP = int(os.environ.get("AC_WATCH_INTERVAL", "300"))
 STALL_MIN = int(os.environ.get("AC_WATCH_STALL_MIN", "60"))
@@ -29,11 +38,19 @@ DS_RESULTS = ROOT / "AC-deepseek" / "results" / "ac9wl_deepseek"
 TERRA_RESULTS = ROOT / "agent-framework" / "results" / "ac_luna_3wl_v5"
 PAUSE_DIRS = {"ds": DS_RESULTS, "terra": TERRA_RESULTS}
 
+def terra_log_dir(wl: str) -> Path:
+    return TERRA_WL_DIR[wl] / "logs"
+
+
+def terra_pause_dir(wl: str) -> Path:
+    return TERRA_WL_DIR[wl]
+
+
 ADV_RE = re.compile(r"Advanced 10 trading days")
 DATE_RE = re.compile(r"Current date (\d{4}-\d{2}-\d{2})")
 STALE_RE = re.compile(r"stale AC online account contract")
 
-FAMILIES = [("terra", TERRA_LOG, range(1, 4)), ("ds", DS_LOG, range(1, 10))]
+FAMILIES = [("terra", range(1, 10)), ("ds", range(1, 10))]
 last_seen: dict[str, tuple[float, int, int, bool]] = {}  # key -> (ts, advances, stale, running)
 
 
@@ -118,7 +135,8 @@ def nav_rebal(wl: str, fam: str) -> tuple[float | None, int | None]:
 def pause_wl(fam: str, wl: str, pid: str, reason: str) -> bool:
     """Create the scheduler pause marker, SIGINT the process, and log a stall
     record for manual debugging.  Returns True when this call paused the WL."""
-    marker = PAUSE_DIRS[fam] / f"pause_{wl}_429"
+    base_dir = terra_pause_dir(wl) if fam == "terra" else PAUSE_DIRS[fam]
+    marker = base_dir / f"pause_{wl}_429"
     if marker.exists():
         return False
     try:
@@ -153,10 +171,11 @@ def main() -> int:
         now = time.time()
         lines = []
         flags = []
-        for fam, log_dir, wls in FAMILIES:
+        for fam, wls in FAMILIES:
             parts = []
             for i in wls:
                 wl = f"wl{i}"
+                log_dir = terra_log_dir(wl) if fam == "terra" else DS_LOG
                 met = wl_metrics(log_dir, wl)
                 nav, rebal = nav_rebal(wl, fam)
                 running = (fam, wl) in procs

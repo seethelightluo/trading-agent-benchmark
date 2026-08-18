@@ -102,14 +102,14 @@ def turnover_10d_rank_fast(factor: pd.DataFrame) -> float:
 
 
 def library_signals(panel: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """Recompute all 10 effective library factors deterministically on panel."""
+    """Recompute the CURRENT effective library (cycle-25 audit: 7 factors)
+    deterministically on panel. Mirrors persisted artifacts:
+    max_ret_20d, downside_vol_ratio_20, rel_mom_20d_skip5, beta_ew_60d,
+    crypto_beta_60d, dxy_beta_cond_60x20, eurusd_beta_cond_60x20."""
     rets = panel.pct_change()
     mkt = panel.mean(axis=1).pct_change()
     v = rets.rolling(20, min_periods=10).std()
     out = {}
-    out["mom_10d_skip5"] = panel.shift(5) / panel.shift(15) - 1.0
-    out["mom_120d_skip5"] = panel.shift(5) / panel.shift(125) - 1.0
-    out["vol_of_vol20x60"] = v.rolling(60, min_periods=30).std()
     out["max_ret_20d"] = rets.rolling(20, min_periods=10).max()
     dd = rets.clip(upper=0).rolling(20, min_periods=10).std()
     out["downside_vol_ratio_20"] = -(dd / (v + EPS))
@@ -117,17 +117,25 @@ def library_signals(panel: pd.DataFrame) -> dict[str, pd.DataFrame]:
     out["rel_mom_20d_skip5"] = m20.sub(m20.median(axis=1), axis=0)
     cov = rets.rolling(60, min_periods=30).cov(mkt)
     var = mkt.rolling(60, min_periods=30).var().replace(0, np.nan)
-    out["beta_ew_60d"] = cov / var
+    out["beta_ew_60d"] = cov.div(var.to_numpy(), axis=0)
+    # crypto_beta_60d: rolling 60d beta of asset returns vs BTC returns
+    btc = panel["BTC"].pct_change()
+    btc_var = btc.rolling(60, min_periods=30).var().replace(0, np.nan).reindex(panel.index)
+    cb = rets.rolling(60, min_periods=30).cov(btc).div(btc_var.to_numpy(), axis=0)
+    out["crypto_beta_60d"] = cb
     macro = load_macro()
-    vixr = macro["VIX"].pct_change()
-    bv = rets.rolling(60, min_periods=30).cov(vixr) / vixr.rolling(60, min_periods=30).var().replace(0, np.nan)
-    out["vix_beta_cond_60x20"] = -bv * (macro["VIX"] / macro["VIX"].shift(20) - 1.0)
-    out["vol_adj_mom_20x60"] = m20 / (v + EPS)
-    vols = {a: pd.read_csv(f"../persistent/stock_data/{a}.csv").assign(
-        date=lambda d: pd.to_datetime(d["date"])).set_index("date").sort_index()["volume"].astype(float)
-        for a in WATCH}
-    volp = pd.DataFrame(vols, index=panel.index)
-    out["amihud_20"] = (rets.abs() / volp.replace(0, np.nan)).rolling(20, min_periods=10).mean()
+    # dxy_beta_cond_60x20: -beta(r, DXY_ret, 60) * (DXY/DXY.shift(20)-1)
+    dxy = macro["DXY"].pct_change()
+    dxy_var = dxy.rolling(60, min_periods=30).var().replace(0, np.nan).reindex(panel.index)
+    db = rets.rolling(60, min_periods=30).cov(dxy).div(dxy_var.to_numpy(), axis=0)
+    dxy_mom = (macro["DXY"] / macro["DXY"].shift(20) - 1.0).reindex(panel.index)
+    out["dxy_beta_cond_60x20"] = -db.mul(dxy_mom.to_numpy(), axis=0)
+    # eurusd_beta_cond_60x20: beta(r, EURUSD_ret, 60) * (EURUSD/EURUSD.shift(20)-1)
+    eur = macro["EURUSD"].pct_change()
+    eur_var = eur.rolling(60, min_periods=30).var().replace(0, np.nan).reindex(panel.index)
+    eb = rets.rolling(60, min_periods=30).cov(eur).div(eur_var.to_numpy(), axis=0)
+    eur_mom = (macro["EURUSD"] / macro["EURUSD"].shift(20) - 1.0).reindex(panel.index)
+    out["eurusd_beta_cond_60x20"] = eb.mul(eur_mom.to_numpy(), axis=0)
     return out
 
 

@@ -1,0 +1,23 @@
+import numpy as np, pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data,get_index_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+def load(s):
+ d=get_stock_daily_data(s,5000)
+ if d is None or len(d)<100: d=get_index_daily_data(s,5000)
+ return d.assign(date=pd.to_datetime(d.date)).drop_duplicates('date').set_index('date').close.astype(float)
+P=pd.concat({s:load(s) for s in U},axis=1).sort_index(); r=P.pct_change()
+# Candidate: dispersion-gated 10d reversal. Activate only when cross-asset daily dispersion is elevated.
+disp=r.rolling(20,min_periods=15).std().mean(axis=1)
+gate=(disp>disp.rolling(120,min_periods=60).median()).shift(1)
+f=(-P.pct_change(10)).shift(1).where(gate,0.0)
+rows=[]
+for h in [5,10,20,40]:
+ rows=[]
+ for i in range(len(P)-h):
+  z=pd.concat([f.iloc[i],P.iloc[i+h]/P.iloc[i]-1],axis=1).dropna()
+  if len(z)>=8 and z.iloc[:,0].abs().sum()>0: rows.append((P.index[i],z.iloc[:,0].corr(z.iloc[:,1]),len(z)))
+ q=pd.DataFrame(rows,columns=['date','ic','n'])
+ ic=q.ic.mean(); sd=q.ic.std(); icir=ic/sd*np.sqrt(252) if sd else np.nan
+ print('H',h,'dates',len(q),'avgN',round(q.n.mean(),2),'IC',round(ic,6),'ICIR',round(icir,6),'hit',round((q.ic>0).mean(),4))
+print('universe',len(U),'dates',len(P),'gate_rate',round(float(gate.mean()),4),'coverage',round(float(f.notna().mean().mean()),4))
+f.to_csv('../persistent/miner_1_20350413_dispersion_gated_reversal_signal.csv',index_label='date')

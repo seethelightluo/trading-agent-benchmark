@@ -1,0 +1,1 @@
+with open('scripts/miner2_20291213_revalidate.py') as f: print(f.read()[:6000])

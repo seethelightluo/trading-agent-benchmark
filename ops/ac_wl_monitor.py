@@ -34,6 +34,27 @@ GROUPS = {
     },
 }
 
+# Terra run 自 2026-08-17 起按上游 fork 成多个 run 目录（避免并发写 run_state.json）。
+# 每个目录只管理自己的 WL 子集（AC_LUNA_ONLY）；其余 WL 状态留在 v5 里。
+# {run 目录名: 该目录拥有的 wl 编号}。sandbox 是共享的，无需区分。
+TERRA_FORK_OWNERS = {
+    "ac_luna_3wl_v5_oc": {4, 6, 8},      # opencode key2 (relay B :8788)
+    "ac_luna_3wl_v5_plus": {5, 7, 9},    # ChatGPT Plus (relay A :8787)
+}
+
+
+def terra_wl_sources() -> dict[int, tuple[Path, Path]]:
+    """每个 wl 编号 -> (run_state.json 路径, logs 目录)。优先 fork 目录，v5 兜底。"""
+    base = WORKDIR / "agent-framework/results"
+    out: dict[int, tuple[Path, Path]] = {}
+    for wl in range(1, 10):
+        out[wl] = (base / "ac_luna_3wl_v5" / "run_state.json",
+                   base / "ac_luna_3wl_v5" / "logs")
+    for sub, owns in TERRA_FORK_OWNERS.items():
+        for wl in owns:
+            out[wl] = (base / sub / "run_state.json", base / sub / "logs")
+    return out
+
 
 def read_json(path: Path) -> dict | None:
     try:
@@ -194,17 +215,30 @@ def main() -> None:
         alive = proc_alive(cfg["proc"])
         rs = read_json(cfg["run_state"])
         max_cycles = rs.get("online_max_cycles", 300) if rs else 300
+        wl_sources = terra_wl_sources() if group.startswith("Terra") else None
         print(f"== {group} (supervisor={'ALIVE' if alive else 'DEAD'}) ==")
         header = f"{'WL':<5}{'状态':<10}{'活跃':>4} {'库/累计':<10}{'淘汰(冲突/其他)':<16}{'NAV':>12}  {'窗口进度':<26}{'近1h推进':<14}"
         print(header)
         for wl in cfg["wls"]:
             status = "--"
-            if rs:
-                wl_st = (rs.get(wl) or {}).get("status")
+            wl_rs = rs
+            wl_log_dir = cfg["log_dir"]
+            if wl_sources is not None:
+                wl_no = int(wl[2:])
+                st_path, lg_dir = wl_sources[wl_no]
+                wl_rs = read_json(st_path) or rs
+                wl_log_dir = lg_dir
+            if wl_rs:
+                wl_st = (wl_rs.get(wl) or {}).get("status")
                 status = wl_st or "--"
+            # fork 目录里没有 pause 标记的 paused_429 是 fork 时带入的旧状态，
+            # 实际是排队等该目录 supervisor 启动（并发 1 顺位）
+            if status == "paused_429" and wl_sources is not None:
+                if not (st_path.parent / f"pause_{wl}_429").exists():
+                    status = "queued"
             fs = factor_stats(cfg["sandbox"], wl)
             nav = latest_nav(cfg["sandbox"], wl)
-            wp = window_progress(cfg["log_dir"], wl)
+            wp = window_progress(wl_log_dir, wl)
             win_no = wp["advances"] + 1 if wp["date"] else 0
             win_txt = f"{wp['date'] or '--'} w{win_no}/{max_cycles}"
             key = f"{group}:{wl}"
