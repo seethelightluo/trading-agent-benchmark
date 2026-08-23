@@ -1,0 +1,1 @@
+print(open('scripts/revalidate_all.py').read()[:4000])

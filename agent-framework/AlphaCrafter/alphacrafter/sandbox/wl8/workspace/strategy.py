@@ -1,134 +1,101 @@
 import json
 from pathlib import Path
 import numpy as np
-from alphacrafter.sim.utils import register_hook, get_account_dict, get_stock_daily_data, rebalance_to_weights
+from alphacrafter.sim.utils import (register_hook, get_account_dict,
+    get_stock_daily_data, get_index_daily_data, rebalance_to_weights)
 
-UNIVERSE = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
-FACTOR_WEIGHTS = {"clv": 0.3395, "peer": 0.2612, "reversal": 0.2012, "momentum": 0.1981}
-MIN_W, MAX_W, REBALANCE_DAYS = 0.015, 0.16, 10
-last_date = None
-
+ASSETS = ["000300.SH", "SPX", "HSI", "N225", "SX5E", "000688.SH", "SOX", "NDX", "XAU", "COPPER", "WTI", "BTC", "ETH", "US10Y", "CN10Y"]
+ENSEMBLE = Path(__file__).parent / "factors" / "factor_ensemble.json"
+last_decision = None
 
 def ranks(values):
-    result = {s: 0.5 for s in UNIVERSE}
     good = sorted((s, float(v)) for s, v in values.items() if np.isfinite(v))
-    if len(good) < 2:
-        return result
+    out = {s: .5 for s in ASSETS}
     for i, (s, _) in enumerate(good):
-        result[s] = (i + 1.0) / len(good)
-    return result
+        out[s] = (i + 1) / max(1, len(good))
+    return out
 
+def bounded(raw):
+    floor, cap = .015, .16
+    z = {s: max(float(raw.get(s, .01)), 1e-9) for s in ASSETS}
+    w = {s: floor + (1 - 15 * floor) * z[s] / sum(z.values()) for s in ASSETS}
+    for _ in range(40):
+        high = [s for s in ASSETS if w[s] > cap + 1e-12]
+        if not high: break
+        excess = sum(w[s] - cap for s in high)
+        for s in high: w[s] = cap
+        free = [s for s in ASSETS if s not in high]
+        den = sum(z[s] for s in free)
+        for s in free: w[s] += excess * z[s] / max(den, 1e-12)
+    total = sum(w.values())
+    return {s: float(w[s] / total) for s in ASSETS}
 
-def bounded_weights(raw):
-    # Projection onto the complete long-only box/simplex, preserving full investment.
-    w = {s: max(0.0, float(raw.get(s, 0.0))) for s in UNIVERSE}
-    total = sum(w.values()) or 1.0
-    w = {s: x / total for s, x in w.items()}
-    fixed = set()
-    for _ in range(30):
-        low = [s for s in UNIVERSE if s not in fixed and w[s] < MIN_W]
-        high = [s for s in UNIVERSE if s not in fixed and w[s] > MAX_W]
-        if not low and not high:
-            break
-        for s in low:
-            w[s] = MIN_W
-            fixed.add(s)
-        for s in high:
-            w[s] = MAX_W
-            fixed.add(s)
-        rem = 1.0 - sum(w[s] for s in fixed)
-        free = [s for s in UNIVERSE if s not in fixed]
-        if not free:
-            break
-        base = sum(max(w[s], 1e-12) for s in free)
-        for s in free:
-            w[s] = rem * w[s] / base
-    # Tiny numerical correction keeps the contract exact without violating bounds materially.
-    z = sum(w.values())
-    return {s: w[s] / z for s in UNIVERSE}
-
+def vix_stress():
+    d = get_index_daily_data(symbol="VIX", days=130)
+    if d is None or len(d) < 61: return 0.0
+    c = np.asarray(d.sort_values("date")["close"], float)
+    base = c[:-1]
+    med = np.median(base)
+    return float(np.clip((c[-1] - med) / max(np.percentile(base, 90) - med, 1e-9), 0, 1))
 
 @register_hook
-def cross_asset_strategy():
-    global last_date
-    account = get_account_dict()
-    market = {}
-    for s in UNIVERSE:
-        df = get_stock_daily_data(symbol=s, days=85)
-        if df is None or len(df) < 25:
-            continue
-        df = df.sort_values("date").reset_index(drop=True)
-        c = np.asarray(df["close"], dtype=float)
-        h = np.asarray(df["high"], dtype=float)
-        l = np.asarray(df["low"], dtype=float)
-        r = c[1:] / np.maximum(c[:-1], 1e-12) - 1.0
-        market[s] = (c, h, l, r, str(df.iloc[-1]["date"]))
-    if len(market) < 12:
-        return
-    decision = max(x[4] for x in market.values())
-    if last_date is not None:
-        try:
-            days = (np.datetime64(decision, "D") - np.datetime64(last_date, "D")) / np.timedelta64(1, "D")
-            if days < REBALANCE_DAYS:
-                return
-        except Exception:
-            return
-
-    clv, peer, reversal, momentum, invvol = {}, {}, {}, {}, {}
-    five = {}
-    for s, (c, h, l, r, _) in market.items():
-        if len(c) < 22:
-            continue
-        daily_clv = (2*c - h - l) / np.maximum(h-l, 1e-12)
-        clv[s] = float(np.mean(daily_clv[-3:]))
-        reversal[s] = float(-np.mean(r[-5:]))
-        vol = max(float(np.std(r[-20:])), 0.008)
-        invvol[s] = 1.0 / vol
-        momentum[s] = float((c[-1] / max(c[-21], 1e-12) - 1.0) / (vol + 0.01))
-        five[s] = float(c[-1] / max(c[-6], 1e-12) - 1.0)
-    med = float(np.median(list(five.values())))
-    peer = {s: v-med for s, v in five.items()}
-    rr = {k: ranks(v) for k, v in (("clv",clv),("peer",peer),("reversal",reversal),("momentum",momentum))}
-    score = {s: sum(FACTOR_WEIGHTS[k] * rr[k][s] for k in rr) for s in UNIVERSE}
-
-    # Medium-risk, sideways/mildly bearish regime: defensive tradable tilt, never cash.
-    if "SPX" in market:
-        c = market["SPX"][0]
-        bearish = c[-1] < c[-21] and c[-1] < c[-6]
-        if bearish:
-            for s in ("XAU", "US10Y", "CN10Y"):
-                score[s] += 0.18
-            for s in ("BTC", "ETH", "WTI"):
-                score[s] = max(0.05, score[s] - 0.10)
-    mean_iv = np.mean(list(invvol.values())) if invvol else 1.0
-    raw = {s: max(0.01, score[s]) * (0.78 + 0.22 * invvol.get(s, mean_iv) / mean_iv) for s in UNIVERSE}
-    weights = bounded_weights(raw)
-
-    total = float(account.get("total_assets", account.get("net_assets", 0.0)) or 0.0)
-    held = {p.get("symbol"): p for p in account.get("positions", []) if float(p.get("quantity", 0) or 0) > 0}
-    # Online benchmark execution is one complete proposal through the
-    # deterministic migration/cost gate; direct add_order is forbidden.
-    score_values = [float(score[s]) for s in UNIVERSE]
-    score_mean = float(np.mean(score_values))
-    score_std = float(np.std(score_values))
-    forecast_returns = {
-        s: 0.01 * (float(score[s]) - score_mean) / max(score_std, 1e-12)
-        for s in UNIVERSE
-    }
-    factor_ids = []
+def strategy():
+    global last_decision
     try:
-        ensemble = json.loads((Path(__file__).parent / "factor_ensemble.json").read_text())
-        factor_ids = [
-            str(item["factor_id"])
-            for item in ensemble.get("selected_factors", [])
-            if isinstance(item, dict) and item.get("factor_id")
-        ]
-    except (OSError, ValueError, TypeError, KeyError):
-        pass
-    rebalance_to_weights(
-        weights,
-        forecast_returns=forecast_returns,
-        factor_ids=factor_ids[:10],
-        horizon_days=10,
-    )
-    last_date = decision
+        selected = json.loads(ENSEMBLE.read_text()).get("selected_factors", [])[:10]
+    except Exception:
+        return
+    if not selected or abs(sum(float(f.get("weight", 0)) for f in selected) - 1) > 1e-6:
+        return
+    account = get_account_dict()
+    if set(account.get("watch_list", [])) != set(ASSETS): return
+    data = {}
+    for s in ASSETS:
+        d = get_stock_daily_data(symbol=s, days=240)
+        if d is None or len(d) < 125: return
+        data[s] = d.sort_values("date").reset_index(drop=True)
+    day = str(data[ASSETS[0]].iloc[-1]["date"])[:10]
+    if last_decision is not None and np.busday_count(last_decision, day) < 10: return
+    close = {s: np.asarray(data[s]["close"], float) for s in ASSETS}
+    rets = {s: np.diff(close[s]) / np.maximum(close[s][:-1], 1e-12) for s in ASSETS}
+    vol = {s: max(float(np.std(rets[s][-20:])), .008) for s in ASSETS}
+    market = np.mean([rets[s][-65:] for s in ASSETS], axis=0)
+    stress = vix_stress()
+    dispersion = float(np.std([close[s][-1] / close[s][-6] - 1 for s in ASSETS]))
+    raw = {s: {} for s in ASSETS}
+    for s in ASSETS:
+        c, r, v = close[s], rets[s], vol[s]
+        m5, m10, m20 = c[-1]/c[-6]-1, c[-1]/c[-11]-1, c[-1]/c[-21]-1
+        path = max(np.sum(np.abs(r[-20:])), 1e-9)
+        persistence = np.mean(r[-20:] > 0) - .5
+        beta = np.cov(r[-60:], market[-60:])[0, 1] / max(np.var(market[-60:]), 1e-10)
+        residual5 = m5 - beta * np.sum(market[-5:])
+        lo, hi = np.min(c[-41:]), np.max(c[-41:])
+        range_pos = (c[-1] - lo) / max(hi - lo, 1e-12)
+        own_breadth = np.mean(r[-33:] > 0) - .5
+        raw[s] = {
+            "miner_2_20281005_trend_persistence_10d": persistence * m20 / v,
+            "miner_1_20310626_breadth33_conditioned_momentum_10d": m10 / v * (1 + own_breadth),
+            "miner_1_20310710_efficiency_weighted_momentum_10d": (m20 / path) / v,
+            "miner_2_20290920_stress_residual_reversal_10d": -residual5 / v * (1 + stress),
+            "miner_2_20290322_range_extreme_reversal_5d": -(range_pos - .5) / v,
+            "miner_3_20280921_beta_neutral_reversal_5d": -residual5 / v,
+            "miner_1_20281005_smoothed_reversal_10d": -(m5 + m10) / (2 * v),
+            "miner_3_20280824_dispersion_conditioned_reversal_5d": -m5 / v if dispersion > .025 else 0.0,
+        }
+    score = {s: 0.0 for s in ASSETS}
+    for f in selected:
+        rr = ranks({s: int(f.get("direction", 1)) * raw[s].get(str(f["factor_id"]), 0.0) for s in ASSETS})
+        for s in ASSETS: score[s] += float(f["weight"]) * rr[s]
+    breadth = np.mean([close[s][-1] > close[s][-21] for s in ASSETS])
+    if stress > .05 or breadth < .45:
+        for s in ("XAU", "US10Y", "CN10Y"): score[s] *= 1.8
+        for s in ("BTC", "ETH", "WTI", "SOX", "NDX", "COPPER"): score[s] *= .65
+    med = np.median(list(vol.values()))
+    raw_score = {s: max(score[s], .01) / (1 + .20 * vol[s] / max(med, 1e-12)) for s in ASSETS}
+    weights = bounded(raw_score)
+    avg, sd = np.mean(list(raw_score.values())), max(np.std(list(raw_score.values())), 1e-9)
+    forecast = {s: float(.01 * (raw_score[s] - avg) / sd) for s in ASSETS}
+    rebalance_to_weights(weights, forecast_returns=forecast,
+        factor_ids=[str(f["factor_id"]) for f in selected], horizon_days=10)
+    last_decision = day

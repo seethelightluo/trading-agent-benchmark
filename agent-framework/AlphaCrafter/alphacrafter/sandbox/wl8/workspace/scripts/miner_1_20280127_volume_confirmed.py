@@ -1,0 +1,20 @@
+import pandas as pd,numpy as np
+from scipy.stats import spearmanr
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; END=pd.Timestamp('2028-01-26')
+P={};V={}
+for s in U:
+ x=pd.read_csv('../persistent/stock_data/'+s+'.csv'); x.date=pd.to_datetime(x.date); x=x[x.date<=END].set_index('date').sort_index(); P[s]=x.close; V[s]=x.volume
+px=pd.DataFrame(P).sort_index(); vol=pd.DataFrame(V).reindex(px.index); r=px.pct_change(); fwd=px.shift(-1)/px-1
+ret=r.rolling(10).sum().shift(1); vr=(vol.rolling(5).mean()/vol.rolling(40).mean()).shift(1)
+sigs={'vol_confirmed_mom':ret*np.log(vr.clip(lower=.1,upper=10)), 'volume_shock_reversal':-r.rolling(3).sum().shift(1)*np.log(vr.clip(lower=.1,upper=10)), 'volume_trend':np.log(vr.clip(lower=.1,upper=10))}
+for nm,sig in sigs.items():
+ vals=[];ns=[];dates=[]
+ for dt in px.index:
+  g=pd.DataFrame({'s':sig.loc[dt],'f':fwd.loc[dt]}).dropna()
+  if len(g)>=8 and g.s.nunique()>1:
+   q=spearmanr(g.s,g.f).statistic
+   if np.isfinite(q): vals.append(q);ns.append(len(g));dates.append(dt)
+ a=np.array(vals); print(nm,'dates',len(a),'avgN',round(np.mean(ns),2),'coverage',round(sig.notna().sum().sum()/sig.size,4),'IC',round(a.mean(),6),'ICIR',round(a.mean()/a.std(ddof=1),6),'hit',round((a>0).mean(),4))
+ for lab,mask in [('2026',pd.Series(px.index.year==2026,index=px.index)),('2027',pd.Series(px.index.year==2027,index=px.index)),('2028',pd.Series(px.index.year>=2028,index=px.index)),('recent180',pd.Series(px.index>=END-pd.Timedelta(days=180),index=px.index))]:
+  z=a[[i for i,d in enumerate(dates) if mask.loc[d]]]
+  print(lab,round(z.mean(),6) if len(z) else None,round(z.mean()/z.std(ddof=1),6) if len(z)>1 else None,len(z))

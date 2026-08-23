@@ -1,0 +1,1 @@
+exec(open('scripts/miner_3_20300530_stress_weighted_reversal.py').read().replace("for d in sig.index:","print(sig.shape, fwd.shape, sig.notna().sum().sum(), fwd.notna().sum().sum());\nfor d in sig.index:",1))

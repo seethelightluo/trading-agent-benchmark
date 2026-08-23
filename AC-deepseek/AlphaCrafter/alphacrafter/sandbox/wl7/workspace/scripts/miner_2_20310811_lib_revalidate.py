@@ -1,0 +1,54 @@
+"""
+miner_2 library revalidation at 2031-08-11 (visible through 2031-08-08).
+Full-window h10 IC/ICIR gate: |IC|>=0.0070, |ICIR|>=0.0840 (15-asset universe).
+Recent 500d/250d windows + per-year IC for drift assessment.
+"""
+import sys
+sys.path.insert(0, "scripts")
+from miner_shared import (load_close, load_macro, forward_ret, daily_ic, ic_stats,
+                          rank_turnover, coverage_stats, library_panel)
+
+END = "2031-08-08"
+close = load_close(END)
+macro = load_macro(END)
+lib_panels = library_panel(close, macro)
+print(f"END={END}  n_dates={len(close)}  n_assets={close.shape[1]}")
+
+names = ["rel_mom_20d_skip5", "beta_ew_60d", "corr_ew_60", "downside_vol_ratio_20",
+         "kurt_20d_skip5", "max_ret_20d", "dxy_beta_cond_60x20", "eurusd_beta_cond_60x20"]
+
+rows = []
+for name in names:
+    f = lib_panels[name]
+    fwd = forward_ret(close, 10)
+    ic_s = daily_ic(f, fwd)
+    st = ic_stats(ic_s, 10)
+    cov = coverage_stats(f, fwd)
+    turn = rank_turnover(f, 10)
+    f_r = f.tail(500); ic_r = daily_ic(f_r, forward_ret(close, 10).reindex(f_r.index)); st_r = ic_stats(ic_r, 10)
+    f_q = f.tail(250); ic_q = daily_ic(f_q, forward_ret(close, 10).reindex(f_q.index)); st_q = ic_stats(ic_q, 10)
+    rows.append(dict(name=name, ic=st["ic"], icir=st["icir"], hit=st["hit"], n=st["n"],
+                     ic_r=st_r["ic"], icir_r=st_r["icir"],
+                     ic_q=st_q["ic"], icir_q=st_q["icir"],
+                     covAD=cov["coverage_asset_days"], covD8=cov["coverage_dates_ge8"], turn=turn))
+
+print(f"\n{'factor':26s} {'IC10':>7s} {'ICIR10':>7s} {'hit':>5s} {'n':>5s} | {'IC_r':>7s} {'ICIR_r':>7s} | {'IC_q':>7s} {'ICIR_q':>7s} | {'covAD':>6s} {'covD8':>5s} {'turn':>6s}")
+for r in rows:
+    print(f"{r['name']:26s} {r['ic']:7.4f} {r['icir']:7.3f} {r['hit']:5.2f} {r['n']:5d} | "
+          f"{r['ic_r']:7.4f} {r['icir_r']:7.3f} | {r['ic_q']:7.4f} {r['icir_q']:7.3f} | "
+          f"{r['covAD']:6.2f} {r['covD8']:5.2f} {r['turn']:6.2f}")
+
+print("\nGATE check (abs IC>=0.0070, abs ICIR>=0.0840, full-window h10):")
+for r in rows:
+    gp = abs(r["ic"]) >= 0.0070 and abs(r["icir"]) >= 0.0840
+    flag = "REVERSE?" if (r["ic_r"] > 0 and r["ic"] < 0 or r["ic_r"] < 0 and r["ic"] > 0) else ""
+    print(f"{r['name']:26s} IC={r['ic']:+.4f} ICIR={r['icir']:+.3f} recent500={r['ic_r']:+.4f} recent250={r['ic_q']:+.4f} -> {'PASS' if gp else 'FAIL'} {flag}")
+
+print("\nPer-year h10 IC (sign as stored):")
+for name in names:
+    f = lib_panels[name]; fwd = forward_ret(close, 10); ic = daily_ic(f, fwd)
+    out = []
+    for yr in range(2030, 2032):
+        sub = ic.loc[ic.index.year == yr]; st = ic_stats(sub, 10)
+        out.append(f"{yr}:{st['ic']:+.3f}/{st['icir']:+.2f}(n={st['n']})")
+    print(f"{name:26s} " + "  ".join(out))

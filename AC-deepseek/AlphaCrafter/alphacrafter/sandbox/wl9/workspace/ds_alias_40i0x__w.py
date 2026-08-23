@@ -1,0 +1,1 @@
+print(open('scripts/revalidate_factors.py').read()[:3000])

@@ -1,0 +1,30 @@
+import numpy as np,pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+C={}
+for s in U:
+ d=get_stock_daily_data(s,days=4000); d.date=pd.to_datetime(d.date); C[s]=d.sort_values('date').drop_duplicates('date').set_index('date').close.astype(float)
+P=pd.DataFrame(C).sort_index(); R=np.log(P).diff(); M=R.median(axis=1); res=R.sub(M,axis=0)
+# Dispersion-gated residual reversal: only activate reversal when recent cross-asset
+# dispersion is above its trailing 60-day median, where shocks tend to mean-revert.
+rows=[]; sig=[]
+for i in range(70,len(P)-21):
+ shock=res.iloc[i-4:i+1].sum(); down=res.iloc[i-29:i+1].where(res.iloc[i-29:i+1]<0).std()*np.sqrt(30)
+ disp=res.iloc[i].abs().median(); hist=res.iloc[i-59:i+1].abs().median(axis=1).median(); gate=1.0 if disp>=hist else 0.0
+ f=(-shock/(down+1e-12))*gate
+ y=P.iloc[i+5]/P.iloc[i]-1; z=pd.DataFrame({'f':f,'y':y}).replace([np.inf,-np.inf],np.nan).dropna()
+ if len(z)>=8 and z.f.nunique()>1: rows.append((P.index[i],len(z),z.f.corr(z.y,method='spearman')))
+ for s,a in f.items(): sig.append({'date':str(P.index[i].date()),'symbol':s,'signal':float(a)})
+x=pd.DataFrame(rows,columns=['date','n','ic']).dropna(); m=x.ic.mean(); sd=x.ic.std(ddof=1)
+print('candidate=dispersion_gated_residual_reversal_5d','assets',15,'dates',len(x),'meanN',round(x.n.mean(),2),'coverage',round(x.n.sum()/(len(x)*15),5),'IC',round(m,6),'ICIR',round(m/sd,6),'hit',round((x.ic>0).mean(),5))
+for a,b in [('2020-01-01','2024-12-31'),('2025-01-01','2027-12-31'),('2028-01-01','2029-12-31'),('2030-01-01','2030-12-12')]:
+ q=x[(x.date>=a)&(x.date<=b)]; print('regime',a,b,'dates',len(q),'IC',round(q.ic.mean(),6),'ICIR',round(q.ic.mean()/q.ic.std(ddof=1),6) if len(q)>1 else np.nan)
+S=pd.DataFrame(sig).pivot(index='date',columns='symbol',values='signal'); print('turnover',round(S.rank(axis=1,pct=True).diff().abs().mean(axis=1).dropna().mean(),6))
+for h in [10,20]:
+ qv=[]
+ for i in range(70,len(P)-h):
+  shock=res.iloc[i-4:i+1].sum(); down=res.iloc[i-29:i+1].where(res.iloc[i-29:i+1]<0).std()*np.sqrt(30); disp=res.iloc[i].abs().median(); hist=res.iloc[i-59:i+1].abs().median(axis=1).median(); f=(-shock/(down+1e-12))*(1.0 if disp>=hist else 0.0); y=P.iloc[i+h]/P.iloc[i]-1
+  z=pd.DataFrame({'f':f,'y':y}).replace([np.inf,-np.inf],np.nan).dropna()
+  if len(z)>=8 and z.f.nunique()>1:qv.append(z.f.corr(z.y,method='spearman'))
+ print('decay',h,'dates',len(qv),'IC',round(np.nanmean(qv),6),'ICIR',round(np.nanmean(qv)/np.nanstd(qv,ddof=1),6))
+pd.DataFrame(sig).to_csv('scripts/miner_3_20301212_dispersion_gated_residual_reversal_signal.csv',index=False)

@@ -1,0 +1,1 @@
+print(open('scripts/miner_1_common.py').read()[:4000])

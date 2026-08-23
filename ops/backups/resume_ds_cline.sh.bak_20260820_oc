@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Wait until the Cline key-pool gateway (:10910) has at least one live key
+# (daily INFERENCE_CAP resets ~14:50 CST for the 2026-08-19 outage), then
+# clear DS pause markers and restart the supervisor so all worldlines resume.
+# Mutual exclusion: only one instance (pgrep on this script's basename).
+set -u
+ROOT=/home/lxx/trade-agent-benchmark
+DS_RESULTS=$ROOT/AC-deepseek/results/ac9wl_deepseek
+LOG=$ROOT/ops/logs/resume_ds_cline.log
+ACCESS=$(cat /home/lxx/cline-pool/.access_token)
+mkdir -p "$(dirname "$LOG")"
+ts() { date '+%Y-%m-%d %H:%M:%S'; }
+# flock-based mutual exclusion (pgrep self-match on harness wrappers bit us)
+LOCK="$ROOT/ops/logs/resume_ds_cline.lock"
+exec 9>"$LOCK"
+flock -n 9 || { echo "$(ts) another instance running; exiting" >> "$LOG"; exit 0; }
+
+probe() {
+  curl -sS -m 60 -o /tmp/ds_cline_probe.json -w '%{http_code}' \
+    http://127.0.0.1:10910/v1/chat/completions \
+    -H "Authorization: Bearer $ACCESS" -H 'Content-Type: application/json' \
+    -d '{"model":"deepseek-v4-flash","max_tokens":64,"messages":[{"role":"user","content":"say ok"}]}' \
+    2>/dev/null
+}
+
+echo "$(ts) resume-ds-cline watcher started; probing pool every 15 min (up to 30h)" >> "$LOG"
+SUCC=0
+for i in $(seq 1 120); do
+  CODE=$(probe)
+  if [ "$CODE" = "200" ]; then
+    SUCC=$((SUCC+1))
+    echo "$(ts) attempt $i: pool OK ($SUCC/2)" >> "$LOG"
+    [ "$SUCC" -ge 2 ] && break
+  else
+    SUCC=0
+    echo "$(ts) attempt $i: pool HTTP $CODE; retrying in 15 min" >> "$LOG"
+  fi
+  sleep 900
+done
+if [ "$SUCC" -lt 2 ]; then echo "$(ts) gave up; DS left as-is" >> "$LOG"; exit 1; fi
+
+echo "$(ts) pool confirmed healthy; resuming DS" >> "$LOG"
+# 1) clear active pause markers (all kinds are obsolete once upstream is healthy)
+rm -f "$DS_RESULTS"/pause_wl*_429
+# 2) stop supervisor + orphan workers gracefully, then hard
+SUP=$(pgrep -f 'AC-deepseek/run_deepseek_ac9\.py' | head -1)
+[ -n "$SUP" ] && kill -INT "$SUP" && sleep 5
+for p in $(pgrep -f 'main\.py wl[0-9].*ac9wl_deepseek'); do kill -INT "$p" 2>/dev/null; done
+sleep 20
+for p in $(pgrep -f 'main\.py wl[0-9].*ac9wl_deepseek'); do kill -KILL "$p" 2>/dev/null; done
+# 3) relaunch (deepseek-sub2api.env carries CONCURRENCY=3 + sub2api routing)
+cd "$ROOT/AC-deepseek" || { echo "$(ts) cd failed" >> "$LOG"; exit 1; }
+AC_DEEPSEEK_CONCURRENCY=3 AC_DEEPSEEK_ONLINE_MAX_CYCLES=360 \
+  setsid nohup bash run_deepseek_ac9.sh >> "$DS_RESULTS/supervisor.log" 2>&1 < /dev/null &
+echo "$(ts) DS supervisor relaunched; watcher done" >> "$LOG"

@@ -1,0 +1,17 @@
+import numpy as np,pandas as pd
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+fs={s:pd.read_csv('../persistent/stock_data/'+s+'.csv',parse_dates=['date']).drop_duplicates('date').set_index('date').sort_index().close.astype(float) for s in U}
+p=pd.concat(fs,axis=1).sort_index().loc[:'2031-10-15']; r=p.pct_change()
+ret5=p.pct_change(5); vol20=r.rolling(20).std(); disp=r.std(axis=1).rolling(20).mean(); dn=disp/disp.rolling(120).median().replace(0,np.nan)
+sig=(-ret5/vol20.replace(0,np.nan)).mul(dn.clip(0.5,2.5),axis=0)
+print('candidate=dispersion_gated_reversal instruments=%d last=%s'%(len(U),p.index.max().date()))
+for h in [5,10,20]:
+ f=p.shift(-h)/p-1; vals=[]; ns=[]; dates=[]
+ for dt in sig.index:
+  a=pd.concat([sig.loc[dt],f.loc[dt]],axis=1).dropna()
+  if len(a)>=8:
+   q=a.iloc[:,0].corr(a.iloc[:,1],method='spearman')
+   if pd.notna(q): vals.append(q); ns.append(len(a)); dates.append(dt)
+ z=pd.Series(vals,index=pd.DatetimeIndex(dates)); print('h=%d dates=%d avg_n=%.2f IC=%.8f ICIR=%.6f hit=%.4f'%(h,len(z),np.mean(ns),z.mean(),z.mean()/z.std(ddof=1)*np.sqrt(len(z)),(z>0).mean()))
+ if h==20: print('regimes20',z.groupby(z.index.year).mean().round(6).to_dict())
+print('coverage=%.6f turnover=%.6f'%(sig.notna().sum(axis=1).mean()/15,sig.rank(axis=1,pct=True).diff().abs().mean(axis=1).dropna().mean()))

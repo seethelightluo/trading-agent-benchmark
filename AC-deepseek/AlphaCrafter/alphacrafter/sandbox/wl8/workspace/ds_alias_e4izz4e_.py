@@ -1,0 +1,1 @@
+cat ../persistent/date.json

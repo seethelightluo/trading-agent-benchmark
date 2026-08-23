@@ -1,0 +1,40 @@
+import numpy as np, pandas as pd
+from alphacrafter.sim.utils import get_index_daily_data,get_stock_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+def fetch(s):
+    for f in (get_index_daily_data,get_stock_daily_data):
+        try:
+            x=f(s,days=800)
+            if x is not None and len(x): return x
+        except Exception: pass
+    return None
+rows=[]
+for s in U:
+    d=fetch(s)
+    if d is None: continue
+    d=d.copy(); d['date']=pd.to_datetime(d.date); d=d.sort_values('date'); c=pd.to_numeric(d.close,errors='coerce')
+    # persistence-adjusted intermediate momentum: recent trend, rewarded only when aligned with longer trend
+    r5=c.pct_change(5); r20=c.pct_change(20); vol=c.pct_change().rolling(20).std()
+    sig=(r5/vol.replace(0,np.nan))*np.sign(r20)
+    for dt,v,fw in zip(d.date,sig,c.pct_change().shift(-1)):
+        rows.append((dt,s,v,fw))
+x=pd.DataFrame(rows,columns=['date','symbol','factor','fwd']).dropna()
+ics=[]; counts=[]
+for dt,g in x.groupby('date'):
+    if len(g)>=8:
+        ics.append(g.factor.corr(g.fwd,method='spearman')); counts.append(len(g))
+ics=pd.Series(ics).dropna(); print('dates',len(ics),'avg_n',np.mean(counts),'symbols',x.symbol.nunique(),'coverage',len(x)/(len(set(z[0] for z in rows))*15))
+print('IC %.8f ICIR %.8f hit %.4f' %(ics.mean(),ics.mean()/ics.std(ddof=1), (ics>0).mean()))
+for h in [5,10,20]:
+ z=[]
+ for s,g in x.groupby('symbol'):
+  # reconstruct forward h return from prices unavailable here; use compounded daily fwd approximation
+  pass
+# turnover based on daily rank ordering
+p=x.pivot(index='date',columns='symbol',values='factor').rank(axis=1,pct=True)
+print('rank_turnover',p.diff().abs().mean().mean())
+print('period',x.date.min(),x.date.max())
+# save reproducible signal artifact
+x.to_csv('scripts/miner_2_20270312_persistence_momentum_signal.csv',index=False)
+# regime halves
+for label,g in [('early',ics.iloc[:len(ics)//2]),('late',ics.iloc[len(ics)//2:])]: print(label,'n',len(g),'ic',g.mean(),'icir',g.mean()/g.std(ddof=1))

@@ -1,0 +1,25 @@
+import numpy as np,pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+C={}
+for s in U:
+ d=get_stock_daily_data(s,days=4000); d.date=pd.to_datetime(d.date); C[s]=d.sort_values('date').drop_duplicates('date').set_index('date').close.astype(float)
+P=pd.DataFrame(C).sort_index(); R=np.log(P).diff()
+# Inverse 60d trend, normalized by 20d volatility and confirmed by the sign of the last 10d trend.
+def factor(i):
+ trend=np.log(P.iloc[i]/P.iloc[i-59]); vol=R.iloc[i-19:i+1].std()*np.sqrt(20)
+ confirm=np.sign(np.log(P.iloc[i]/P.iloc[i-9]))
+ return -trend/(vol+1e-12)*(0.5+0.5*(confirm<0))
+def run(h):
+ rows=[]; ss=[]
+ for i in range(80,len(P)-h):
+  f=factor(i); y=P.iloc[i+h]/P.iloc[i]-1; z=pd.DataFrame({'f':f,'y':y}).replace([np.inf,-np.inf],np.nan).dropna()
+  if len(z)>=8 and z.f.nunique()>1: rows.append((P.index[i],len(z),z.f.corr(z.y,method='spearman')))
+  for s,a in f.items(): ss.append((P.index[i],s,float(a)))
+ x=pd.DataFrame(rows,columns=['date','n','ic']).dropna(); m=x.ic.mean(); ir=m/x.ic.std(ddof=1)
+ print('horizon',h,'dates',len(x),'meanN',round(x.n.mean(),2),'coverage',round(x.n.sum()/(len(x)*15),5),'IC',round(m,6),'ICIR',round(ir,6),'hit',round((x.ic>0).mean(),5))
+ for a,b in [('2020-01-01','2024-12-31'),('2025-01-01','2027-12-31'),('2028-01-01','2029-12-31'),('2030-01-01','2031-01-08')]:
+  q=x[(x.date>=a)&(x.date<=b)]; print('regime',a,b,'dates',len(q),'IC',round(q.ic.mean(),6) if len(q) else np.nan)
+ if h in [10,20]:
+  S=pd.DataFrame(ss,columns=['date','symbol','signal']).pivot(index='date',columns='symbol',values='signal'); print('turnover',round(S.rank(axis=1,pct=True).diff().abs().mean(axis=1).dropna().mean(),6)); pd.DataFrame(ss,columns=['date','symbol','signal']).to_csv(f'scripts/miner_1_20310109_inverse_trend_confirmed_{h}d_signal.csv',index=False)
+for h in [5,10,20]: run(h)

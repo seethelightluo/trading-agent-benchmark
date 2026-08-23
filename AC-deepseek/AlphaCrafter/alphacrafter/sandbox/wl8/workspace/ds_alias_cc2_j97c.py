@@ -1,0 +1,1 @@
+import json; print(json.dumps(json.load(open('../persistent/date.json')), indent=2))

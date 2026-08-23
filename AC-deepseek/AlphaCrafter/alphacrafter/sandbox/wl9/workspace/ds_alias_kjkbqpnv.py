@@ -1,0 +1,1 @@
+print(open('scripts/miner3_20271217_revalidate_extended.py').read()[:4000])

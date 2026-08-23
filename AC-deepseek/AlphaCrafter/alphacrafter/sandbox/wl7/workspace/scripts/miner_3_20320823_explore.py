@@ -1,0 +1,108 @@
+"""miner_3 candidate factor exploration, visible end 2032-08-20.
+
+Tests several candidate ideas against h=10 forward returns, reports IC/ICIR/hit,
+coverage, turnover, and max abs library correlation vs the active library panel.
+Gates: |IC|>=0.0070, |ICIR|>=0.0840. No lookahead (visible_through).
+"""
+import json
+import numpy as np
+import pandas as pd
+import sys
+sys.path.insert(0, "scripts")
+import miner_shared as ms
+
+END = "2032-08-20"
+cal = ms.master_calendar(END)
+close = ms.load_close(END)
+macro = ms.load_macro(END)
+ret = close.pct_change()
+
+fwd = ms.forward_ret(close, 10)
+lib_panels = ms.library_panel(close, macro)
+
+print(f"Panel through {END}: {len(cal)} dates, {close.shape[1]} assets")
+
+cands = {}
+
+# C1: vol-scaled momentum 60d (momentum normalized by trailing vol)
+mom60 = close / close.shift(60) - 1.0
+vol20 = ret.rolling(20).std()
+cands["momsig_60_20"] = mom60 / vol20
+
+# C2: 60d max drawdown distance (positive near high / low drawdown)
+roll_max = close.rolling(60).max()
+cands["maxdd_60"] = (close / roll_max - 1.0)
+
+# C3: range position 60d
+rmin = close.rolling(60).min()
+rmax = close.rolling(60).max()
+cands["range_pos_60"] = (close - rmin) / (rmax - rmin).replace(0, np.nan)
+
+# C4: skewness of returns 60d
+cands["skew_60"] = ret.rolling(60).skew()
+
+# C5: sharpe-ratio momentum 60d
+cands["sharpe_60"] = (close / close.shift(60) - 1.0) / (ret.rolling(60).std() * np.sqrt(60))
+
+# C8: price distance from 200d MA
+ma200 = close.rolling(200).mean()
+cands["ma200_dist"] = (close / ma200 - 1.0)
+
+# C9: short vs medium relative momentum (10d skip5 vs 60d)
+cands["rel_mom_10_60"] = (close / close.shift(15) - 1.0) - (close / close.shift(65) - 1.0)
+
+# C10: 120d drawdown distance
+roll_max120 = close.rolling(120).max()
+cands["maxdd_120"] = (close / roll_max120 - 1.0)
+
+# C11: return over 20d scaled by 60d vol (risk-adjusted short momentum)
+cands["momsig_20_60"] = (close / close.shift(20) - 1.0) / (ret.rolling(60).std())
+
+# C12: cross-sectional dispersion-relative trend (median-based like library rel_mom but 60d)
+mom60x = close / close.shift(65) - 1.0
+cands["rel_mom_60d_skip5"] = mom60x.subtract(mom60x.median(axis=1), axis=0)
+
+
+def max_lib_corr(cand, lib_panels):
+    flat = cand.stack()
+    best = 0.0; pairs = {}
+    for name, p in lib_panels.items():
+        pflat = p.reindex(cand.index).stack()
+        df = pd.concat([flat.rename("f"), pflat.rename("p")], axis=1).dropna()
+        if len(df) < 30:
+            continue
+        rho = float(df["f"].corr(df["p"]))
+        pairs[name] = round(rho, 4)
+        if abs(rho) > best:
+            best = abs(rho)
+    return best, pairs
+
+
+print(f"{'candidate':18s} {'IC':>8s} {'ICIR':>7s} {'hit':>5s} {'n':>5s} {'cov':>5s} {'turn':>6s} {'maxrho':>7s}  GATE")
+results = {}
+for name, panel in cands.items():
+    ic = ms.daily_ic(panel, fwd)
+    st = ms.ic_stats(ic, 10)
+    cov = ms.coverage_stats(panel, fwd)
+    turn = ms.rank_turnover(panel, window=10)
+    mrho, pairs = max_lib_corr(panel, lib_panels)
+    gate = "PASS" if (abs(st["ic"]) >= ms.IC_GATE and abs(st["icir"]) >= ms.ICIR_GATE) else "fail"
+    print(f"{name:18s} {st['ic']:8.4f} {st['icir']:7.3f} {st['hit']:5.2f} {st['n']:5d} "
+          f"{cov['coverage_dates_ge8']:5.2f} {turn:6.2f} {mrho:7.2f}  {gate}")
+    s = ic.dropna()
+    r1 = s[s.index >= s.index.max() - np.timedelta64(365, "D")]
+    r2 = s[s.index >= s.index.max() - np.timedelta64(730, "D")]
+    for lab, rs in (("1y", r1), ("2y", r2)):
+        if len(rs):
+            m = rs.mean(); sd = rs.std(ddof=1)
+            print(f"    {lab}: IC {m:+.4f} ICIR {m/sd if sd>0 else float('nan'):.3f} hit {(rs>0).mean():.2f} n {len(rs)}")
+    results[name] = {"ic": st["ic"], "icir": st["icir"], "hit": st["hit"], "n": st["n"],
+                     "coverage_dates_ge8": cov["coverage_dates_ge8"],
+                     "turnover_10d": turn, "max_abs_library_correlation": round(mrho, 4),
+                     "corr_pairs": pairs,
+                     "decay": {str(h): round(ms.ic_stats(ms.daily_ic(panel, ms.forward_ret(close, h)), h)["ic"], 4)
+                               for h in (1, 2, 3, 5, 10, 20)}}
+
+with open("scripts/miner3_20320823_explore.json", "w") as h:
+    json.dump(results, h, indent=2)
+print("\nWrote scripts/miner3_20320823_explore.json")

@@ -1,0 +1,18 @@
+import numpy as np,pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; C={}
+for s in U:
+ d=get_stock_daily_data(s,days=4000); d.date=pd.to_datetime(d.date); C[s]=d.sort_values('date').drop_duplicates('date').set_index('date').close.astype(float)
+P=pd.DataFrame(C).sort_index(); R=np.log(P).diff(); rows=[]; sig=[]
+for i in range(85,len(P)-10):
+ r5=P.iloc[i]/P.iloc[i-5]-1; vol=R.iloc[i-19:i+1].std(); disp=R.iloc[i-19:i+1].std(axis=1).mean(); hist=[]
+ for k in range(i-60,i): hist.append(R.iloc[k-19:k+1].std(axis=1).mean())
+ gate=float(disp>=np.median(hist)); f=-r5/(vol+1e-12)*gate
+ y=P.iloc[i+10]/P.iloc[i]-1; z=pd.DataFrame({'f':f,'y':y}).replace([np.inf,-np.inf],np.nan).dropna()
+ if len(z)>=8 and z.f.nunique()>1: rows.append((P.index[i],len(z),z.f.corr(z.y,method='spearman')))
+ for s,v in f.items(): sig.append({'date':str(P.index[i].date()),'symbol':s,'signal':v})
+x=pd.DataFrame(rows,columns=['date','n','ic']).dropna(); m=x.ic.mean(); sd=x.ic.std(ddof=1)
+print('assets',len(C),'rows',len(P),'dates',len(x),'meanN',x.n.mean(),'coverage',x.n.sum()/(len(x)*15),'IC',m,'ICIR_daily',m/sd,'hit',(x.ic>0).mean())
+for a,b in [('2020-01-01','2024-12-31'),('2025-01-01','2027-12-31'),('2028-01-01','2029-12-31'),('2030-01-01','2030-07-01')]:
+ z=x[(x.date>=a)&(x.date<=b)]; print(a,b,len(z),z.ic.mean() if len(z) else np.nan,z.ic.mean()/z.ic.std(ddof=1) if len(z)>2 else np.nan)
+pd.DataFrame(sig).to_csv('scripts/miner_1_20300711_dispersion_gate_signal.csv',index=False)

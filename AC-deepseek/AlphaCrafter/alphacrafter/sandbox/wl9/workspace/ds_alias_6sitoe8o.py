@@ -1,0 +1,1 @@
+print(open('scripts/miner3_20270603_exp01_revalidate_all.py').read())

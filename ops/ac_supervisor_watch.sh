@@ -99,9 +99,11 @@ launch_terra_sup() {
 }
 
 restart_terra() {
-  # Fork-aware: v5 owns wl3 (Plus), _oc owns wl4,6,8 (opencode key2 relay :8788),
-  # _plus owns wl5,7,9 (Plus relay :8787). Each dir is checked independently;
-  # only dirs with runnable incomplete WLs get a supervisor, per-source concurrency 1.
+  # Fork-aware (2026-08-19: oc key2 monthly-capped, Plus rate-limited till 08-22 —
+  # ALL terra luna now rides relay C :8789 -> cline pool credits, run-down mode:
+  # when credits exhaust the workers fail-closed and pause themselves).
+  # v5 owns wl3 (done). Each dir is checked independently; only dirs with
+  # runnable incomplete WLs get a supervisor, per-source concurrency 1.
   local base="$ROOT/agent-framework/results"
 
   if [ -f "$TERRA_RESULTS/.pause_terra_watch" ]; then
@@ -114,7 +116,7 @@ restart_terra() {
   OC_DIR="$base/ac_luna_3wl_v5_oc"
   if [ -z "$(terra_sup_pid "$OC_DIR")" ]; then
     runnable=$(terra_runnable_wls "$OC_DIR" "4,6,8")
-    [ -n "$runnable" ] && { stop_terra_orphans "ac_luna_3wl_v5_oc"; launch_terra_sup "$OC_DIR" "4,6,8" "OPENAI_API_URL=http://127.0.0.1:8788/v1"; }
+    [ -n "$runnable" ] && { stop_terra_orphans "ac_luna_3wl_v5_oc"; launch_terra_sup "$OC_DIR" "4,6,8" "OPENAI_API_URL=http://127.0.0.1:8789/v1"; }
   fi
 
   PLUS_DIR="$base/ac_luna_3wl_v5_plus"
@@ -125,7 +127,7 @@ restart_terra() {
     echo "$(ts) Terra plus dir deferred (wl3 still runnable on Plus)" >> "$LOG"
   elif [ -z "$(terra_sup_pid "$PLUS_DIR")" ]; then
     runnable=$(terra_runnable_wls "$PLUS_DIR" "5,7,9")
-    [ -n "$runnable" ] && { stop_terra_orphans "ac_luna_3wl_v5_plus"; launch_terra_sup "$PLUS_DIR" "5,7,9" "-"; }
+    [ -n "$runnable" ] && { stop_terra_orphans "ac_luna_3wl_v5_plus"; launch_terra_sup "$PLUS_DIR" "5,7,9" "OPENAI_API_URL=http://127.0.0.1:8787/v1"; }
   fi
 }
 

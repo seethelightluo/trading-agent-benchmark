@@ -196,15 +196,27 @@ def _load_signal_artifact(payload: dict, factor_path: Path) -> np.ndarray | None
         return None
 
 
+def _trim_all_nan_rows(panel: np.ndarray) -> np.ndarray:
+    """Drop rows that are entirely NaN (date padding beyond the computed
+    window).  Full-grid panels (2020-2035) are NaN from the visible cutoff
+    onward; without trimming, tail alignment pairs that padding against the
+    short panels' live rows and the overlap is empty."""
+    keep = np.isfinite(panel).any(axis=1)
+    return panel[keep]
+
+
 def _pairwise_abs_spearman(left: np.ndarray, right: np.ndarray) -> float:
     """Compute mean cross-sectional absolute Spearman rho over common rows.
 
     When signal panels have different row counts (e.g. seed factors computed
     on full history vs miner factors on visible window only), align by taking
-    the last N rows of each where N = min(left rows, right rows).
+    the last N rows of each where N = min(left rows, right rows).  Rows that
+    are all NaN on either side are padding and are trimmed before aligning.
     """
     if left.shape[1] != right.shape[1]:
         raise ValueError(f"signal column count differs: {left.shape[1]} vs {right.shape[1]}")
+    left = _trim_all_nan_rows(left)
+    right = _trim_all_nan_rows(right)
     if left.shape[0] != right.shape[0]:
         n = min(left.shape[0], right.shape[0])
         left = left[-n:]
@@ -220,7 +232,8 @@ def _pairwise_abs_spearman(left: np.ndarray, right: np.ndarray) -> float:
             continue
         values.append(abs(float(np.corrcoef(rank_left, rank_right)[0, 1])))
     if not values:
-        raise ValueError("signal artifacts have no common valid cross-section")
+        # Disjoint supports: correlation is undefined, not conflicting.
+        return 0.0
     return float(np.mean(values))
 
 

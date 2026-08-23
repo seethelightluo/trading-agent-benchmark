@@ -1,0 +1,1 @@
+print(open('scripts/miner_3_20290208_probe_data.py').read()[:3000])

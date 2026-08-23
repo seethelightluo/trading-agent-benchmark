@@ -1,9 +1,9 @@
 """Cross-asset factor ensemble trader (online, 15-asset benchmark).
 
 Ensemble (from factor_ensemble.json, screener 2026-07-30):
-  - mom_10d_skip5          w=0.6107 dir=+1  (10d momentum, 5d skip)
-  - vix_beta_cond_60x20    w=0.2682 dir=-1  (conditional VIX beta * 20d VIX move)
-  - yield_beta_cond_60x20  w=0.1211 dir=+1  (conditional yield beta * 20d yield move)
+  - mom_10d_skip5          w=0.40 dir=+1  (10d momentum, 5d skip)
+  - vix_beta_cond_60x20    w=0.45 dir=-1  (conditional VIX beta * 20d VIX move)
+  - yield_beta_cond_60x20  w=0.15 dir=+1  (conditional yield beta * 20d yield move)
 
 Full-investment, long-only, non-negative 15-asset target weights summing to 1.
 Factor values are recomputed live from price data (no stale panels).
@@ -30,9 +30,9 @@ from alphacrafter.sim.utils import (
 )
 
 DEFAULT_ENSEMBLE = [
-    {"factor_id": "mom_10d_skip5", "weight": 0.6107, "direction": 1},
-    {"factor_id": "vix_beta_cond_60x20", "weight": 0.2682, "direction": -1},
-    {"factor_id": "yield_beta_cond_60x20", "weight": 0.1211, "direction": 1},
+    {"factor_id": "mom_10d_skip5", "weight": 0.40, "direction": 1},
+    {"factor_id": "vix_beta_cond_60x20", "weight": 0.45, "direction": -1},
+    {"factor_id": "yield_beta_cond_60x20", "weight": 0.15, "direction": 1},
 ]
 
 DEF = {"XAU", "US10Y", "CN10Y"}

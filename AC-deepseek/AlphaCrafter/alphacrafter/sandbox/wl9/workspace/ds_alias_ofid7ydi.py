@@ -1,0 +1,1 @@
+print(open('scripts/miner3_20270826_exp01_cross_sectional_mom.py').read()[:5000])

@@ -1,0 +1,1 @@
+print(open('scripts/miner3_20270128_common.py').read())

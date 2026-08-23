@@ -1,0 +1,24 @@
+import pandas as pd, numpy as np
+from pathlib import Path
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+cut=pd.Timestamp('2029-08-22'); p={}
+for s in U:
+ d=pd.read_csv(Path('../persistent/stock_data')/(s+'.csv'),parse_dates=['date']).sort_values('date'); p[s]=d[d.date<=cut].set_index('date').close
+p=pd.DataFrame(p).sort_index().dropna(how='all').dropna(); r=p.pct_change(); dr=r.rolling(20,min_periods=15).std()
+defret=p[['XAU','US10Y','CN10Y']].pct_change(30).mean(axis=1); rel=p.pct_change(30).sub(defret,axis=0)
+disp=dr.mean(axis=1); stress=(disp>disp.rolling(120,min_periods=60).median()).astype(float)
+base=-rel/(dr.clip(lower=1e-5)*np.sqrt(252)); sig=base.mul(1+0.35*stress,axis=0).replace([np.inf,-np.inf],np.nan).rank(axis=1,pct=True)
+def calc(h,start=None,end=None):
+ vals=[]; ns=[]; dates=[]; turns=[]
+ for i in range(len(p)-h):
+  dt=p.index[i]
+  if start and not(pd.Timestamp(start)<=dt<=pd.Timestamp(end)): continue
+  q=pd.concat([sig.iloc[i].rename('f'),(p.iloc[i+h]/p.iloc[i]-1).rename('y')],axis=1).dropna()
+  if len(q)>=8 and q.f.nunique()>1:
+   vals.append(q.f.corr(q.y,method='spearman')); ns.append(len(q)); dates.append(dt)
+   if i: turns.append(sig.iloc[i].sub(sig.iloc[i-1]).abs().mean())
+ x=pd.Series(vals,index=dates).dropna(); return len(x),float(np.mean(ns)),float(x.mean()),float(x.mean()/x.std(ddof=1)),float(np.mean(x>0)),float(np.mean(np.array(ns)/15)),float(np.mean(turns))
+print('assets',len(U),'rows',len(p),'range',p.index.min().date(),p.index.max().date())
+for h in [5,10,20]: print('ALL',h,calc(h))
+for a,b in [('2020-01-01','2024-12-31'),('2025-01-01','2026-12-31'),('2027-01-01','2028-12-31'),('2028-08-01','2029-08-22')]: print('REG',a,b,calc(10,a,b))
+out=sig.reset_index().melt(id_vars='date',var_name='symbol',value_name='signal').dropna(); out.to_csv('scripts/miner_3_20290823_stress_gated_defensive_reversal_signal.csv',index=False); print('artifact_rows',len(out),'latest',out.date.max())

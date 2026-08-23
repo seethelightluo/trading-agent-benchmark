@@ -1,0 +1,35 @@
+import numpy as np,pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; raw={}
+for s in U:
+ d=get_stock_daily_data(s,days=2500)
+ if d is not None and len(d)>150:
+  d=d.copy();d.date=pd.to_datetime(d.date);raw[s]=d.set_index('date').sort_index()
+cl=pd.DataFrame({s:d.close for s,d in raw.items()}); r=cl.pct_change()
+# Lagged downside/upside realized variance asymmetry; high downside dominance is a reversal/exhaustion signal.
+down=r.where(r<0,0).rolling(30,min_periods=20).std().shift(1)
+up=r.where(r>0,0).rolling(30,min_periods=20).std().shift(1)
+trend=r.rolling(10,min_periods=8).sum().shift(1)
+asym=((down-up)/(down+up+1e-8)).clip(-1,1)
+fac=(-trend*asym/(r.rolling(30,min_periods=20).std().shift(1)+1e-8))
+fac=fac.sub(fac.median(axis=1),axis=0)
+rows=[]
+for dt in fac.index:
+ ix=cl.index.get_loc(dt)
+ if fac.loc[dt].notna().sum()<8:continue
+ for h in [3,5,10]:
+  if ix+h>=len(cl):continue
+  z=pd.concat([fac.loc[dt].rename('f'),(cl.iloc[ix+h]/cl.iloc[ix]-1).rename('r')],axis=1).dropna()
+  if len(z)>=8:rows.append((dt,h,len(z),z.f.corr(z.r,method='spearman')))
+w=pd.DataFrame(rows,columns=['date','h','n','ic']);print('assets',len(raw),'dates',len(cl),'range',cl.index.min(),cl.index.max())
+for h in [3,5,10]:
+ x=w[w.h==h];q=x.ic;print('H',h,'IC %.6f ICIR %.6f hit %.4f dates %d avgN %.2f coverage %.4f'%(q.mean(),q.mean()/q.std(ddof=1),(q>0).mean(),len(q),x.n.mean(),x.n.mean()/len(U)))
+ for lab,n in [('recent180',180),('recent360',360)]:
+  y=q.tail(n);print(lab,'%.6f %.6f'%(y.mean(),y.mean()/y.std(ddof=1)))
+rank=fac.rank(axis=1,pct=True);t=[]
+for i in range(1,len(rank)):
+ z=pd.concat([rank.iloc[i-1],rank.iloc[i]],axis=1).dropna()
+ if len(z)>=8:t.append(1-z.iloc[:,0].corr(z.iloc[:,1]))
+print('turnover_proxy',np.mean(t),'coverage',fac.notna().sum(axis=1).mean()/len(U))
+out=[{'date':d.strftime('%Y-%m-%d'),'symbol':s,'signal':float(fac.loc[d,s])} for d in fac.index for s in fac.columns if pd.notna(fac.loc[d,s])]
+pd.DataFrame(out).to_csv('scripts/miner_2_20290809_asymmetry_signal.csv',index=False);print('artifact_rows',len(out))
