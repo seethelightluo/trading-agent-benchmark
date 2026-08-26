@@ -1,0 +1,11 @@
+import numpy as np,pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']; D={s:get_stock_daily_data(s,days=5000) for s in U}; cl=pd.DataFrame({s:d.set_index('date')['close'] for s,d in D.items() if d is not None}).sort_index().ffill().loc[:,U]; r=cl.pct_change(); r20=cl.pct_change(20); v20=r.rolling(20).std(); v60=r.rolling(60).std(); base=(-r20/(v20*np.sqrt(252)+.05))*(v20/(v60+.0001)).clip(.5,2.0); disp=r.rolling(20).std().mean(axis=1); q=disp.rolling(252,min_periods=120).quantile(.7); gate=(disp/(q+.0001)).clip(.7,1.5); sig=base.mul(gate,axis=0).clip(-5,5).shift(1); print('period',cl.index.min().date(),cl.index.max().date(),'assets',len(cl.columns))
+def ics(fwd):
+ fwd=fwd.reindex(index=sig.index,columns=sig.columns); a=sig.rank(axis=1).to_numpy(float); b=fwd.rank(axis=1).to_numpy(float); ok=np.isfinite(a)&np.isfinite(b); n=ok.sum(1); aa=np.where(ok,a,np.nan); bb=np.where(ok,b,np.nan); am=np.nanmean(aa,1); bm=np.nanmean(bb,1); num=np.nansum((aa-am[:,None])*(bb-bm[:,None]),1); den=np.sqrt(np.nansum((aa-am[:,None])**2,1)*np.nansum((bb-bm[:,None])**2,1)); z=num/den; z[(n<8)|~np.isfinite(z)]=np.nan; return pd.Series(z,index=sig.index).dropna(),pd.Series(n,index=sig.index)
+for h in [10,20,40,60]:
+ x,n=ics(cl.shift(-h)/cl-1); print('H',h,'dates',len(x),'avgN %.2f IC %.6f ICIR %.6f hit %.4f'%(n.loc[x.index].mean(),x.mean(),x.mean()/x.std(ddof=1),(x>0).mean()))
+x,n=ics(cl.shift(-60)/cl-1)
+for name,mask in [('2027',x.index.year==2027),('2028-29',x.index.year.isin([2028,2029])),('2030',x.index.year==2030),('2031-32',x.index.year.isin([2031,2032])),('2033YTD',x.index.year==2033)]:
+ y=x[mask]; print(name,'dates',len(y),'IC %.6f ICIR %.6f hit %.4f'%(y.mean(),y.mean()/y.std(ddof=1),(y>0).mean()) if len(y)>1 else 'insufficient')
+print('coverage %.6f turnover %.6f'%(sig.notna().sum(axis=1).div(len(U)).mean(),sig.rank(axis=1,pct=True).diff().abs().mean(axis=1).dropna().mean())); sig.stack().rename('signal').reset_index().rename(columns={'level_0':'date','level_1':'symbol'}).to_csv('scripts/miner_1_20331222_dispersion_vol_reversal_signal.csv',index=False)

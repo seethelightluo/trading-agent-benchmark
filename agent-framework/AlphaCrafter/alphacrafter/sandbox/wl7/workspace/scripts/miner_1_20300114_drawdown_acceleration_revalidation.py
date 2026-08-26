@@ -1,0 +1,28 @@
+import numpy as np,pandas as pd
+from scipy.stats import spearmanr
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+end=pd.Timestamp('2030-01-13'); base='../persistent/stock_data'
+P=pd.concat([pd.read_csv(f'{base}/{s}.csv',parse_dates=['date']).set_index('date')['close'].rename(s) for s in U],axis=1).sort_index().loc[:end]
+# Volatility-scaled drawdown recovery acceleration, lagged through prior completed day.
+r=np.log(P).diff(); vol=r.rolling(20,min_periods=15).std()
+peak20=P.rolling(20,min_periods=15).max(); peak60=P.rolling(60,min_periods=30).max()
+dd20=P/peak20-1; dd60=P/peak60-1
+sig=((dd20-ddd60) if False else (dd20-dd60))/vol
+sig=sig.shift(1).replace([np.inf,-np.inf],np.nan)
+print('rows',len(P),'date_start',P.index.min().date(),'date_end',P.index.max().date(),'assets',P.notna().sum().to_dict())
+def calc(h,dates):
+ f=P.shift(-h)/P-1; out=[]; ns=[]
+ for dt in dates:
+  z=pd.concat([sig.loc[dt].rename('x'),f.loc[dt].rename('y')],axis=1).dropna()
+  if len(z)>=8 and z.x.nunique()>1: out.append(spearmanr(z.x,z.y).statistic); ns.append(len(z))
+ q=pd.Series(out).dropna(); return len(q),np.mean(ns),np.mean(q),np.mean(q)/q.std(ddof=1),(q>0).mean()
+for h in [5,10,20,40]:
+ n,av,ic,ir,hit=calc(h,P.index); print('H',h,'dates',n,'avg_n',round(av,2),'coverage',round(av/15,4),'IC',round(ic,6),'ICIR',round(ir,6),'hit',round(hit,4))
+for lab,dates in [('early',P.index[(P.index>='2020-01-01')&(P.index<='2026-12-31')]),('mid',P.index[(P.index>='2027-01-01')&(P.index<='2028-12-31')]),('late',P.index[P.index>='2029-01-01'])]:
+ n,av,ic,ir,hit=calc(10,dates); print(lab,'H10 dates',n,'avg_n',round(av,2),'IC',round(ic,6),'ICIR',round(ir,6),'hit',round(hit,4))
+rank=sig.rank(axis=1,pct=True); t=[]
+for a,b in zip(rank.index[:-1],rank.index[1:]):
+ z=pd.concat([rank.loc[a],rank.loc[b]],axis=1).dropna()
+ if len(z): t.append((z.iloc[:,0]-z.iloc[:,1]).abs().mean())
+print('turnover',round(float(np.mean(t)),6),'valid_signal_dates',sig.dropna(how='all').shape[0])
+sig.to_csv('scripts/miner_1_20300114_drawdown_acceleration_signal.csv')

@@ -32,3 +32,6 @@ for h in [1,5,10,20]:
             q=np.array([ics[i] for i,d in enumerate(dates) if pd.Timestamp(lo)<=d<=pd.Timestamp(hi) and np.isfinite(ics[i])]); qi=q.mean()/q.std(ddof=1)*np.sqrt(len(q)) if len(q)>1 and q.std(ddof=1)>0 else 0
             print('REG',label,'n',len(q),'IC',round(float(q.mean()),6) if len(q) else None,'ICIR',round(float(qi),6) if len(q) else None)
 print('range',px.index.min(),px.index.max(),'assets',list(frames))
+
+# deterministic provenance artifact
+sig.to_csv("scripts/miner_3_20280703_lowvol_defensive_signal.csv", index_label="date")

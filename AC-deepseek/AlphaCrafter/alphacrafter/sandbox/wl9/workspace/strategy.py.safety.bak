@@ -1,0 +1,71 @@
+"""Defensive cross-asset ensemble, Screener 2035-12-20.
+Completed daily bars only; one atomic fully-invested rebalance per decision.
+Regime-conditional defensive cap: heavier during active VIX stress, lighter as
+VIX de-escalates, so the defensive tilt is not over-deployed at turning points."""
+from math import isfinite
+import json
+from pathlib import Path
+import pandas as pd
+from alphacrafter.sim.utils import (get_account_dict, get_stock_daily_data,
+    get_index_daily_data, rebalance_to_weights, register_hook)
+
+# Exact admitted M=10 weights: defensive/tail 56%, recovery/persistence/trend 29%, macro 15%.
+FW = (.17, .15, .13, .11, .10, .08, .08, .07, .06, .05)
+DEF = {"XAU", "US10Y", "CN10Y"}
+VIX_STR = 48.0      # above = active vol-spike regime
+VIX_TREND = 3.0     # 20d VIX move (%) above = still-escalating vol regime
+
+def stock(a, n=145):
+    try: return get_stock_daily_data(a, days=n)
+    except Exception: return None
+
+def index(a, n=100):
+    try: return get_index_daily_data(a, days=n)
+    except Exception: return None
+
+def ranks(values, assets):
+    valid = sorted((float(v), a) for a, v in values.items() if v is not None and isfinite(float(v)))
+    out = {a: .5 for a in assets}
+    for i, (_, a) in enumerate(valid): out[a] = i / max(1, len(valid)-1)
+    return out
+
+def loading_contraction(y, x):
+    z = pd.concat([y.rename("y"), x.rename("x")], axis=1).dropna().tail(60)
+    def beta(n):
+        q=z.tail(n); var=float(q.x.var())
+        return float(q.y.cov(q.x)/var) if len(q)>=12 and var>1e-14 else None
+    new, old = beta(20), beta(60)
+    return old-new if new is not None and old is not None else None
+
+def capped_normalize(w, pref, cap):
+    for _ in range(40):
+        excess=sum(max(0., x-cap) for x in w.values())
+        w={a:min(cap, max(0., x)) for a, x in w.items()}
+        room=[a for a,x in w.items() if x<cap-1e-12]
+        if excess < 1e-12 or not room: break
+        den=sum(max(0.,pref.get(a,0.)) for a in room)
+        for a in room: w[a] += excess*(max(0.,pref.get(a,0.))/den if den else 1/len(room))
+    total=sum(w.values())
+    return {a:x/total for a,x in w.items()}
+
+@register_hook
+def strategy_hook():
+    assets=list(get_account_dict()["watch_list"])
+    frames={a:stock(a) for a in assets}
+    closes={a:(f.close.astype(float) if f is not None and "close" in f and len(f)>=62 else None) for a,f in frames.items()}
+    usable=[c.pct_change().rename(a) for a,c in closes.items() if c is not None]
+    panel=pd.concat(usable,axis=1,join="inner").dropna().tail(100) if len(usable)>=8 else pd.DataFrame()
+    if len(panel)<61:
+        rebalance_to_weights(
+            {a:1/len(assets) for a in assets},
+            forecast_returns={a:0.0 for a in assets},
+            horizon_days=10,
+        ); return
+    market=panel.mean(axis=1); mv=float(market.var())
+    residual={a:panel[a]-(float(panel[a].cov(market)/mv)*market if mv>1e-14 else 0.) for a in panel}
+    vf=index("VIX")
+    vix_ser=vf.close.astype(float) if vf is not None and "close" in vf else None
+    vix=vix_ser.pct_change() if vix_ser is not None else None
+    vix_level=float(vix_ser.iloc[-1]) if vix_ser is not None and len(vix_ser) else 99.0
+    vix_trend=(float(vix_ser.iloc[-1])/float(vix_ser.iloc[-21])-1)*100.0 if vix_ser is not None and len(vix_ser)>21 else 0.0
+    def_stress = (vix_level>=VIX_STR or vix_trend>VIX_TREN

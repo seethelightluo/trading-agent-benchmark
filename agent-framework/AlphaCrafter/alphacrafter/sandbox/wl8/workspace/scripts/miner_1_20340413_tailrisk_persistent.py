@@ -1,0 +1,1 @@
+exec(open('scripts/miner_1_20340413_tailrisk_reversal.py').read().replace("f=f.rank(axis=1,pct=True); f=f.sub(f.mean(axis=1),axis=0)","f=f.rank(axis=1,pct=True); f=(f+f.shift(1)+f.shift(2))/3; f=f.sub(f.mean(axis=1),axis=0)").replace("tailrisk_reversal_signal","tailrisk_persistent_signal").replace("tailrisk_reversal_ic","tailrisk_persistent_ic"))

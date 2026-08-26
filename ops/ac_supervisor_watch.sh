@@ -114,9 +114,11 @@ restart_terra() {
   fi
 
   OC_DIR="$base/ac_luna_3wl_v5_oc"
+  # 2026-08-23 handoff (rev2): wl9 rides this source after wl8 (relay C :8789,
+  # account 8); wl7 stays on the Plus subscription (plus dir: wl5 then wl7).
   if [ -z "$(terra_sup_pid "$OC_DIR")" ]; then
-    runnable=$(terra_runnable_wls "$OC_DIR" "4,6,8")
-    [ -n "$runnable" ] && { stop_terra_orphans "ac_luna_3wl_v5_oc"; launch_terra_sup "$OC_DIR" "4,6,8" "OPENAI_API_URL=http://127.0.0.1:8789/v1"; }
+    runnable=$(terra_runnable_wls "$OC_DIR" "6,8,9")
+    [ -n "$runnable" ] && { stop_terra_orphans "ac_luna_3wl_v5_oc"; launch_terra_sup "$OC_DIR" "6,8,9" "OPENAI_API_URL=http://127.0.0.1:8789/v1"; }
   fi
 
   PLUS_DIR="$base/ac_luna_3wl_v5_plus"
@@ -126,8 +128,15 @@ restart_terra() {
   if [ -n "$(terra_runnable_wls "$TERRA_RESULTS" "3")" ]; then
     echo "$(ts) Terra plus dir deferred (wl3 still runnable on Plus)" >> "$LOG"
   elif [ -z "$(terra_sup_pid "$PLUS_DIR")" ]; then
-    runnable=$(terra_runnable_wls "$PLUS_DIR" "5,7,9")
-    [ -n "$runnable" ] && { stop_terra_orphans "ac_luna_3wl_v5_plus"; launch_terra_sup "$PLUS_DIR" "5,7,9" "OPENAI_API_URL=http://127.0.0.1:8787/v1"; }
+    # 2026-08-23 handoff (rev2): this dir owns wl5 then wl7 (serial, Plus).
+    # A live wl5/wl7 worker may be an orphan from the handoff (its supervisor
+    # was killed on purpose); never launch a duplicate worker beside it.
+    if pgrep -f "main\.py wl[57] .*ac_luna_3wl_v5_plus/run_config\.yaml" >/dev/null 2>&1; then
+      echo "$(ts) Terra plus dir: plus worker already running (orphan); no launch" >> "$LOG"
+    else
+      runnable=$(terra_runnable_wls "$PLUS_DIR" "5,7")
+      [ -n "$runnable" ] && { stop_terra_orphans "ac_luna_3wl_v5_plus"; launch_terra_sup "$PLUS_DIR" "5,7" "OPENAI_API_URL=http://127.0.0.1:8787/v1"; }
+    fi
   fi
 }
 

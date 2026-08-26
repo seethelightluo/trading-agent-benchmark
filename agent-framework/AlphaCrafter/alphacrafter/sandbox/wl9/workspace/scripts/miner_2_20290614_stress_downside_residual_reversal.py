@@ -1,0 +1,34 @@
+import numpy as np,pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+D={}
+for s in U:
+ x=get_stock_daily_data(s,days=4000)
+ if x is not None and len(x):
+  z=x[['date','close']].copy(); z.date=pd.to_datetime(z.date)
+  D[s]=z.drop_duplicates('date').set_index('date').close
+p=pd.DataFrame(D).sort_index().ffill(); r=p.pct_change(); m=r.mean(axis=1)
+vix=pd.read_csv('../persistent/index_data/VIX.csv');vix.date=pd.to_datetime(vix.date)
+vix=vix.set_index('date')['close'].reindex(p.index).ffill()
+rows={h:[] for h in [5,10,20]}
+for i,t in enumerate(p.index):
+ if i<125: continue
+ rr=r.iloc[i-59:i+1]; mm=m.iloc[i-59:i+1]
+ beta=rr.apply(lambda x:x.cov(mm)/(mm.var()+1e-12))
+ ret5=p.iloc[i]/p.iloc[i-5]-1
+ residual=ret5-beta*ret5.mean()
+ downside=rr.iloc[-20:].where(rr.iloc[-20:]<0).std().replace(0,np.nan).fillna(rr.iloc[-20:].std())+1e-8
+ # stress regime is known only through date i; no future information
+ if vix.iloc[i] <= vix.iloc[i-60:i].median(): continue
+ sig=-residual/downside
+ for h in rows:
+  if i+h>=len(p): continue
+  f=p.iloc[i+h]/p.iloc[i]-1
+  q=pd.concat([sig,f],axis=1).replace([np.inf,-np.inf],np.nan).dropna()
+  if len(q)>=8 and q.iloc[:,0].nunique()>1: rows[h].append((t,len(q),q.iloc[:,0].rank().corr(q.iloc[:,1].rank())))
+for h,Arows in rows.items():
+ A=pd.DataFrame(Arows,columns=['date','n','ic'])
+ print('\nHORIZON',h,'dates',len(A),'mean_n',round(A.n.mean(),3),'coverage',round(A.n.mean()/15,4))
+ for lab,c in [('full',A.date>=A.date.min()),('2020_23',A.date<'2024-01-01'),('2024_26',(A.date>='2024-01-01')&(A.date<'2027-01-01')),('2027_28',(A.date>='2027-01-01')&(A.date<'2029-01-01')),('recent',A.date>='2028-05-01')]:
+  q=A.loc[c,'ic']; icir=q.mean()/q.std(ddof=1) if len(q)>1 else np.nan
+  print(lab,len(q),round(q.mean(),6),round(icir,6),round((q>0).mean(),4))

@@ -38,8 +38,8 @@ GROUPS = {
 # 每个目录只管理自己的 WL 子集（AC_LUNA_ONLY）；其余 WL 状态留在 v5 里。
 # {run 目录名: 该目录拥有的 wl 编号}。sandbox 是共享的，无需区分。
 TERRA_FORK_OWNERS = {
-    "ac_luna_3wl_v5_oc": {4, 6, 8},      # opencode key2 (relay B :8788)
-    "ac_luna_3wl_v5_plus": {5, 7, 9},    # ChatGPT Plus (relay A :8787)
+    "ac_luna_3wl_v5_oc": {4, 6, 8, 9},      # opencode key2 (relay B :8788)
+    "ac_luna_3wl_v5_plus": {5, 7},    # ChatGPT Plus (relay A :8787)
 }
 
 

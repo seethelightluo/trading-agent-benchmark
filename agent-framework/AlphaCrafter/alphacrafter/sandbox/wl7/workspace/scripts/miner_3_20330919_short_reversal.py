@@ -1,0 +1,23 @@
+import numpy as np,pandas as pd
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+D={}
+for s in U:
+ x=pd.read_csv('../persistent/stock_data/'+s+'.csv'); x.date=pd.to_datetime(x.date); D[s]=x.set_index('date').close.astype(float)
+px=pd.DataFrame(D).sort_index().ffill(); r=px.pct_change()
+# Lagged short-horizon reversal, normalized by recent volatility: higher score means stronger prior loss.
+f=(-r.shift(1).rolling(3,min_periods=3).sum()).div(r.shift(1).rolling(20,min_periods=15).std())
+f=f.replace([np.inf,-np.inf],np.nan)
+print('instruments',len(U),'dates',len(px),'coverage',f.notna().mean().mean())
+for h in [1,5,10,20]:
+ a=[];ns=[]
+ for i in range(len(px)-h):
+  z=pd.concat([f.iloc[i].rename('x'),(px.iloc[i+h]/px.iloc[i]-1).rename('y')],axis=1).dropna()
+  if len(z)>=8 and z.x.nunique()>2:a.append(z.x.corr(z.y));ns.append(len(z))
+ q=pd.Series(a).dropna();print('H',h,'IC',q.mean(),'ICIR',q.mean()/q.std(ddof=1),'hit',(q>0).mean(),'n',len(q),'avgN',np.mean(ns))
+a=[]
+for i in range(len(px)-1):
+ z=pd.concat([f.iloc[i].rename('x'),(px.iloc[i+1]/px.iloc[i]-1).rename('y')],axis=1).dropna()
+ if len(z)>=8 and z.x.nunique()>2:a.append((px.index[i],z.x.corr(z.y)))
+q=pd.Series(dict(a));print('daily thirds',*[q.iloc[j*len(q)//3:(j+1)*len(q)//3].mean() for j in range(3)])
+rank=f.rank(axis=1,pct=True);print('turnover',rank.diff().abs().mean().mean())
+f.index=f.index.astype(str);f.to_csv('scripts/miner_3_20330919_short_reversal_signal.csv')

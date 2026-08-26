@@ -21,7 +21,7 @@ DS_LOG = ROOT / "AC-deepseek" / "results" / "ac9wl_deepseek" / "logs"
 # Terra 自 2026-08-17 按 LLM 上游 fork 成多个 run 目录；每个 WL 的日志和
 # pause 标记都在它所属目录里（supervisor 只看自己 RUN_DIR 的标记）。
 TERRA_RES_BASE = ROOT / "agent-framework" / "results"
-_TERRA_FORK = {"ac_luna_3wl_v5_oc": (4, 6, 8), "ac_luna_3wl_v5_plus": (5, 7, 9)}
+_TERRA_FORK = {"ac_luna_3wl_v5_oc": (4, 6, 8, 9), "ac_luna_3wl_v5_plus": (5, 7)}
 TERRA_WL_DIR: dict[str, Path] = {
     f"wl{i}": TERRA_RES_BASE / "ac_luna_3wl_v5" for i in range(1, 10)
 }

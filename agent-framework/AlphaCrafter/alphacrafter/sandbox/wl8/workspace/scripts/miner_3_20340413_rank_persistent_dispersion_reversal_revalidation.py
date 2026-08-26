@@ -1,0 +1,25 @@
+import numpy as np,pandas as pd
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+P={s:pd.read_csv('../persistent/stock_data/'+s+'.csv',parse_dates=['date']).set_index('date') for s in U}
+C=pd.DataFrame({s:x.close.astype(float).replace(0,np.nan) for s,x in P.items()}).sort_index().loc[:'2034-04-12']
+r=np.log(C).diff(); cs=r.mean(axis=1); idio=r.sub(cs,axis=0)
+# Candidate: persistence of cross-sectional ranks of dispersion-gated idiosyncratic reversal.
+raw=-r.rolling(5,min_periods=4).sum().shift(1)
+risk=idio.rolling(30,min_periods=15).std().shift(1)
+disp=r.std(axis=1).rolling(10,min_periods=7).mean().shift(1); med=disp.rolling(252,min_periods=60).median()
+gate=(disp/med).clip(.5,2.)
+base=(raw/risk.replace(0,np.nan)).mul(gate,axis=0)
+rank=base.rank(axis=1,pct=True); f=((rank+rank.shift(1))/2).sub(((rank+rank.shift(1))/2).mean(axis=1),axis=0)
+def q(h): return np.log(C.shift(-h)/C)
+def calc(x):
+ a=[]; ns=[]; ds=[]
+ for d in f.index:
+  z=pd.concat([f.loc[d],x.loc[d]],axis=1).dropna()
+  if len(z)>=8:a.append(z.iloc[:,0].corr(z.iloc[:,1],method='spearman'));ns.append(len(z));ds.append(d)
+ return pd.Series(a,index=ds),pd.Series(ns,index=ds)
+i,n=calc(q(10)); print('end',C.index.max().date(),'dates',len(i),'avgN',round(n.mean(),3),'coverage',round(n.mean()/15,4)); print('IC',round(i.mean(),6),'ICIR',round(i.mean()/i.std(ddof=1),6),'hit',round((i>0).mean(),4)); print('turnover',round(f.diff().abs().mean(axis=1).mean(),6))
+for w in [365,750,1260]:
+ x=i.tail(w); print('recent',w,'IC',round(x.mean(),6),'ICIR',round(x.mean()/x.std(ddof=1),6))
+for h in [1,5,20]: print('decay',h,round(calc(q(h))[0].mean(),6))
+f.stack().rename('signal').reset_index().rename(columns={'level_0':'date','level_1':'symbol'}).to_csv('scripts/miner_3_20340413_rank_persistent_dispersion_reversal_signal.csv',index=False)
+i.rename('ic').to_csv('scripts/miner_3_20340413_rank_persistent_dispersion_reversal_ic.csv')

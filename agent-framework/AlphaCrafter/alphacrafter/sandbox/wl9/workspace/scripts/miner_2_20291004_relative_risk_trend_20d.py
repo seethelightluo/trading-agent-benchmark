@@ -1,0 +1,26 @@
+import numpy as np, pandas as pd
+from alphacrafter.sim.utils import get_stock_daily_data
+U=['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX','XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+px={}
+for s in U:
+ d=get_stock_daily_data(s,4000)
+ if d is not None and len(d): px[s]=d.set_index('date')['close'].sort_index()
+P=pd.DataFrame(px).sort_index().ffill(); R=P.pct_change()
+out={5:[],10:[],20:[],40:[]}; dates=[]; ns=[]
+for i in range(80,len(P)-40):
+ r20=P.iloc[i-1]/P.iloc[i-21]-1
+ med=r20.median()
+ vol=R.iloc[:i].tail(20).std().replace(0,np.nan)
+ sig=(r20-med)/(vol*np.sqrt(20)+0.01)
+ dates.append(P.index[i]); ns.append(sig.notna().sum())
+ for h in out:
+  fr=P.iloc[i+h-1]/P.iloc[i-1]-1
+  z=pd.concat([sig,fr],axis=1).dropna()
+  if len(z)>=8:
+   c=z.iloc[:,0].corr(z.iloc[:,1],method='spearman'); out[h].append(c if np.isfinite(c) else np.nan)
+for h,a0 in out.items():
+ a=pd.Series(a0).dropna(); print('H',h,'dates',len(a),'IC',round(a.mean(),7),'ICIR',round(a.mean()/a.std(ddof=1),7),'hit',round((a>0).mean(),4))
+for label,st in [('online','2026-07-16'),('recent252','2028-10-01'),('2029','2029-01-01')]:
+ mask=pd.to_datetime(dates)>=st
+ a=pd.Series(out[20])[mask].dropna(); print(label,'dates',len(a),'IC20',round(a.mean(),7),'ICIR20',round(a.mean()/a.std(ddof=1),7))
+print('data',P.index.min().date(),P.index.max().date(),'assets',len(P.columns),'mean valid assets',round(np.mean(ns),3),'coverage',round(np.mean(ns)/15,4))
