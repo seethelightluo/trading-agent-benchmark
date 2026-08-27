@@ -1,0 +1,126 @@
+"""
+miner_1 2035-02-01: Revalidate ensemble factors on recent window + explore new candidates.
+Universe: 15 tradable cross-asset instruments. Data through visible-through 2035-01-31.
+Gates: abs(paper IC)>=0.0070 AND abs(paper ICIR)>=0.0840 at 10d horizon, min 8 assets/date.
+"""
+import numpy as np, pandas as pd
+from pathlib import Path
+
+VISIBLE_END = '2035-01-31'
+SD = Path('../persistent/stock_data'); ID = Path('../persistent/index_data')
+ASSETS = ['000300.SH','SPX','HSI','N225','SX5E','000688.SH','SOX','NDX',
+          'XAU','COPPER','WTI','BTC','ETH','US10Y','CN10Y']
+
+def load_assets(end, assets):
+    closes={}
+    for a in assets:
+        f=SD/f'{a}.csv'
+        if not f.exists(): f=ID/f'{a}.csv'
+        df=pd.read_csv(f,parse_dates=['date'])
+        df=df[df['date']<=pd.Timestamp(end)].sort_values('date').set_index('date')
+        closes[a]=df['close'].astype(float)
+    return pd.DataFrame(closes).dropna(how='all')
+
+close=load_assets(VISIBLE_END, ASSETS)
+close=close.dropna(axis=1,how='all')
+rets=close.pct_change()
+print(f"Panel {close.shape[0]} dates x {close.shape[1]} assets {close.index[0]:%Y-%m-%d}..{close.index[-1]:%Y-%m-%d}",flush=True)
+
+def load_index(name):
+    df=pd.read_csv(ID/f'{name}.csv',parse_dates=['date'])
+    df=df[df['date']<=pd.Timestamp(VISIBLE_END)].sort_values('date').set_index('date')
+    return df['close'].astype(float)
+
+dVIX=load_index('VIX'); dDXY=load_index('DXY'); dCNY=load_index('USDCNY'); dJPY=load_index('USDJPY')
+
+def fwd(h): return rets.shift(-h).rolling(h).mean()
+fwd5,fwd10,fwd20=fwd(5),fwd(10),fwd(20)
+
+def compute_ic(fv, fw, min_dates=30, start=None, flip=False):
+    if flip: fv=-fv
+    f=fv.reindex(fw.index); ii=fw.index
+    if start: ii=ii[ii>=pd.Timestamp(start)]
+    ics=[]; ok=0
+    for d in ii:
+        x=f.loc[d]; y=fw.loc[d]; m=x.notna()&y.notna()
+        if m.sum()>=8:
+            ok+=1
+            if np.std(x[m].rank().values)>0 and np.std(y[m].rank().values)>0:
+                ics.append(np.corrcoef(x[m].rank(),y[m].rank())[0,1])
+    ics=np.array(ics)
+    if len(ics)<min_dates: return dict(IC=0.,ICIR=0.,n=len(ics),hit=0.,cov=0.,okd=ok)
+    mu=ics.mean(); sd=ics.std()
+    return dict(IC=float(mu),ICIR=float(mu/sd*np.sqrt(len(ics)) if sd>0 else 0),
+                n=len(ics),hit=float((ics>0).mean()),cov=float(f.notna().mean().mean()),okd=ok)
+
+def turnover(fv):
+    s=np.sign(fv.rank(axis=1).sub(fv.shape[1]/2)).fillna(0)
+    return float((s.diff()!=0).mean().mean())
+
+def report(name, fv, start=None, flip=True, fw=fwd10):
+    a=compute_ic(fv,fw,start=start,flip=flip)
+    b=compute_ic(fv,fwd5,start=start,flip=flip)
+    c=compute_ic(fv,fwd20,start=start,flip=flip)
+    ok=(abs(a['IC'])>=0.0070 and abs(a['ICIR'])>=0.084)
+    print(f"[{'OK' if ok else '--'}] {name}: IC={a['IC']:.4f} ICIR={a['ICIR']:.4f} n={a['n']} okd={a['okd']} hit={a['hit']:.3f} cov={a['cov']:.3f} tov={turnover(fv):.3f} | [5]{b['IC']:.3f} [20]{c['IC']:.3f}", flush=True)
+    return a, c, ok
+
+# ---------- factor calc helpers ----------
+def calc_beta(macro_ret, win=60):
+    out={}
+    for a in close.columns:
+        r=rets[a]; m=pd.concat([r,macro_ret],axis=1).dropna()
+        out[a]=m[r].rolling(win,min_periods=40).cov(m[macro_ret.name])/m[macro_ret.name].rolling(win,min_periods=40).var()
+    return pd.DataFrame(out).reindex(close.index)
+
+def calc_corr_change(macro_ret, sw=20, lw=60):
+    out={}
+    for a in close.columns:
+        r=rets[a]; m=pd.concat([r,macro_ret],axis=1).dropna()
+        out[a]=m[r].rolling(sw).corr(m[macro_ret.name]) - m[r].rolling(lw).corr(m[macro_ret.name])
+    return pd.DataFrame(out).reindex(close.index)
+
+def calc_mom(skip, lb):
+    return close.shift(skip)/close.shift(skip+lb)-1
+
+def calc_kaufman():
+    return (close-close.shift(20)).abs()/close.diff().abs().rolling(20).sum()
+
+def calc_ac1():
+    r=rets
+    return r.rolling(120,min_periods=60).apply(lambda x: np.corrcoef(x[1:],x[:-1])[0,1] if len(x)>3 else np.nan, raw=False)
+
+def calc_bw20():
+    return 4*close.rolling(20).std()/close.rolling(20).mean()
+
+def calc_skew():
+    return rets.rolling(20).skew()
+
+def calc_volz():
+    vols={}
+    vol_assets=['000300.SH','000688.SH','SPX','HSI','N225','SX5E','NDX','BTC','ETH']
+    for a in vol_assets:
+        f=SD/f'{a}.csv'
+        if not f.exists(): f=ID/f'{a}.csv'
+        df=pd.read_csv(f,parse_dates=['date'])
+        df=df[df['date']<=pd.Timestamp(VISIBLE_END)].sort_values('date').set_index('date')
+        if 'volume' in df and df['volume'].notna().any():
+            v=df['volume'].astype(float)
+            vols[a]=(v-v.rolling(20).mean())/v.rolling(20).std()
+    return pd.DataFrame(vols).reindex(close.index)
+
+# ---- Revalidate existing ensemble factors on multi-window ----
+print('=== REVALIDATION existing ensemble factors ===', flush=True)
+vixr=dVIX.pct_change(); dxyxr=dDXY.pct_change(); cnyr=dCNY.pct_change()
+existing = [
+ ('beta_VIX_60',  calc_beta(v(M:=dVIX.pct_change(),60) if False else None for _ in [0]) if False else calc_beta(dVIX.pct_change(),60),-1),
+ ('cny_beta_60',  calc_beta(dCNY.pct_change(),60),-1),
+ ('dxy_corr_change_20_60', calc_corr_change(dDXY.pct_change(),20,60),1),
+ ('mom_120d_skip5', calc_mom(5,120),1),
+ ('mom_10d_skip5', calc_mom(5,10),1),
+ ('kaufman_eff_20d', calc_kaufman(),1),
+ ('ac1_120d', calc_ac1(),-1),
+ ('bb_width_20d', calc_bw20(),1),
+ ('skew_20d', calc_skew(),1),
+ ('vol_z_20d', calc_volz(),1),
+]

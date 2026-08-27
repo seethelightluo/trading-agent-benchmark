@@ -1,0 +1,1 @@
+python scripts/miner_1_20340720_validate_full.py
